@@ -111,6 +111,7 @@ void Registry::sm70_884_4()
         Add<C::Type<  8, 128,  64, 1, 4, 1, D, S, 2, true, 1, 32>>();
         // clang-format on
     }
+
 }
 
 }  // namespace turbomind::gemm

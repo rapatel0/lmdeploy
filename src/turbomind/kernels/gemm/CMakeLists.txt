@@ -114,25 +114,35 @@ if (BUILD_TEST)
 
         # add_executable(test_moe_utils test/test_moe_utils.cu test/test_utils.cu)
         # target_link_libraries(test_moe_utils PRIVATE gemm2 core cublas)
+endif ()
 
-        # if (NOT MSVC)
-        #         FetchContent_Declare(
-        #         repo-nvbench
-        #         GIT_REPOSITORY https://github.com/NVIDIA/nvbench.git
-        #         GIT_TAG        d8dced8a64d9ce305add92fa6d274fd49b569b7e
-        #         )
+# SPRINT-020 P1.2 — Standalone gemm_bench. Guarded so non-SPRINT-020 builds
+# (and the upstream lmdeploy build) are unaffected. Set on via:
+#   cmake -B build -DTM_ENABLE_GEMM_BENCH=ON
+# Builds NVBench from upstream and links against turbomind's gemm2 + core.
+# Audit notes: tools/tc-grid/docs/SPRINT-020-P1-gemm_bench-audit.md.
+option(TM_ENABLE_GEMM_BENCH "Build turbomind gemm_bench standalone (SPRINT-020 P1)" OFF)
+if (TM_ENABLE_GEMM_BENCH AND NOT MSVC)
+        # SPRINT-020 P1.5 blockers documented in SPRINT-020-FOLLOWUPS:
+        # 1. Pod has no outbound network → FetchContent of new tags fails.
+        # 2. The cached nvbench commit d8dced8a needs CMake 3.23.1+; the
+        #    pod ships CMake 3.22.1.
+        # Resolution path: vendor a CMake-3.22-compatible nvbench tarball
+        # OR write a simple cudaEventRecord-based timing harness in place
+        # of nvbench. See SPRINT-020-FOLLOWUPS §"P1.5 nvbench/cmake conflict".
+        FetchContent_Declare(
+                repo-nvbench
+                GIT_REPOSITORY https://github.com/NVIDIA/nvbench.git
+                GIT_TAG        d8dced8a64d9ce305add92fa6d274fd49b569b7e
+        )
+        set(NVBench_ENABLE_EXAMPLES OFF)
+        set(NVBench_ENABLE_TESTING OFF)
+        set(BUILD_SHARED_LIBS OFF)
+        FetchContent_MakeAvailable(repo-nvbench)
 
-        #         set(NVBench_ENABLE_EXAMPLES OFF)
-        #         set(NVBench_ENABLE_TESTING OFF)
-        #         set(BUILD_SHARED_LIBS OFF)
-
-        #         FetchContent_MakeAvailable(repo-nvbench)
-
-        #         add_executable(gemm_bench
-        #                 test/gemm_bench.cu
-        #                 # test/test_utils.cu
-        #                 test/quantization.cu
-        #                 test/reference.cu)
-        #         target_link_libraries(gemm_bench PRIVATE gemm2 core nvbench::nvbench cublas)
-        # endif ()
+        add_executable(gemm_bench
+                test/gemm_bench.cu
+                test/quantization.cu
+                test/reference.cu)
+        target_link_libraries(gemm_bench PRIVATE gemm2 core nvbench::nvbench cublas)
 endif ()

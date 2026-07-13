@@ -47,8 +47,6 @@ bool Kernel::is_feasible(const GemmDesc& desc) const noexcept
     if constexpr (debug)
         printf("S\n");
 
-    // printf("%d %d\n", desc.arch, desc_.arch);
-
     if (!is_arch_compatible(desc_.arch, desc.arch)) {
         return false;
     }
@@ -77,47 +75,25 @@ bool Kernel::is_feasible(const GemmDesc& desc) const noexcept
         return false;
     }
 
-    if constexpr (debug) {
-        printf("B\n");
-        printf("%X %X %X %X\n", desc.pack_a, desc_.pack_a, desc.pack_u, desc_.pack_u);
-    }
-
     if (std::tie(desc.pack_a, desc.pack_u) != std::tie(desc_.pack_a, desc_.pack_u)) {
         return false;
-    }
-
-    if constexpr (debug) {
-        printf("C\n");
-        printf("%X %X %X %X\n", desc.pack_b, desc_.pack_b, desc.pack_v, desc_.pack_v);
     }
 
     if (std::tie(desc.pack_b, desc.pack_v) != std::tie(desc_.pack_b, desc_.pack_v)) {
         return false;
     }
 
-    if constexpr (debug)
-        printf("D\n");
-
     if (desc.quant_a.type != desc_.quant_a.type || desc.quant_a.group_size != desc_.quant_a.group_size) {
         return false;
     }
-
-    if constexpr (debug)
-        printf("E\n");
 
     if (desc.quant_b.type != desc_.quant_b.type || desc.quant_b.group_size != desc_.quant_b.group_size) {
         return false;
     }
 
-    if constexpr (debug)
-        printf("F\n");
-
     if (desc.m % desc_.align.x || desc.n % desc_.align.y || desc.k % desc_.align.z) {
         return false;
     }
-
-    if constexpr (debug)
-        printf("success\n");
 
     return true;
 }
