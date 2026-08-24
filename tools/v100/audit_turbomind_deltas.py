@@ -29,6 +29,7 @@ Usage:
         --out benchmarks/v100/results/donor-inventory.jsonl \\
         --summary docs/v100/donor-inventory-summary.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -69,20 +70,45 @@ SYMBOL_PATTERNS_C = [
 
 # Tokens the function pattern can capture that are never symbol names.
 SYMBOL_STOPWORDS = {
-    "if", "for", "while", "switch", "return", "sizeof", "else", "do",
-    "catch", "throw", "case", "defined", "static_assert", "decltype",
-    "operator", "and", "or", "not", "constexpr", "noexcept", "alignas",
-    "const_cast", "static_cast", "dynamic_cast", "reinterpret_cast",
-    "delete", "new", "typeid", "assert", "printf", "break", "continue",
+    "if",
+    "for",
+    "while",
+    "switch",
+    "return",
+    "sizeof",
+    "else",
+    "do",
+    "catch",
+    "throw",
+    "case",
+    "defined",
+    "static_assert",
+    "decltype",
+    "operator",
+    "and",
+    "or",
+    "not",
+    "constexpr",
+    "noexcept",
+    "alignas",
+    "const_cast",
+    "static_cast",
+    "dynamic_cast",
+    "reinterpret_cast",
+    "delete",
+    "new",
+    "typeid",
+    "assert",
+    "printf",
+    "break",
+    "continue",
 }
 
 # Lines that open a control-flow or call context. A function definition never
 # starts with one of these, so the function pattern must skip such a line.
 # The test anchors at the start of the line, so a definition whose body
 # happens to contain `return` on the same line is still accepted.
-CONTROL_LINE = re.compile(
-    r"^[ \t]*\}?[ \t]*(?:if|for|while|switch|else|do|catch|return|throw|case)\b"
-)
+CONTROL_LINE = re.compile(r"^[ \t]*\}?[ \t]*(?:if|for|while|switch|else|do|catch|return|throw|case)\b")
 SYMBOL_PATTERNS_PY = [
     re.compile(r"^\s*(?:async\s+)?def\s+(\w+)", re.M),
     re.compile(r"^\s*class\s+(\w+)", re.M),
@@ -98,7 +124,15 @@ DEP_PATTERNS_PY = [
 
 # Extensions the audit treats as portable source.
 SOURCE_SUFFIXES = {
-    ".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".py", ".pyi",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cu",
+    ".cuh",
+    ".h",
+    ".hpp",
+    ".py",
+    ".pyi",
 }
 
 # Build-system files. These are tracked and compared in their own category,
@@ -227,19 +261,14 @@ def revalidate(entry: dict) -> None:
     head = git_text(repo, "rev-parse", "HEAD")
     if is_base:
         if not is_ancestor(repo, locked, head):
-            raise AuditError(
-                f"source {source_id}: locked base {locked} is not an ancestor of {head}"
-            )
+            raise AuditError(f"source {source_id}: locked base {locked} is not an ancestor of {head}")
     elif head != locked:
-        raise AuditError(
-            f"source {source_id}: commit drift, lock has {locked}, checkout has {head}"
-        )
+        raise AuditError(f"source {source_id}: commit drift, lock has {locked}, checkout has {head}")
 
     tree = git_text(repo, "rev-parse", f"{locked}^{{tree}}")
     if tree != entry.get("tree_sha"):
         raise AuditError(
-            f"source {source_id}: tree drift at {locked}, lock has "
-            f"{entry.get('tree_sha')}, checkout has {tree}"
+            f"source {source_id}: tree drift at {locked}, lock has {entry.get('tree_sha')}, checkout has {tree}"
         )
 
     # Campaign edits live in the product base, so it is dirty by design.
@@ -261,9 +290,7 @@ def revalidate(entry: dict) -> None:
         try:
             data = git_bytes(repo, "show", f"{locked}:{name}")
         except AuditError:
-            raise AuditError(
-                f"source {source_id}: license file {name} is absent at {locked}"
-            ) from None
+            raise AuditError(f"source {source_id}: license file {name} is absent at {locked}") from None
         if sha256_bytes(data) != record.get("sha256"):
             raise AuditError(f"source {source_id}: license digest drift for {name}")
 
@@ -308,7 +335,7 @@ def list_symbols(rel: str, text: str) -> tuple[list[str], bool]:
             # an assignment, because those are call sites, not definitions.
             line_start = text.rfind("\n", 0, match.start()) + 1
             line_end = text.find("\n", match.start())
-            line = text[line_start:line_end if line_end != -1 else len(text)]
+            line = text[line_start : line_end if line_end != -1 else len(text)]
             if CONTROL_LINE.match(line):
                 continue
             names.append(name)
@@ -393,7 +420,7 @@ def base_counterpart(source_id: str, rel: str) -> str | None:
     if source_id == "C":
         parts = Path(rel).parts
         if "lmdeploy" in parts:
-            tail = parts[parts.index("lmdeploy") + 1:]
+            tail = parts[parts.index("lmdeploy") + 1 :]
             if tail:
                 return str(Path(*tail))
     return None
@@ -436,9 +463,7 @@ def audit_source(
     for scope in scopes:
         listing = list_tree(repo, commit, scope)
         if not listing:
-            raise AuditError(
-                f"source {source_id}: scope '{scope}' is absent or empty at {commit}"
-            )
+            raise AuditError(f"source {source_id}: scope '{scope}' is absent or empty at {commit}")
         for rel in sorted(listing):
             data = read_locked(repo, commit, rel)
             digest = sha256_bytes(data)
@@ -450,40 +475,40 @@ def audit_source(
             if category in ("source", "build"):
                 # Compare within the file's own category, so a build file is
                 # never matched against the source digest index.
-                delta, match = classify_delta(
-                    digest, by_digest[category], base_path, base_paths
-                )
+                delta, match = classify_delta(digest, by_digest[category], base_path, base_paths)
 
             text = data.decode("utf-8", errors="replace")
             symbols, symbols_truncated = list_symbols(rel, text)
             revisions, revisions_truncated = file_revisions(repo, commit, rel)
             dependencies = list_dependencies(rel, text)
 
-            records.append({
-                "source_id": source_id,
-                "source_name": entry["name"],
-                "source_commit": commit,
-                "source_tree_sha": entry["tree_sha"],
-                "source_spdx": entry["spdx"],
-                "scope": scope,
-                "donor_path": rel,
-                "blob_sha256": digest,
-                "size_bytes": len(data),
-                "line_count": text.count("\n"),
-                "category": category,
-                "delta": delta,
-                "base_match_path": match,
-                "base_path_checked": base_path,
-                "symbols": symbols,
-                "symbol_extraction": "lexical_scan",
-                "symbols_truncated": symbols_truncated,
-                "dependencies": dependencies,
-                "dependencies_truncated": len(dependencies) >= MAX_DEPS_PER_FILE,
-                "revisions": revisions,
-                "revisions_truncated": revisions_truncated,
-                "notices": find_notices(text),
-                "content_source": "locked_git_commit",
-            })
+            records.append(
+                {
+                    "source_id": source_id,
+                    "source_name": entry["name"],
+                    "source_commit": commit,
+                    "source_tree_sha": entry["tree_sha"],
+                    "source_spdx": entry["spdx"],
+                    "scope": scope,
+                    "donor_path": rel,
+                    "blob_sha256": digest,
+                    "size_bytes": len(data),
+                    "line_count": text.count("\n"),
+                    "category": category,
+                    "delta": delta,
+                    "base_match_path": match,
+                    "base_path_checked": base_path,
+                    "symbols": symbols,
+                    "symbol_extraction": "lexical_scan",
+                    "symbols_truncated": symbols_truncated,
+                    "dependencies": dependencies,
+                    "dependencies_truncated": len(dependencies) >= MAX_DEPS_PER_FILE,
+                    "revisions": revisions,
+                    "revisions_truncated": revisions_truncated,
+                    "notices": find_notices(text),
+                    "content_source": "locked_git_commit",
+                }
+            )
     return records
 
 
@@ -540,15 +565,9 @@ def summarize(records: list[dict], source_id: str) -> dict:
         "spdx": subset[0]["source_spdx"],
         "file_count": len(subset),
         "category_counts": dict(Counter(r["category"] for r in subset)),
-        "delta_counts_source": dict(
-            Counter(r["delta"] for r in compared if r["category"] == "source")
-        ),
-        "delta_counts_build": dict(
-            Counter(r["delta"] for r in compared if r["category"] == "build")
-        ),
-        "files_without_notice": sum(
-            1 for r in compared if r["category"] == "source" and not r["notices"]
-        ),
+        "delta_counts_source": dict(Counter(r["delta"] for r in compared if r["category"] == "source")),
+        "delta_counts_build": dict(Counter(r["delta"] for r in compared if r["category"] == "build")),
+        "files_without_notice": sum(1 for r in compared if r["category"] == "source" and not r["notices"]),
     }
 
 
@@ -608,9 +627,7 @@ def main() -> int:
         "product_base_locked_commit": base_commit,
         "product_base_tree_sha": by_id["A"]["tree_sha"],
         "product_base_current_head": git_text(base_repo, "rev-parse", "HEAD"),
-        "product_base_current_branch": git_text(
-            base_repo, "rev-parse", "--abbrev-ref", "HEAD"
-        ),
+        "product_base_current_branch": git_text(base_repo, "rev-parse", "--abbrev-ref", "HEAD"),
         "base_indexed_source_digests": len(by_digest["source"]),
         "base_indexed_build_digests": len(by_digest["build"]),
         "base_tracked_paths": len(base_paths),
@@ -630,8 +647,7 @@ def main() -> int:
     print(f"\nwrote {out}")
     print(f"wrote {summary_path}")
     for sid, stats in summary["per_source"].items():
-        print(f"  {sid} {stats['name']}: source={stats['delta_counts_source']} "
-              f"build={stats['delta_counts_build']}")
+        print(f"  {sid} {stats['name']}: source={stats['delta_counts_source']} build={stats['delta_counts_build']}")
 
     return 0
 

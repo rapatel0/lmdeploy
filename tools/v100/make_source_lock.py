@@ -16,6 +16,7 @@ Usage:
     python3 tools/v100/make_source_lock.py --out docs/v100/source-lock.json
     python3 tools/v100/make_source_lock.py --out docs/v100/source-lock.json --relock
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,10 +41,7 @@ MARLIN_EVIDENCE = (
     "Apache-2.0 notice. No LICENSE file at repository root."
 )
 
-TILELANG_EVIDENCE = (
-    "README.md License section states MIT. "
-    "No LICENSE file at repository root."
-)
+TILELANG_EVIDENCE = "README.md License section states MIT. No LICENSE file at repository root."
 
 # Requested refs are the approved audit anchors from the master specification.
 #
@@ -266,9 +264,7 @@ def collect(source: dict) -> dict:
         "local_path": str(repo),
         "dirty_entry_count": len(dirty_lines),
         "observed_remote_head": (
-            git(repo, "rev-parse", "origin/HEAD")
-            or git(repo, "rev-parse", "origin/main")
-            or None
+            git(repo, "rev-parse", "origin/HEAD") or git(repo, "rev-parse", "origin/main") or None
         ),
         "errors": errors,
     }
@@ -282,13 +278,9 @@ def check_campaign_branch(repo: Path) -> tuple[str, list[str]]:
     """
     branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     if branch == "HEAD":
-        return "DETACHED", [
-            f"detached_head: expected branch {CAMPAIGN_BRANCH}"
-        ]
+        return "DETACHED", [f"detached_head: expected branch {CAMPAIGN_BRANCH}"]
     if branch != CAMPAIGN_BRANCH:
-        return branch, [
-            f"wrong_branch: expected {CAMPAIGN_BRANCH}, found {branch}"
-        ]
+        return branch, [f"wrong_branch: expected {CAMPAIGN_BRANCH}, found {branch}"]
     return branch, []
 
 
@@ -298,10 +290,7 @@ def main() -> int:
     parser.add_argument(
         "--relock",
         action="store_true",
-        help=(
-            "Replace an existing lock. Allowed only at a phase boundary, "
-            "with operator approval."
-        ),
+        help=("Replace an existing lock. Allowed only at a phase boundary, with operator approval."),
     )
     args = parser.parse_args()
 
