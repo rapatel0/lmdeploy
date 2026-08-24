@@ -1,0 +1,22 @@
+# Runtime pin for the V100 campaign.
+#
+# torch must ship sm_70 kernels. Modern torch does not: 2.12.1+cu130 is built
+# for compute capability 7.5 and above, so it installs cleanly on a V100,
+# reports capability (7, 0) correctly, and then fails at the first kernel
+# launch.
+#
+# Verified on gpu-01 by reading torch.cuda.get_arch_list():
+#
+#   2.12.1+cu130  sm_75 sm_80 sm_86 sm_90 sm_100 sm_120          NO sm_70
+#   2.9.1+cu126   sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90      sm_70 OK
+#   2.8.0+cu126   sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90      sm_70 OK
+#   2.9.1+cu128   sm_70 sm_75 sm_80 sm_86 sm_90 sm_100 sm_120    sm_70 OK
+#
+# 2.9.1+cu128 is the newest verified build with sm_70, and its CUDA minor
+# version matches the 12.8.1 build toolchain, so pin that.
+#
+# Install with the cu128 index as --index-url, not --extra-index-url.
+# An extra index does not constrain resolution, it only adds candidates, so
+# pip picked 2.12.1+cu130 from PyPI even when cu128 was supplied as an extra.
+torch==2.9.1
+torchvision==0.24.1
