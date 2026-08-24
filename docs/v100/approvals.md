@@ -45,6 +45,29 @@ tools/v100/audit_turbomind_deltas.py
 5. Name the small FP16 baseline model, which the specification still leaves open.
 6. Approve GPU time on the free island for Phase 0B.
 
+### Operator decision: campaign target confirmed
+
+The operator selected `Qwen3.8-27B-FP8` as the campaign target and as the
+starting weight-format baseline.
+
+The goal is Qwen3.8-27B running on V100. FP8 is the starting point, not a
+final answer.
+
+Verified facts behind that choice:
+
+- The checkpoint holds 28.8 GiB. At TP4 the weight share is 7.2 GiB for each
+  GPU, leaving about 24.8 GiB for KV, activations, and graphs.
+- Every language-model weight shape stays a multiple of 128 after sharding at
+  TP1, TP2, TP4, and TP8, so the FP8 block constraint holds.
+- SM70 has no BF16 support, so the BF16 checkpoint converts to FP16 and gains
+  nothing.
+- TurboMind has no EXL3 loader, so both EXL3 variants are excluded.
+
+Other weight formats remain open for later comparison. SM70 supports INT4 AWQ
+and MXFP4 in addition to FP8. SM70 has no INT8 weight kernel.
+
+INT8 KV cache is unaffected by that gap and remains the campaign outcome.
+
 ### Correction: the SM70 decode finding was wrong
 
 Recorded at the end of Phase 0A. This entry is append-only.

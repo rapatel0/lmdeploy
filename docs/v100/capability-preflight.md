@@ -215,6 +215,85 @@ The free island matches the allocation that the specification describes.
 Do not rely on these host indexes after a workload change. Re-verify before
 each GPU run.
 
+## Model selection
+
+The operator selected `Qwen3.8-27B-FP8` as the campaign target.
+
+### Why FP8 fits
+
+| Checkpoint | Size on disk | Quantization | Note |
+| --- | --- | --- | --- |
+| `Qwen3.8-27B-FP8` | 29 GB | `fp8` `e4m3` | Selected baseline |
+| `Qwen3.8-27B-BF16` | 28 GB | none | Downgrades to FP16 on SM70 |
+| `Qwen3.8-27B-EXL3-6.00bpw` | 22 GB | `exl3` 6-bit | Not supported by TurboMind |
+| `Qwen3.8-27B-EXL3-K5K6-context` | 20 GB | `exl3` 4-bit | Not supported by TurboMind |
+| `Qwen3.8-27B-DFlash2` | 3.6 GB | none | Speculator, not a full model |
+
+Only the FP8 and BF16 checkpoints are usable today. TurboMind has no `exl3`
+loader, so both EXL3 variants are excluded regardless of their smaller size.
+
+### Weight-format options on SM70
+
+This table answers which other variants are worth building later.
+
+| Weight path | SM70 GEMM config | Loader | Available for Qwen3.8 |
+| --- | --- | --- | --- |
+| FP16 dense | `Config_F16` | `trivial` | Yes, from the BF16 checkpoint |
+| FP8 `e4m3` | `Config_E4M3` | `fp8` | Yes, selected |
+| INT4 AWQ | `Config_U4_d`, `Config_U4_g` | `awq` | Not on disk, buildable |
+| MXFP4 | `Config_MXF4` | `mxfp4` | Not on disk, buildable |
+| INT8 weight-only | None | None | Not possible on SM70 today |
+| EXL3 | None | None | Not supported |
+
+The SM70 GEMM registers three quantized weight operands: `uint4_t`,
+`fp4_e2m1_t`, and `fp8_e4m3_t`. There is no INT8 weight operand.
+
+### INT8 weights and INT8 KV are different things
+
+Do not confuse these two uses of INT8.
+
+INT8 **weights** have no SM70 GEMM kernel. That path does not exist.
+
+INT8 **KV cache** does exist. `decoding_sm70_256.cu` registers
+`KT<half, uint8_t, kH>` for head_dim 256.
+
+The campaign outcome is block-scaled INT8 **KV**, which sits on the attention
+path, not the GEMM path. The absence of an INT8 weight kernel does not block
+it.
+
+A smaller weight format such as AWQ INT4 would free HBM for KV. That is a
+separate lever from the KV format, and the specification keeps checkpoint
+weight bytes unchanged during the campaign.
+
+The checkpoint holds 30890012444 bytes, which is 28.8 GiB.
+
+At TP4 the weight share is 7.2 GiB for each GPU. A V100-SXM2-32GB reports
+32768 MiB, so about 24.8 GiB remains for KV, activations, and graphs.
+
+TP1 does not fit. 28.8 GiB of weights leaves no room for KV on a 32 GiB card.
+The specification already forbids Qwen3.8 at TP1.
+
+### Tensor-parallel alignment
+
+FP8 uses 128 by 128 blocks, so every sharded dimension must stay a multiple
+of 128 after the split.
+
+All ten distinct language-model weight shapes satisfy that rule at TP1, TP2,
+TP4, and TP8. No projection needs a padded or separated commit.
+
+### Precision on SM70
+
+SM70 has no BF16 support. `is_bf16_supported()` requires compute capability 8
+or higher, and `_resolve_dtype` falls back to `float16` with a warning.
+
+The BF16 checkpoint therefore gives no precision benefit on V100. It converts
+to FP16 and costs the same KV bytes.
+
+`kernel/decoding_sm70_256.cu` registers only `half` activations, which agrees
+with that fallback.
+
+FP8 weights with FP16 compute is the correct trade for this hardware.
+
 ## Weight format on load
 
 `FP8Format.pack()` keeps FP8 native and reports `TYPE_FP8_E4M3`.
