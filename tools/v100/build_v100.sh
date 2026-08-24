@@ -8,10 +8,25 @@
 # This script fails closed on CUDA 13 rather than build a wheel without SM70
 # machine code.
 #
-# The script pins CMAKE_CUDA_ARCHITECTURES to 70-real. setup.py passes no
-# architecture flag, so this environment value reaches CMake and replaces the
-# default seven-architecture list. That cuts build time and guarantees that
-# the wheel targets V100 only.
+# The script pins the architecture to 70-real.
+#
+# Exporting CMAKE_CUDA_ARCHITECTURES alone does NOT work. `python -m build`
+# creates an isolated build environment, and setup.py passes an explicit
+# cmake_configure_options list that omits the architecture. A verified build
+# proved this: nvcc emitted seven --generate-code flags and the wheel carried
+# sm_70, sm_75, sm_80, sm_86, sm_89, sm_90a, sm_100a, and sm_120a.
+#
+# CMAKE_ARGS does not work either. cmake_build_extension 0.6.1 builds its
+# argument list from cmake_configure_options and its own -D options, and it
+# never reads CMAKE_ARGS.
+#
+# CUDAARCHS is the correct channel. CMake reads that environment variable
+# natively when it enables the CUDA language, and it survives the isolated
+# build environment. CMakeLists.txt guards its default list with
+# `if (NOT CMAKE_CUDA_ARCHITECTURES)`, so a value from CUDAARCHS suppresses
+# the seven-architecture default.
+#
+# The script verifies the result instead of trusting it.
 set -euo pipefail
 
 ARCH_TARGET="${ARCH_TARGET:-70-real}"
@@ -60,10 +75,47 @@ pip install nvidia-nccl-cu12
 
 echo "=== build ==="
 
+# Remove any stale build tree. A CMakeCache.txt from an earlier pod pins
+# absolute paths such as Python3_ROOT_DIR to a temporary directory that no
+# longer exists, so a retry fails on a cache that still looks valid. The build
+# must be idempotent, because Kubernetes retries a failed Job.
+if [ -d build ]; then
+    echo "removing a stale build tree"
+    rm -rf build
+fi
+rm -rf lmdeploy.egg-info
+
+# CUDAARCHS is the channel CMake reads natively.
+export CUDAARCHS="${ARCH_TARGET}"
+# Keep this for any consumer that reads it directly. It is not sufficient on
+# its own through `python -m build`.
 export CMAKE_CUDA_ARCHITECTURES="${ARCH_TARGET}"
 export CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
 
+echo "CUDAARCHS=${CUDAARCHS}"
+
 python3 -m build -w -o "${WHEEL_DIR}" -v .
+
+echo "=== verify the architecture pin ==="
+
+# Trust nothing. Read the generated ninja file and confirm that nvcc received
+# exactly one architecture.
+NINJA_FILE="$(find build -name build.ninja -path '*__turbomind*' 2>/dev/null | head -1)"
+if [ -n "${NINJA_FILE}" ]; then
+    ARCHES="$(grep -ohE 'arch=compute_[0-9]+a?' "${NINJA_FILE}" 2>/dev/null \
+        | sort -u | sed 's/.*compute_//')"
+    COUNT="$(printf '%s\n' "${ARCHES}" | grep -c . || true)"
+    echo "architectures compiled: ${ARCHES:-none} (count ${COUNT})"
+    if [ "${COUNT}" -ne 1 ] || [ "${ARCHES}" != "70" ]; then
+        echo "FAIL: expected exactly compute_70, found '${ARCHES}'" >&2
+        echo "the CMAKE_ARGS architecture pin did not take effect" >&2
+        exit 1
+    fi
+    echo "PASS: single architecture, compute_70"
+else
+    echo "FAIL: no turbomind ninja file found, cannot verify the pin" >&2
+    exit 1
+fi
 
 echo "=== verify SM70 machine code ==="
 
