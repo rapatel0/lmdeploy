@@ -275,3 +275,62 @@ also catches a dependency compiling for an unwanted architecture.
 
 The original verifier confirmed that sm_70 was *present* but never that other
 architectures were *absent*. That asymmetry is what let defect 1 through.
+
+## Phase 0B smoke test, verified on a V100
+
+Ran on gpu-01 against a Tesla V100-SXM2-32GB, compute capability 7.0.
+
+```
+torch 2.9.1+cu128
+arch_list ['sm_70', 'sm_75', 'sm_80', 'sm_86', 'sm_90', 'sm_100', 'sm_120']
+PASS: torch ships sm_70 and the device is (7, 0)
+PASS: fp16 matmul executed, result finite
+PASS: _turbomind imported          (61 exported names)
+PASS: TurboMind importable
+ALL SMOKE CHECKS PASSED
+```
+
+### The runtime torch pin
+
+Modern torch dropped V100. `2.12.1+cu130` is built for compute capability 7.5
+and above, so on a V100 it installs cleanly, reports capability `(7, 0)`
+correctly, and then fails at the first kernel launch. Measured
+`torch.cuda.get_arch_list()` on this node:
+
+| Build | sm_70 |
+| --- | --- |
+| `2.12.1+cu130` | absent |
+| `2.9.1+cu126` | present |
+| `2.8.0+cu126` | present |
+| `2.9.1+cu128` | present |
+
+Pinned `torch==2.9.1` and `torchvision==0.24.1` from the cu128 index, in
+`tools/v100/constraints-v100.txt`. It is the newest verified build carrying
+sm_70, and its CUDA minor version matches the 12.8.1 build toolchain, so the
+build and runtime cannot drift.
+
+Install with `--index-url`, never `--extra-index-url`. An extra index does not
+constrain resolution, it only adds candidates, which is how pip selected
+`2.12.1+cu130` while cu128 was supplied as an extra.
+
+### Two further defects, both of which reported success
+
+**The harness masked a failure.** The first smoke Job reported SUCCEEDED while
+its log showed `smoke_rc=1`. The final command was a pipeline, so the exit
+status of the failing step was discarded. `smoke_v100.sh` now runs under
+`set -euo pipefail`.
+
+**`.gitignore` swallowed a build input.** A blanket `*.txt` rule at line 84
+excluded `tools/v100/constraints-v100.txt`. The commit succeeded, the working
+tree looked clean, and the file existed on disk, so nothing looked wrong. On a
+fresh clone the constraint would have been missing, pip would have resolved
+cu130 again, and the failure would have appeared as an unexplained kernel
+launch error. Force-added.
+
+### Note on the import spelling
+
+`_turbomind` is a top-level module located through a `sys.path` insert into
+`lmdeploy/lib`, performed by `lmdeploy/turbomind/turbomind.py`. It is not a
+submodule of `lmdeploy.turbomind`, so `from lmdeploy.turbomind import
+_turbomind` always fails regardless of build health. Any check must mirror the
+real import path.
