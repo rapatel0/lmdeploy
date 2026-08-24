@@ -334,3 +334,60 @@ launch error. Force-added.
 submodule of `lmdeploy.turbomind`, so `from lmdeploy.turbomind import
 _turbomind` always fails regardless of build health. Any check must mirror the
 real import path.
+
+## Phase 0B TP1 baseline, Qwen3.5-4B
+
+Passed on the free island, GPU 4, with a clean exit.
+
+| Fact | Value |
+| --- | --- |
+| Model | `/srv/models/Qwen3.5-4B`, `Qwen3_5ForConditionalGeneration` |
+| GPU UUID | `GPU-dd6f7287-63a3-17c4-64c2-1eb597391f4b` |
+| Device | Tesla V100-SXM2-32GB, compute capability 7.0 |
+| torch | 2.9.1+cu128 |
+| NCCL | 2.27.5 |
+| nvcc | 12.8.93 |
+| Resolved dtype | float16 |
+| session_len | 8192 |
+| cache_max_entry_count | 0.6 |
+| Load | 18.7 s |
+| Used after startup | 24.13 GiB |
+| Free after startup | 7.60 GiB |
+| Decode | 96 tokens in 0.88 s, 109.5 tok/s |
+| Exit | 0, `CLEAN_SHUTDOWN_OK` |
+
+The dtype line confirms the capability preflight:
+
+```
+converter.py:148 - data type fallback to float16 since
+torch.cuda.is_bf16_supported is False
+```
+
+SM70 has no BF16, so LMDeploy downgrades rather than failing. A BF16
+checkpoint therefore buys nothing on this hardware.
+
+### Two log lines that look like failures and are not
+
+**`Warm-up for 8320 tokens failed with status 6`.** Status 6 is `kTooLong` in
+`src/turbomind/engine/request.h:126`, meaning history plus prompt exceeds
+`session_len`. TurboMind probes warm-up sizes above the configured limit, so
+the rejection is correct behavior. The first run configured `session_len`
+4096 and produced three such lines at 6144, 8192, and 8320. Raising
+`session_len` to 8192 left only the 8320 probe.
+
+**`terminate called without an active exception`, exit 134.** This was a
+harness defect, not an engine defect. `TurboMind.close()` and
+`AsyncEngine.close()` exist, and the first run called neither, so the engine
+internal thread was still running at interpreter shutdown. Calling
+`pipe.close()` before exit produced `CLEAN_SHUTDOWN_OK` and exit 0.
+
+Any long-running service or benchmark harness in later phases must close the
+engine explicitly. An abort at teardown would otherwise corrupt the exit
+status of an otherwise valid benchmark.
+
+### A harness defect worth recording
+
+The first TP1 Job reported SUCCEEDED while the container exited 134. The
+script ended on a heredoc whose status was never propagated, so Kubernetes saw
+the shell's status rather than Python's. The job script now ends with
+`exit $RC`.
