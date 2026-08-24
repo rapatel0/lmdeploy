@@ -100,22 +100,34 @@ echo "=== verify the architecture pin ==="
 
 # Trust nothing. Read the generated ninja file and confirm that nvcc received
 # exactly one architecture.
-NINJA_FILE="$(find build -name build.ninja -path '*__turbomind*' 2>/dev/null | head -1)"
-if [ -n "${NINJA_FILE}" ]; then
-    ARCHES="$(grep -ohE 'arch=compute_[0-9]+a?' "${NINJA_FILE}" 2>/dev/null \
-        | sort -u | sed 's/.*compute_//')"
-    COUNT="$(printf '%s\n' "${ARCHES}" | grep -c . || true)"
-    echo "architectures compiled: ${ARCHES:-none} (count ${COUNT})"
-    if [ "${COUNT}" -ne 1 ] || [ "${ARCHES}" != "70" ]; then
-        echo "FAIL: expected exactly compute_70, found '${ARCHES}'" >&2
-        echo "the CMAKE_ARGS architecture pin did not take effect" >&2
-        exit 1
-    fi
-    echo "PASS: single architecture, compute_70"
-else
-    echo "FAIL: no turbomind ninja file found, cannot verify the pin" >&2
+# Scan EVERY ninja file under the turbomind build tree, not just one. A
+# `find | head -1` picks an arbitrary dependency subbuild such as
+# concurrentqueue-subbuild, which contains no CUDA flags at all and produces a
+# false failure. Aggregating across all files also catches a dependency that
+# compiles for an unwanted architecture.
+BUILD_ROOT="$(find build -maxdepth 1 -type d -name '*__turbomind*' 2>/dev/null | head -1)"
+if [ -z "${BUILD_ROOT}" ]; then
+    echo "FAIL: no turbomind build tree found, cannot verify the pin" >&2
     exit 1
 fi
+
+ARCHES="$(find "${BUILD_ROOT}" -name build.ninja -exec \
+    grep -ohE 'arch=compute_[0-9]+a?' {} + 2>/dev/null \
+    | sort -u | sed 's/.*compute_//')"
+COUNT="$(printf '%s\n' "${ARCHES}" | grep -c . || true)"
+
+echo "architectures compiled: ${ARCHES:-none} (count ${COUNT})"
+
+if [ "${COUNT}" -eq 0 ]; then
+    echo "FAIL: no CUDA architecture flags found, cannot confirm the pin" >&2
+    exit 1
+fi
+if [ "${COUNT}" -ne 1 ] || [ "${ARCHES}" != "70" ]; then
+    echo "FAIL: expected exactly compute_70, found '${ARCHES}'" >&2
+    echo "the CUDAARCHS architecture pin did not take effect" >&2
+    exit 1
+fi
+echo "PASS: single architecture, compute_70"
 
 echo "=== verify SM70 machine code ==="
 
