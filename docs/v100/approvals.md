@@ -40,9 +40,39 @@ tools/v100/audit_turbomind_deltas.py
 
 1. Approve the product base and the source lock as immutable.
 2. Approve the license resolutions for sources E and F.
-3. Acknowledge the Phase 1 SM70 decode routing finding.
+3. Acknowledge the corrected SM70 decode finding, recorded below.
 4. Approve the Phase 2 gate as a campaign-level gate.
 5. Name the small FP16 baseline model, which the specification still leaves open.
+6. Approve GPU time on the free island for Phase 0B.
+
+### Correction: the SM70 decode finding was wrong
+
+Recorded at the end of Phase 0A. This entry is append-only.
+
+An earlier finding claimed that donor `MMA_884_DEC` could not host a
+block-scaled reader, and that the campaign outcome therefore rode on a route
+the donor reported as faulty.
+
+That claim was wrong about the product base.
+
+The base contains no `MMA_884_DEC` symbol and no `decoding_config.h`. It uses
+a runtime registry, and `kernel/decoding_sm70_256.cu` already registers SM70
+head_dim 256 decode for FP16, INT8, and INT4 KV. Qwen3.8 selects
+`KT<half, uint8_t, 3>`, which exists today.
+
+The donor constraint is real but donor-only.
+
+The Phase 2 gate remains mandatory. Registration is not proof of correct
+execution.
+
+See `capability-preflight.md` for the evidence.
+
+An independent reviewer confirmed this correction and added two limits, which
+the specification now records:
+
+1. The SM70 FP8 GEMM result does not prove FP8 KV attention support.
+2. Block-64 scaling needs a new parameter fetch and layout, not only a new
+   converter.
 
 ### Immutability
 
