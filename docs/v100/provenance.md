@@ -207,3 +207,71 @@ never the current head. The current head is recorded separately as
 That rule keeps a permitted re-lock pinned to `v0.16.0`. Without it, a
 re-lock after a campaign commit would advance the comparison base, because
 the ancestor rule accepts any descendant.
+
+## Phase 0B build, SM70 wheel
+
+Built on gpu-01 in-cluster. Compilation needs nvcc, not a GPU, so the build
+Job requests no GPU and leaves both GPU islands untouched.
+
+| Item | Value |
+| --- | --- |
+| Source commit | `43908d2f` |
+| Source archive sha256 | `1d872876ccd903ae...` (git archive of HEAD) |
+| Toolchain image | `nvidia/cuda:12.8.1-devel-ubuntu24.04` |
+| nvcc | 12.8.93 |
+| Python | 3.12 |
+| Architecture | `70-real`, pinned through `CUDAARCHS` |
+| Wheel | `lmdeploy-0.16.0-cp312-cp312-linux_x86_64.whl`, 28 MB |
+| Wheel sha256 | `a8f975227b5f2157ebc63b7969c21b52fc834618edc5211027f33e195be2d6f7` |
+| Build duration | 9m20s |
+
+### Gates
+
+Both gates passed on the retained wheel.
+
+```
+architectures compiled: 70 (count 1)
+PASS: single architecture, compute_70
+
+=== scanning 2 libraries for sm_70 machine code ===
+  OK   _turbomind...so: 91 sm_70 ELF sections
+PASS: 1 libraries contain sm_70 machine code
+```
+
+### Three defects found while building
+
+The first two builds "succeeded" in the sense that they produced an
+importable wheel, yet both were wrong. Recording them, because each one fails
+silently.
+
+**1. The architecture pin was inert.** Exporting `CMAKE_CUDA_ARCHITECTURES`
+does not reach CMake. `python -m build` isolates the environment, and
+`setup.py` passes a fixed `cmake_configure_options` list that omits the
+architecture. The first wheel was 331 MB and carried sm_70, sm_75, sm_80,
+sm_86, sm_89, sm_90a, sm_100a, and sm_120a. It would have run correctly on a
+V100 while hiding that the pin did nothing.
+
+`CMAKE_ARGS` is not a fix either. `cmake_build_extension` 0.6.1 builds its
+argument list from `cmake_configure_options` plus its own `-D` options and
+never reads `CMAKE_ARGS`.
+
+`CUDAARCHS` is the correct channel, because CMake reads it natively when it
+enables the CUDA language, and `CMakeLists.txt` guards its default list with
+`if (NOT CMAKE_CUDA_ARCHITECTURES)`. The wheel dropped to 28 MB.
+
+**2. The build was not idempotent.** A retry inherited a root-owned `build/`
+tree on the PVC whose `CMakeCache.txt` pinned `Python3_ROOT_DIR` to a deleted
+temporary directory. The retry therefore failed for a different reason than
+the original pod, which obscured the real error. The script now removes
+`build/` and `lmdeploy.egg-info` first, and the Job uses `backoffLimit: 0` so
+a failure surfaces honestly instead of being masked by a retry.
+
+**3. The pin verifier itself was wrong.** It used
+`find -name build.ninja | head -1`, which returns an arbitrary dependency
+subbuild such as `concurrentqueue-subbuild`. Those files contain no CUDA
+flags, so the check found zero architectures and failed a correct build. It
+now scans every ninja file under the turbomind tree and aggregates, which
+also catches a dependency compiling for an unwanted architecture.
+
+The original verifier confirmed that sm_70 was *present* but never that other
+architectures were *absent*. That asymmetry is what let defect 1 through.
