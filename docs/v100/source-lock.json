@@ -1,0 +1,175 @@
+{
+  "campaign": "lmdeploy-v100-next",
+  "generated_at": "2026-08-24T16:41:59.024932+00:00",
+  "product_base": {
+    "commit": "1208bf006bbac69f1f012ceafeeeb70f623b632c",
+    "observed_branch": "experiment/lmdeploy-v100-next",
+    "observed_head": "1208bf006bbac69f1f012ceafeeeb70f623b632c",
+    "ref": "v0.16.0",
+    "repository": "InternLM/lmdeploy",
+    "required_branch": "experiment/lmdeploy-v100-next"
+  },
+  "schema_version": 1,
+  "sources": [
+    {
+      "commit_date": "2026-08-19T12:43:13+08:00",
+      "commit_subject": "bump version to v0.16.0 (#4847)",
+      "dirty_entry_count": 3,
+      "errors": [],
+      "expected_commit": "1208bf006bbac69f1f012ceafeeeb70f623b632c",
+      "id": "A",
+      "license_evidence": "LICENSE file at repository root",
+      "license_files": [
+        {
+          "file": "LICENSE",
+          "sha256": "811e05b43b0d985814c7ffd0a1d0b93e9166e6f0271245d540302505734528ba"
+        }
+      ],
+      "local_path": "/Users/ravi/repos/cust-lmdeploy/lmdeploy",
+      "match_rule": "ancestor",
+      "name": "lmdeploy",
+      "observed_head": "1208bf006bbac69f1f012ceafeeeb70f623b632c",
+      "observed_remote_head": "b56ddfb634f069b600f0fe3f4730fe289ac7fafe",
+      "repository_url": "git@github.com:rapatel0/lmdeploy.git",
+      "requested_ref": "v0.16.0",
+      "resolved_commit": "1208bf006bbac69f1f012ceafeeeb70f623b632c",
+      "role": "product_base",
+      "spdx": "Apache-2.0",
+      "tree_sha": "9ca324245f4d9975bb1542f963316a7e78feb3f3"
+    },
+    {
+      "commit_date": "2026-03-18T12:12:30+08:00",
+      "commit_subject": "fix(mtd): restrict spec decode MTD to single-layer MTP (K=1)",
+      "dirty_entry_count": 0,
+      "errors": [],
+      "expected_commit": "d7c29f88e44016d7a757850fe761c1b1b66181c8",
+      "id": "B",
+      "license_evidence": "LICENSE file at repository root",
+      "license_files": [
+        {
+          "file": "LICENSE",
+          "sha256": "811e05b43b0d985814c7ffd0a1d0b93e9166e6f0271245d540302505734528ba"
+        }
+      ],
+      "local_path": "/Users/ravi/repos/cust-lmdeploy/lmdeploy-v100",
+      "match_rule": "head",
+      "name": "zh-nj/lmdeploy-v100",
+      "observed_head": "d7c29f88e44016d7a757850fe761c1b1b66181c8",
+      "observed_remote_head": "d7c29f88e44016d7a757850fe761c1b1b66181c8",
+      "repository_url": "https://github.com/zh-nj/lmdeploy-v100.git",
+      "requested_ref": "d7c29f88e44016d7a757850fe761c1b1b66181c8",
+      "resolved_commit": "d7c29f88e44016d7a757850fe761c1b1b66181c8",
+      "role": "donor",
+      "spdx": "Apache-2.0",
+      "tree_sha": "c005b2840c5123836bceec2661d4060e0b9bea20"
+    },
+    {
+      "commit_date": "2026-08-23T19:45:53+08:00",
+      "commit_subject": "[Kernel][SM70] Widen batched E5M2 XQA loads (#268)",
+      "dirty_entry_count": 0,
+      "errors": [],
+      "expected_commit": "675a12dedcca8cc020c033f1b1d0f1751d4b8efe",
+      "id": "C",
+      "license_evidence": "LICENSE file at repository root",
+      "license_files": [
+        {
+          "file": "LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        }
+      ],
+      "local_path": "/Users/ravi/repos/cust-lmdeploy/1Cat-vLLM",
+      "match_rule": "head",
+      "name": "1CatAI/1Cat-vLLM",
+      "observed_head": "675a12dedcca8cc020c033f1b1d0f1751d4b8efe",
+      "observed_remote_head": "675a12dedcca8cc020c033f1b1d0f1751d4b8efe",
+      "repository_url": "git@github.com:rapatel0/1Cat-vLLM.git",
+      "requested_ref": "675a12dedcca8cc020c033f1b1d0f1751d4b8efe",
+      "resolved_commit": "675a12dedcca8cc020c033f1b1d0f1751d4b8efe",
+      "role": "donor",
+      "spdx": "Apache-2.0",
+      "tree_sha": "2fc836e66c593fae01a0fc04d3cba2bc8153f093"
+    },
+    {
+      "commit_date": "2026-08-23T09:27:20+10:00",
+      "commit_subject": "docs(v100): document upstream attribution",
+      "dirty_entry_count": 0,
+      "errors": [],
+      "expected_commit": "0083b9fd83a601b1fcd9a691f7240be4e6be111e",
+      "id": "D",
+      "license_evidence": "LICENSE file at repository root",
+      "license_files": [
+        {
+          "file": "LICENSE",
+          "sha256": "1495e1e757ef4d0925a2350563cf5754bb23c51701a8ec4fb3c5cdcbedae6747"
+        }
+      ],
+      "local_path": "/Users/ravi/repos/cust-lmdeploy/sglang-V100",
+      "match_rule": "head",
+      "name": "haohervchb/sglang-V100",
+      "observed_head": "0083b9fd83a601b1fcd9a691f7240be4e6be111e",
+      "observed_remote_head": "475227bbf918cfea558edd3ff1d0210440776fd2",
+      "repository_url": "https://github.com/haohervchb/sglang-V100",
+      "requested_ref": "0083b9fd83a601b1fcd9a691f7240be4e6be111e",
+      "resolved_commit": "0083b9fd83a601b1fcd9a691f7240be4e6be111e",
+      "role": "donor",
+      "spdx": "Apache-2.0",
+      "tree_sha": "66efc2d8eda480d9248c790e973bf9a2bf3d6852"
+    },
+    {
+      "commit_date": "2026-05-27T16:06:59+10:00",
+      "commit_subject": "Merge sliding window + HD 512 support for Gemma4",
+      "dirty_entry_count": 0,
+      "errors": [],
+      "expected_commit": "c6332ebb0670efb7702eeb1b0e0d4477bea49def",
+      "id": "E",
+      "license_evidence": "README.md License section states MIT. No LICENSE file at repository root.",
+      "license_files": [
+        {
+          "file": null,
+          "note": "no-license-file",
+          "sha256": null
+        }
+      ],
+      "local_path": "/Users/ravi/repos/cust-lmdeploy/Tilelang-FA-V100",
+      "match_rule": "head",
+      "name": "haohervchb/Tilelang-FA-V100",
+      "observed_head": "c6332ebb0670efb7702eeb1b0e0d4477bea49def",
+      "observed_remote_head": "c6332ebb0670efb7702eeb1b0e0d4477bea49def",
+      "repository_url": "https://github.com/haohervchb/Tilelang-FA-V100",
+      "requested_ref": "c6332ebb0670efb7702eeb1b0e0d4477bea49def",
+      "resolved_commit": "c6332ebb0670efb7702eeb1b0e0d4477bea49def",
+      "role": "reference",
+      "spdx": "MIT",
+      "tree_sha": "0506ae8258ee94d4648094c0c73b06bc3ccf17a1"
+    },
+    {
+      "commit_date": "2026-07-02T19:14:34+08:00",
+      "commit_subject": "Document vLLM 0.19.1 install script",
+      "dirty_entry_count": 0,
+      "errors": [],
+      "expected_commit": "3f16d442cdb4c24dd225bbec196c982a54d9a31c",
+      "id": "F",
+      "license_evidence": "Per-file Apache-2.0 headers in csrc/. csrc/quantization/marlin/marlin.cu carries the Marlin and Neural Magic Apache-2.0 notice. No LICENSE file at repository root.",
+      "license_files": [
+        {
+          "file": null,
+          "note": "no-license-file",
+          "sha256": null
+        }
+      ],
+      "local_path": "/Users/ravi/repos/cust-lmdeploy/marlin_v100",
+      "match_rule": "head",
+      "name": "zhinianqin/marlin_v100",
+      "observed_head": "3f16d442cdb4c24dd225bbec196c982a54d9a31c",
+      "observed_remote_head": "3f16d442cdb4c24dd225bbec196c982a54d9a31c",
+      "repository_url": "https://github.com/zhinianqin/marlin_v100",
+      "requested_ref": "3f16d442cdb4c24dd225bbec196c982a54d9a31c",
+      "resolved_commit": "3f16d442cdb4c24dd225bbec196c982a54d9a31c",
+      "role": "reference",
+      "spdx": "Apache-2.0",
+      "tree_sha": "82e9deeff4f7d55f57712b5e6b7a321d67e595e3"
+    }
+  ],
+  "status": "OK",
+  "workspace_root": "/Users/ravi/repos/cust-lmdeploy"
+}

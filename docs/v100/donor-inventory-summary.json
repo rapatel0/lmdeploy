@@ -1,0 +1,105 @@
+{
+  "base_indexed_build_digests": 22,
+  "base_indexed_source_digests": 1139,
+  "base_tracked_paths": 1187,
+  "content_source": "locked_git_commit",
+  "generated_at": "2026-08-24T16:43:22.072556+00:00",
+  "inventory_path": "benchmarks/v100/results/donor-inventory.jsonl",
+  "inventory_record_count": 641,
+  "inventory_sha256": "bb7b0e11b473bd6400062dbe4754abc54cb19be8202b71fa6a8480e6829126ca",
+  "note": "Machine facts only. Delta states are content comparisons, not campaign classifications. Reviewed classifications and port decisions belong in docs/v100/patch-matrix.md.",
+  "per_source": {
+    "B": {
+      "category_counts": {
+        "build": 18,
+        "source": 427
+      },
+      "commit": "d7c29f88e44016d7a757850fe761c1b1b66181c8",
+      "delta_counts_build": {
+        "donor_only": 2,
+        "modified": 16
+      },
+      "delta_counts_source": {
+        "donor_only": 104,
+        "identical_content": 142,
+        "modified": 181
+      },
+      "file_count": 445,
+      "files_without_notice": 88,
+      "name": "zh-nj/lmdeploy-v100",
+      "spdx": "Apache-2.0",
+      "tree_sha": "c005b2840c5123836bceec2661d4060e0b9bea20"
+    },
+    "C": {
+      "category_counts": {
+        "source": 139
+      },
+      "commit": "675a12dedcca8cc020c033f1b1d0f1751d4b8efe",
+      "delta_counts_build": {},
+      "delta_counts_source": {
+        "donor_only": 6,
+        "identical_content": 76,
+        "modified": 57
+      },
+      "file_count": 139,
+      "files_without_notice": 42,
+      "name": "1CatAI/1Cat-vLLM",
+      "spdx": "Apache-2.0",
+      "tree_sha": "2fc836e66c593fae01a0fc04d3cba2bc8153f093"
+    },
+    "D": {
+      "category_counts": {
+        "source": 10
+      },
+      "commit": "0083b9fd83a601b1fcd9a691f7240be4e6be111e",
+      "delta_counts_build": {},
+      "delta_counts_source": {
+        "donor_only": 10
+      },
+      "file_count": 10,
+      "files_without_notice": 4,
+      "name": "haohervchb/sglang-V100",
+      "spdx": "Apache-2.0",
+      "tree_sha": "66efc2d8eda480d9248c790e973bf9a2bf3d6852"
+    },
+    "E": {
+      "category_counts": {
+        "source": 9
+      },
+      "commit": "c6332ebb0670efb7702eeb1b0e0d4477bea49def",
+      "delta_counts_build": {},
+      "delta_counts_source": {
+        "donor_only": 9
+      },
+      "file_count": 9,
+      "files_without_notice": 2,
+      "name": "haohervchb/Tilelang-FA-V100",
+      "spdx": "MIT",
+      "tree_sha": "0506ae8258ee94d4648094c0c73b06bc3ccf17a1"
+    },
+    "F": {
+      "category_counts": {
+        "other": 2,
+        "source": 36
+      },
+      "commit": "3f16d442cdb4c24dd225bbec196c982a54d9a31c",
+      "delta_counts_build": {},
+      "delta_counts_source": {
+        "donor_only": 36
+      },
+      "file_count": 38,
+      "files_without_notice": 10,
+      "name": "zhinianqin/marlin_v100",
+      "spdx": "Apache-2.0",
+      "tree_sha": "82e9deeff4f7d55f57712b5e6b7a321d67e595e3"
+    }
+  },
+  "product_base_commit": "1208bf006bbac69f1f012ceafeeeb70f623b632c",
+  "product_base_current_branch": "experiment/lmdeploy-v100-next",
+  "product_base_current_head": "1208bf006bbac69f1f012ceafeeeb70f623b632c",
+  "product_base_locked_commit": "1208bf006bbac69f1f012ceafeeeb70f623b632c",
+  "product_base_tree_sha": "9ca324245f4d9975bb1542f963316a7e78feb3f3",
+  "schema_version": 2,
+  "source_lock_path": "docs/v100/source-lock.json",
+  "source_lock_sha256": "0cc1230a863b60f9dea4ebb64ae2febdc620ee223d9efb1f3ca3b9a56cbe4dfc"
+}
