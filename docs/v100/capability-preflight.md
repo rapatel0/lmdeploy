@@ -490,3 +490,84 @@ The FP8 checkpoint is unusable on V100 as-is. Three paths remain.
 
 Option 1 preserves the memory advantage and is the natural next step. Option 2
 is the fastest route to a running baseline.
+
+## Correction: block-scaled FP8 does run on SM70
+
+The previous section concluded that block-scaled FP8 needs SM90. That
+conclusion was wrong about the remedy, and the correction comes from two
+sibling repositories that already serve this exact model on V100.
+
+The diagnosis still holds. `MakeQuantDesc` maps a `{128, 128}` weight format to
+`QuantType::kB`, no pre-SM90 kernel declares `kB`, and `is_feasible` compares
+the field exactly. What the earlier analysis missed is that nobody writes a
+`kB` mainloop for SM70. They convert the scale instead.
+
+### The technique
+
+A `{128, 128}` block scale says that one scalar covers a 128-by-128 tile. A
+K-grouped scale with `group_size` 128 says that one scalar covers a 128-by-1
+column slice. Expanding the block scale along N by 128 turns the first into
+the second, and the value each weight element receives does not change. The
+transform is exact, not an approximation.
+
+`marlin_v100` does it in Python at load time:
+
+```python
+scales = scales.repeat_interleave(block_n, 1)
+scales = scales[:, :part_size_n]
+```
+
+`1Cat-vLLM` does it inside the CUDA op `fp8_sm70_prepare`:
+
+```cpp
+auto group_scales = scales.transpose(0, 1)
+                        .contiguous()
+                        .to(torch::kFloat16)
+                        .repeat_interleave(group_size, 1)
+                        .slice(1, 0, n)
+                        .contiguous();
+```
+
+Both then declare the weight as K-grouped, which routes to `QuantType::kK`.
+
+### These are our own kernels
+
+`1Cat-vLLM` requests the converter from this repository:
+
+```cpp
+GetConverters(kHalf, kFloat8_e4m3, kHalf, /*grouped=*/true, 70);
+```
+
+That call returns the SM70 line in `convert_v3.cu`:
+
+```
+W(sm70, kRow, s884h | B | _1), S(sm70, kCol, s884h | V | _1)
+```
+
+which packs for the `Config_E4M3` tiles registered in `sm70_884_8.cu`. The
+kernels needed to serve Qwen3.8-27B-FP8 on V100 are already compiled into our
+wheel. Only the scale layout at load time is wrong.
+
+### Why the earlier fix attempt failed
+
+Removing the empty pre-SM90 branch in `LinearWeight::prepare` was necessary but
+not sufficient. It made the weight pack, which the descriptor change from `ttt`
+to `tnt` confirmed, but the weight format still declared `{128, 128}`, so
+`MakeQuantDesc` still returned `kB` and the dispatch still missed. The scale
+expansion is the missing half.
+
+### Cost
+
+Scales grow by 128 along N and stay small. For `gate_up_proj` at TP4, the
+expanded scale is 40 by 8704 in FP16, which is 0.66 MiB per layer. Weights stay
+FP8 at 7.2 GiB per GPU, so the FP8 memory advantage is preserved.
+
+### Shape check at TP4
+
+Every affected shard divides evenly by 128, so no ragged trim is needed.
+
+| Projection | N per shard | N / 128 | K | K / 128 |
+|---|---:|---:|---:|---:|
+| `gate_up_proj` | 8704 | 68 | 5120 | 40 |
+| `down_proj` | 1280 | 10 | 17408 | 136 |
+| `in_proj_qkv` | 1536 | 12 | 5120 | 40 |
