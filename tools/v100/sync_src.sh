@@ -41,7 +41,7 @@ echo "=== syncing ${BRANCH} at ${SHA:0:12} to ${NODE}:${DEST}/lmdeploy ==="
 # an uncommitted edit or a stray build artifact, unlike a recursive copy.
 TARBALL="$(mktemp -t lmdeploy-src-XXXXXX.tar)"
 trap 'rm -f "${TARBALL}"' EXIT
-git archive --format=tar HEAD > "${TARBALL}"
+git archive --format=tar HEAD >"${TARBALL}"
 
 # Stamp the commit into the payload so the node can be interrogated later.
 STAMP_DIR="$(mktemp -d)"
@@ -51,10 +51,10 @@ trap 'rm -f "${TARBALL}"; rm -rf "${STAMP_DIR}"' EXIT
     echo "branch=${BRANCH}"
     echo "synced_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "synced_from=$(hostname)"
-} > "${STAMP_DIR}/SOURCE_STAMP"
+} >"${STAMP_DIR}/SOURCE_STAMP"
 tar -rf "${TARBALL}" -C "${STAMP_DIR}" SOURCE_STAMP
 
-SIZE="$(wc -c < "${TARBALL}" | tr -d ' ')"
+SIZE="$(wc -c <"${TARBALL}" | tr -d ' ')"
 echo "payload: ${SIZE} bytes"
 
 POD="src-sync-$$"
