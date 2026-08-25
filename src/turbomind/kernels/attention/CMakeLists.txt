@@ -31,6 +31,11 @@ if (BUILD_TEST)
         # flash_attention
         nvidia::cutlass::cutlass
         models
+        # models pulls in the per-architecture gemm2 kernel archives, whose
+        # KernelImpl vtables reference Kernel::is_feasible. That definition
+        # lives in kernel.cu, which belongs to gemm2 rather than to the
+        # archives, so the archives cannot satisfy it alone.
+        gemm2
         unfused_attention_kernels
         core
         cuda_utils
