@@ -327,3 +327,83 @@ These items still need verification:
 - Loaded tensor counts observed at run time.
 
 TP1 and TP4 startup need GPU access and operator approval.
+
+## Qwen3.8-27B-FP8 at TP4 fails in the linear-attention out_proj
+
+The model loads. Weights convert, all four ranks allocate, and the engine
+reaches the first forward pass. It then aborts:
+
+```
+[TM][FATAL][gemm.cu:341] No feasible kernel found for the problem:
+  sm70_f16_e4m3b128_f16_ttt_fff_8x5120x1536_1
+  [1] LlamaLinear::Impl::Forward()      @ LlamaLinear.cu:148
+  [2] linear_.Forward                   @ GatedDeltaNetLayer.cc:514
+  [3] GatedDeltaNetLayer::Forward()     @ GatedDeltaNetLayer.cc:355
+  [4] layer_0                           @ unified_decoder.cc:243
+```
+
+This is a real gap in the current source, not a build defect. The SM70 wheel
+is sound: the same wheel runs Qwen3.5-4B at TP1 and TP4 and passes both gates.
+
+### Causal chain
+
+**The checkpoint quantizes `out_proj` but not the in-projections.**
+`modules_to_not_convert` lists `linear_attn.in_proj_a`, `in_proj_b`,
+`in_proj_ba`, `A_log`, `conv1d`, `dt_bias`, and `norm` for every linear
+attention layer. It does not list `linear_attn.out_proj`, so that weight is
+FP8 e4m3 with `weight_block_size` `[128, 128]`.
+
+**The converter dequantizes only the in-projections.** In
+`lmdeploy/turbomind/builders/deltanet.py`, `add_input_projections` runs
+`dequant_mixed(...)` over the fused input projections, then adds the output
+projection unchanged:
+
+```python
+fused = fuse_gdn(q, k, v, z, b, a, tp=self.tp.size)
+self._add_linear('in_proj_all', fused, SplitSide.OUTPUT)
+if out_proj is not None:
+    self._add_linear('out_proj', out_proj, SplitSide.INPUT)
+```
+
+`dequant_mixed` only acts when formats differ among the linears passed to it,
+and `out_proj` is not among them, so it stays FP8.
+
+**The resulting GEMM has no SM70 kernel.** `linear_num_value_heads` is 48 and
+`linear_value_head_dim` is 128, so `value_dim` is 6144. `out_proj` splits on
+the input side, so at TP4 `K` is 1536. With `hidden_size` 5120 the problem is
+`M=8, N=5120, K=1536`.
+
+`Config_E4M3` for SM70 is declared in
+`src/turbomind/kernels/gemm/arch/config_sm70_s884.h` and instantiated in
+`src/turbomind/kernels/gemm/kernel/sm70_884_8.cu` with five tiles:
+
+```
+<128, 128, 16>  <64, 128, 32>  <32, 128, 32>  <16, 128, 32>  <8, 128, 64>
+```
+
+Every tile uses `Operand_B_Pack<fp8_e4m3_t>`, meaning B must be pre-packed,
+and `Operand_V_Pack<uint16_t>` for the scales. `Kernel::is_feasible` in
+`src/turbomind/kernels/gemm/kernel.cu` compares `pack_b` and `pack_v` exactly,
+so an unpacked FP8 operand cannot match any registered kernel regardless of
+tile size. Alignment is not the obstacle: 5120 and 1536 are both multiples of
+128.
+
+### Why the small model passed
+
+Qwen3.5-4B is unquantized, so its GDN `out_proj` is FP16 and dispatches to
+`Config_F16`, which is registered for SM70 in `sm70_884_16.cu`. The TP1 and
+TP4 gates therefore exercised the serving path and the NCCL collectives, but
+never the FP8 weight path. That is exactly the limitation recorded when the
+small model was selected.
+
+### Options
+
+1. Dequantize `out_proj` to FP16 in the converter, matching the treatment the
+   in-projections already receive. Costs memory on the 48 linear-attention
+   layers and changes no kernel.
+2. Pack FP8 `out_proj` into the layout `Operand_B_Pack` expects, so the
+   existing SM70 tiles apply.
+3. Add an SM70 `Config_E4M3` variant that accepts an unpacked operand.
+
+Option 1 is the smallest change and the natural next step, since the converter
+already dequantizes sibling weights in the same function.
