@@ -21,6 +21,7 @@ Exports:
   overrides and by downstream callers that pack packed-expert weights
   after slicing.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -34,8 +35,8 @@ from .linear import Linear
 
 
 class PackedTensor(NamedTuple):
-    tensor:      torch.Tensor
-    alloc_shape: list[int] | None       # None = inherit from packed tensor
+    tensor: torch.Tensor
+    alloc_shape: list[int] | None  # None = inherit from packed tensor
     alloc_dtype: _tm.DataType | None  # None = inherit from packed tensor
 
 
@@ -66,7 +67,7 @@ def pack_u4_row(x: torch.Tensor) -> torch.Tensor:
     Used by every int4 format's ``pack`` override and by callers that
     re-pack tensors after slicing (e.g. packed-MoE expert split).
     """
-    assert x.dtype == torch.uint8, f'x.dtype: {x.dtype}'
+    assert x.dtype == torch.uint8, f"x.dtype: {x.dtype}"
     xs = x.view(*x.shape[:-1], -1, 8).split(1, dim=-1)
     a = torch.zeros(xs[0].shape, dtype=torch.int32, device=x.device)
     for t in reversed(xs):
@@ -120,17 +121,16 @@ class WeightFormat(ABC):
     ``concat_out_dim``.
     """
 
-    name:           ClassVar[str]
-    suffix_map:     ClassVar[dict[str, str]]
-    weight_dtype:   ClassVar[_tm.DataType | None]
+    name: ClassVar[str]
+    suffix_map: ClassVar[dict[str, str]]
+    weight_dtype: ClassVar[_tm.DataType | None]
     has_zero_point: ClassVar[bool]
 
-    block_in:  int | None
+    block_in: int | None
     block_out: int | None
 
-    def __init__(self, *, block_in: int | None = None,
-                 block_out: int | None = None):
-        self.block_in  = block_in
+    def __init__(self, *, block_in: int | None = None, block_out: int | None = None):
+        self.block_in = block_in
         self.block_out = block_out
 
     @abstractmethod
@@ -151,27 +151,20 @@ class WeightFormat(ABC):
         return tensor
 
     def synthesize_zeros(self, scales: Tensor) -> Tensor:
-        raise NotImplementedError(
-            f'{type(self).__name__}.synthesize_zeros not implemented')
+        raise NotImplementedError(f"{type(self).__name__}.synthesize_zeros not implemented")
 
-    def dequant(self, tensors: dict[str, Tensor],
-                data_type) -> dict[str, Tensor]:
-        raise NotImplementedError(
-            f'{type(self).__name__}.dequant not implemented')
+    def dequant(self, tensors: dict[str, Tensor], data_type) -> dict[str, Tensor]:
+        raise NotImplementedError(f"{type(self).__name__}.dequant not implemented")
 
     def make_data_format(self, data_type) -> _tm.DataFormat:
         if self.weight_dtype is None:
             return _tm.ResolveLinearWeightFormat(data_type, data_type, 1, 1)
-        return _tm.ResolveLinearWeightFormat(
-            data_type, self.weight_dtype,
-            self.block_in  or 1, self.block_out or 1)
+        return _tm.ResolveLinearWeightFormat(data_type, self.weight_dtype, self.block_in or 1, self.block_out or 1)
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, WeightFormat):
             return NotImplemented
-        return (type(self) is type(other)
-                and self.block_in  == other.block_in
-                and self.block_out == other.block_out)
+        return type(self) is type(other) and self.block_in == other.block_in and self.block_out == other.block_out
 
     def __hash__(self) -> int:
         return hash((type(self), self.block_in, self.block_out))
@@ -183,15 +176,15 @@ class WeightFormat(ABC):
 
 
 class TrivialFormat(WeightFormat):
-    name           = 'trivial'
-    suffix_map     = {'.weight': 'weight', '.bias': 'bias'}
-    weight_dtype   = None
+    name = "trivial"
+    suffix_map = {".weight": "weight", ".bias": "bias"}
+    weight_dtype = None
     has_zero_point = False
 
     def accepts(self, available: dict[str, Tensor]) -> bool:
-        if not (available.keys() <= {'.weight', '.bias'}):
+        if not (available.keys() <= {".weight", ".bias"}):
             return False
-        w = available.get('.weight')
+        w = available.get(".weight")
         return w is None or w.dtype.is_floating_point
 
     def normalize(self, x: Tensor, kind: str) -> Tensor:
@@ -206,20 +199,19 @@ class TrivialFormat(WeightFormat):
 
 
 class AWQFormat(WeightFormat):
-    name           = 'awq'
-    suffix_map     = {'.qweight': 'weight', '.scales': 'scales',
-                      '.qzeros': 'zeros',   '.bias': 'bias'}
-    weight_dtype   = _tm.DataType.TYPE_UINT4
+    name = "awq"
+    suffix_map = {".qweight": "weight", ".scales": "scales", ".qzeros": "zeros", ".bias": "bias"}
+    weight_dtype = _tm.DataType.TYPE_UINT4
     has_zero_point = True
 
     def __init__(self, *, block_in: int):
         super().__init__(block_in=block_in, block_out=None)
 
     def accepts(self, available: dict[str, Tensor]) -> bool:
-        qw = available.get('.qweight')
+        qw = available.get(".qweight")
         if qw is None or qw.dtype != torch.int32:
             return False
-        scales = available.get('.scales')
+        scales = available.get(".scales")
         if scales is not None and qw.ndim >= 2 and scales.ndim >= 2:
             return qw.shape[-1] * 8 == scales.shape[-1]
         return True
@@ -231,45 +223,43 @@ class AWQFormat(WeightFormat):
         #   zeros:   [K//g, N//8] int32 → unpack → [K//g, N]
         if x.dtype == torch.int32:
             x = _unpack_awq_gemm(x)
-        if kind != 'weight':
+        if kind != "weight":
             x = x.to(torch.float16)
         return x
 
     def pack(self, tensor: Tensor, kind: str) -> PackedTensor:
-        if kind == 'weight' and tensor.dtype == torch.uint8:
-            return PackedTensor(pack_u4_row(tensor),
-                                list(tensor.shape), self.weight_dtype)
+        if kind == "weight" and tensor.dtype == torch.uint8:
+            return PackedTensor(pack_u4_row(tensor), list(tensor.shape), self.weight_dtype)
         return PackedTensor(tensor, None, None)
 
     def dequant(self, tensors, data_type):
-        qweight = tensors['weight']
-        scales  = tensors['scales']
-        qzeros  = tensors['zeros']
+        qweight = tensors["weight"]
+        scales = tensors["scales"]
+        qzeros = tensors["zeros"]
         group_size = qweight.shape[0] // scales.shape[0]
         w = qweight.unflatten(0, (-1, group_size))
         w = (w - qzeros[:, None]) * scales[:, None]
         w = w.flatten(0, 1)
-        result: dict[str, Tensor] = {'weight': w}
-        if 'bias' in tensors:
-            result['bias'] = tensors['bias']
+        result: dict[str, Tensor] = {"weight": w}
+        if "bias" in tensors:
+            result["bias"] = tensors["bias"]
         return result
 
 
 class GPTQFormat(WeightFormat):
-    name           = 'gptq'
-    suffix_map     = {'.qweight': 'weight', '.scales': 'scales',
-                      '.qzeros': 'zeros',   '.bias': 'bias'}
-    weight_dtype   = _tm.DataType.TYPE_UINT4
+    name = "gptq"
+    suffix_map = {".qweight": "weight", ".scales": "scales", ".qzeros": "zeros", ".bias": "bias"}
+    weight_dtype = _tm.DataType.TYPE_UINT4
     has_zero_point = True
 
     def __init__(self, *, block_in: int):
         super().__init__(block_in=block_in, block_out=None)
 
     def accepts(self, available: dict[str, Tensor]) -> bool:
-        qw = available.get('.qweight')
+        qw = available.get(".qweight")
         if qw is None or qw.dtype != torch.int32:
             return False
-        scales = available.get('.scales')
+        scales = available.get(".scales")
         if scales is not None and qw.ndim >= 2 and scales.ndim >= 2:
             return qw.shape[-1] == scales.shape[-1]
         return True
@@ -281,18 +271,17 @@ class GPTQFormat(WeightFormat):
         #   zeros:   [K//g, N//8] int32 → unpack → [K//g, N] (+1 offset)
         if x.dtype == torch.int32:
             xs = _get_u4_slices(x, torch.uint8)
-            if kind == 'weight':
+            if kind == "weight":
                 x = torch.stack(xs, dim=1).view(-1, x.size(-1))
             else:
                 x = torch.stack(xs, dim=-1).view(x.size(0), -1) + 1
-        if kind != 'weight':
+        if kind != "weight":
             x = x.to(torch.float16)
         return x
 
     def pack(self, tensor: Tensor, kind: str) -> PackedTensor:
-        if kind == 'weight' and tensor.dtype == torch.uint8:
-            return PackedTensor(pack_u4_row(tensor),
-                                list(tensor.shape), self.weight_dtype)
+        if kind == "weight" and tensor.dtype == torch.uint8:
+            return PackedTensor(pack_u4_row(tensor), list(tensor.shape), self.weight_dtype)
         return PackedTensor(tensor, None, None)
 
     def synthesize_zeros(self, scales: Tensor) -> Tensor:
@@ -300,57 +289,53 @@ class GPTQFormat(WeightFormat):
 
 
 class CompressedTensorFormat(WeightFormat):
-    name           = 'compressed-tensors'
-    suffix_map     = {'.weight_packed':     'weight',
-                      '.weight_scale':      'scales',
-                      '.weight_zero_point': 'zeros',
-                      '.bias':              'bias'}
-    weight_dtype   = _tm.DataType.TYPE_UINT4
+    name = "compressed-tensors"
+    suffix_map = {".weight_packed": "weight", ".weight_scale": "scales", ".weight_zero_point": "zeros", ".bias": "bias"}
+    weight_dtype = _tm.DataType.TYPE_UINT4
     has_zero_point = True
 
     def __init__(self, *, block_in: int):
         super().__init__(block_in=block_in, block_out=None)
 
     def accepts(self, available: dict[str, Tensor]) -> bool:
-        wp = available.get('.weight_packed')
+        wp = available.get(".weight_packed")
         return wp is not None and wp.dtype == torch.int32
 
     def normalize(self, x: Tensor, kind: str) -> Tensor:
         if x.dtype == torch.int32:
             xs = _get_u4_slices(x, torch.uint8)
-            if kind == 'weight':
+            if kind == "weight":
                 x = torch.stack(xs, dim=-1).view(*x.shape[:-1], -1)
-            elif kind == 'zeros':
+            elif kind == "zeros":
                 x = torch.stack(xs, dim=1).view(-1, x.size(-1))
-        if kind != 'weight':
+        if kind != "weight":
             x = x.to(torch.float16)
         if x.dim() >= 2:
             x = x.t()
         return x
 
     def pack(self, tensor: Tensor, kind: str) -> PackedTensor:
-        if kind == 'weight' and tensor.dtype == torch.uint8:
-            return PackedTensor(pack_u4_row(tensor),
-                                list(tensor.shape), self.weight_dtype)
+        if kind == "weight" and tensor.dtype == torch.uint8:
+            return PackedTensor(pack_u4_row(tensor), list(tensor.shape), self.weight_dtype)
         return PackedTensor(tensor, None, None)
 
     def synthesize_zeros(self, scales: Tensor) -> Tensor:
         return _zeros_int4_symmetric(scales)
 
     def dequant(self, tensors, data_type):
-        weight = tensors['weight']
-        scales = tensors['scales']
-        zeros = tensors['zeros']
+        weight = tensors["weight"]
+        scales = tensors["scales"]
+        zeros = tensors["zeros"]
 
         out_size = weight.shape[-1]
         zeros = zeros[..., :out_size]
 
-        scales = scales.repeat_interleave(self.block_in, dim=0)[:weight.shape[0]]
-        zeros = zeros.repeat_interleave(self.block_in, dim=0)[:weight.shape[0]]
+        scales = scales.repeat_interleave(self.block_in, dim=0)[: weight.shape[0]]
+        zeros = zeros.repeat_interleave(self.block_in, dim=0)[: weight.shape[0]]
         w = (weight.to(scales.dtype) - zeros.to(scales.dtype)) * scales
-        result: dict[str, Tensor] = {'weight': w}
-        if 'bias' in tensors:
-            result['bias'] = tensors['bias']
+        result: dict[str, Tensor] = {"weight": w}
+        if "bias" in tensors:
+            result["bias"] = tensors["bias"]
         return result
 
 
@@ -372,28 +357,35 @@ def _fp8_block_scales_need_expansion() -> bool:
 
 
 class FP8Format(WeightFormat):
-    name           = 'fp8'
-    suffix_map     = {'.weight':           'weight',
-                      '.weight_scale_inv': 'scales',
-                      '.bias':             'bias'}
-    weight_dtype   = _tm.DataType.TYPE_FP8_E4M3
+    name = "fp8"
+    suffix_map = {".weight": "weight", ".weight_scale_inv": "scales", ".bias": "bias"}
+    weight_dtype = _tm.DataType.TYPE_FP8_E4M3
     has_zero_point = False
 
-    def __init__(self, *, expand_scales: bool | None = None):
+    def __init__(self, *, expand_scales: bool | None = None,
+                 scale_dtype: torch.dtype = torch.float16):
         # ``expand_scales`` converts the {128, 128} block scale into the
         # K-grouped {128, 1} form by repeating each scale along N. The
         # expansion is exact: every weight element still receives the scale of
         # its own 128-by-128 block, so this is a layout change, not an
         # approximation.
+        #
+        # ``scale_dtype`` is the compute dtype the expanded scales are cast to.
+        # ResolveLinearWeightFormat declares the K-grouped scales as the
+        # compute dtype, so the tensor must actually carry it. The checkpoint
+        # ships weight_scale_inv as BF16, and BF16 and FP16 are both 16 bits
+        # wide, so a missing cast is not caught by any size check and is read
+        # as reinterpreted bits.
         if expand_scales is None:
             expand_scales = _fp8_block_scales_need_expansion()
         self.expand_scales = expand_scales
+        self.scale_dtype = scale_dtype
         super().__init__(block_in=128, block_out=1 if expand_scales else 128)
 
     def accepts(self, available: dict[str, Tensor]) -> bool:
-        if '.weight_scale_inv' not in available:
+        if ".weight_scale_inv" not in available:
             return False
-        w = available.get('.weight')
+        w = available.get(".weight")
         return w is None or w.dtype in (torch.float8_e4m3fn, torch.uint8)
 
     def normalize(self, x: Tensor, kind: str) -> Tensor:
@@ -410,15 +402,18 @@ class FP8Format(WeightFormat):
         dim 1 gives ``(K // 128, N)``, which is one scale per column per
         128-element K group. ``out_dim`` trims a ragged final block.
         """
-        if kind != 'scales' or not self.expand_scales or tensor.dim() < 2:
+        if kind != "scales" or not self.expand_scales or tensor.dim() < 2:
             return tensor
-        return tensor.repeat_interleave(128, dim=1)[:, :out_dim].contiguous()
+        # Cast before expanding, so the repeat copies already-converted values.
+        return (tensor.to(self.scale_dtype)
+                .repeat_interleave(128, dim=1)[:, :out_dim]
+                .contiguous())
 
     def dequant(self, tensors, data_type):
         from .builders._base import _CPP_TO_TORCH
 
-        weight = tensors['weight']
-        scales = tensors['scales']
+        weight = tensors["weight"]
+        scales = tensors["scales"]
         block_size = 128
         fp8_weight = weight.view(torch.float8_e4m3fn).float()
         scale = scales.float()
@@ -428,34 +423,34 @@ class FP8Format(WeightFormat):
             scale = scale.repeat_interleave(block_size, dim=1)
         scale = scale[: fp8_weight.shape[0], : fp8_weight.shape[1]]
         target_dtype = _CPP_TO_TORCH[data_type]
-        result: dict[str, Tensor] = {'weight': (fp8_weight * scale).to(target_dtype)}
-        if 'bias' in tensors:
-            result['bias'] = tensors['bias']
+        result: dict[str, Tensor] = {"weight": (fp8_weight * scale).to(target_dtype)}
+        if "bias" in tensors:
+            result["bias"] = tensors["bias"]
         return result
 
     def pack(self, tensor: Tensor, kind: str) -> PackedTensor:
-        if kind == 'weight':
+        if kind == "weight":
             return PackedTensor(tensor, list(tensor.shape), self.weight_dtype)
         return PackedTensor(tensor, None, None)
 
 
 class MXFP4Format(WeightFormat):
-    name           = 'mxfp4'
-    suffix_map     = {'.blocks': 'weight', '.scales': 'scales', '.bias': 'bias'}
-    weight_dtype   = _tm.DataType.TYPE_FP4_E2M1
+    name = "mxfp4"
+    suffix_map = {".blocks": "weight", ".scales": "scales", ".bias": "bias"}
+    weight_dtype = _tm.DataType.TYPE_FP4_E2M1
     has_zero_point = False
 
     def __init__(self):
         super().__init__(block_in=32, block_out=None)
 
     def accepts(self, available: dict[str, Tensor]) -> bool:
-        if '.scales' not in available:
+        if ".scales" not in available:
             return False
-        w = available.get('.blocks')
+        w = available.get(".blocks")
         return w is None or w.dtype == torch.uint8
 
     def normalize(self, x: Tensor, kind: str) -> Tensor:
-        if kind == 'weight':
+        if kind == "weight":
             xs = _get_u4_slices(torch.flatten(x, start_dim=-2), torch.uint8)
             x = torch.flatten(torch.stack(xs, dim=-1), start_dim=-2)
         if x.dim() >= 2:
@@ -463,9 +458,8 @@ class MXFP4Format(WeightFormat):
         return x
 
     def pack(self, tensor: Tensor, kind: str) -> PackedTensor:
-        if kind == 'weight' and tensor.dtype == torch.uint8:
-            return PackedTensor(pack_u4_row(tensor),
-                                list(tensor.shape), self.weight_dtype)
+        if kind == "weight" and tensor.dtype == torch.uint8:
+            return PackedTensor(pack_u4_row(tensor), list(tensor.shape), self.weight_dtype)
         return PackedTensor(tensor, None, None)
 
 
@@ -501,58 +495,46 @@ class WeightFormatResolver:
     - Only "no tensors AND optional=True" returns ``None``.
     """
 
-    def __init__(self, *, data_type: _tm.DataType,
-                 formats: list[WeightFormat]):
+    def __init__(self, *, data_type: _tm.DataType, formats: list[WeightFormat]):
         self._data_type = data_type
-        self._formats   = formats
-        self._suffixes  = frozenset(
-            s for f in formats for s in f.suffix_map)
+        self._formats = formats
+        self._suffixes = frozenset(s for f in formats for s in f.suffix_map)
 
     @property
     def data_type(self) -> _tm.DataType:
         return self._data_type
 
-    def resolve(self, pfx, *, index: int | None = None,
-                optional: bool = False):
+    def resolve(self, pfx, *, index: int | None = None, optional: bool = False):
         """Resolve to a Linear bundle at the given Prefix."""
         read = pfx.get if index is not None else pfx.pop
-        available = {s: read(s, sep='', index=index)
-                     for s in self._suffixes if pfx.has(s, sep='')}
+        available = {s: read(s, sep="", index=index) for s in self._suffixes if pfx.has(s, sep="")}
 
         if not available:
             if optional:
                 return None
             raise KeyError(
-                f'no checkpoint tensors found at prefix {pfx.prefix!r} '
-                f'(candidate suffixes: {sorted(self._suffixes)})')
+                f"no checkpoint tensors found at prefix {pfx.prefix!r} (candidate suffixes: {sorted(self._suffixes)})"
+            )
 
         for fmt in self._formats:
             if fmt.accepts(available):
                 return self._build_linear(fmt, available)
 
         raise ValueError(
-            f'no weight format accepts tensors at {pfx.prefix!r}: '
-            f'got {sorted(available)}, '
-            f'tried {[f.name for f in self._formats]}')
+            f"no weight format accepts tensors at {pfx.prefix!r}: "
+            f"got {sorted(available)}, "
+            f"tried {[f.name for f in self._formats]}"
+        )
 
-    def _build_linear(self, fmt: WeightFormat,
-                      available: dict[str, Tensor]) -> Linear:
-        tensors = {
-            kind: fmt.normalize(available[s], kind)
-            for s, kind in fmt.suffix_map.items()
-            if s in available
-        }
+    def _build_linear(self, fmt: WeightFormat, available: dict[str, Tensor]) -> Linear:
+        tensors = {kind: fmt.normalize(available[s], kind) for s, kind in fmt.suffix_map.items() if s in available}
         # Optional per-format expansion, applied after normalize so every
         # tensor is already in TM layout. Identity for every format that does
         # not override it.
-        weight = tensors.get('weight')
+        weight = tensors.get("weight")
         if weight is not None and weight.dim() >= 2:
             out_dim = weight.shape[1]
-            tensors = {
-                kind: fmt.expand(t, kind, out_dim)
-                for kind, t in tensors.items()
-            }
-        if fmt.has_zero_point and 'zeros' not in tensors:
-            tensors['zeros'] = fmt.synthesize_zeros(tensors['scales'])
-        return Linear(tensors=tensors,
-                      weight_format=fmt)
+            tensors = {kind: fmt.expand(t, kind, out_dim) for kind, t in tensors.items()}
+        if fmt.has_zero_point and "zeros" not in tensors:
+            tensors["zeros"] = fmt.synthesize_zeros(tensors["scales"])
+        return Linear(tensors=tensors, weight_format=fmt)

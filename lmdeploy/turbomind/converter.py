@@ -47,7 +47,10 @@ def _build_resolver(model_format: str | None,
         formats.append(CompressedTensorFormat(block_in=group_size))
         dtype = torch.float16
     elif model_format == 'fp8':
-        formats.append(FP8Format())
+        # Pass the resolved compute dtype: when the K-grouped scale expansion
+        # is active, ResolveLinearWeightFormat declares the scales as the
+        # compute dtype, so the tensor must actually carry it.
+        formats.append(FP8Format(scale_dtype=dtype))
     elif model_format == 'mxfp4':
         formats.append(MXFP4Format())
     else:
