@@ -20,8 +20,12 @@ if (BUILD_TEST)
     target_compile_options(attention PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-v --generate-line-info>)
 
+    # test_utils.cu is deliberately absent. gemm2 compiles
+    # gemm/test/test_utils.cu, which defines the same turbomind symbols with
+    # identical declarations, and whole-archiving models force-includes it.
+    # Compiling the attention copy as well is a duplicate definition of
+    # curand_bytes, RNG::GenerateUInt and LoadBinary.
     add_executable(test_attention
-        test_utils.cu
         test_attention.cu
         reference.cu)
     target_compile_options(test_attention PRIVATE
