@@ -420,3 +420,95 @@ remapped by the device plugin. `nvidia-smi topo -m` inside the container
 reports NUMA node 1 and CPU affinity 20-39 and 60-79, which identifies the
 second island. Any rank-to-GPU map recorded from inside a container must be
 read with that remapping in mind.
+
+## The FP8 scale cast, verified end to end
+
+`f7b18471` cast the expanded FP8 block scales to the compute dtype. This
+records the run that confirms it, and the five infrastructure faults that hid
+the confirmation for most of a day.
+
+### The verified result
+
+| Field | Value |
+| --- | --- |
+| Wheel | `lmdeploy-0.16.0-cp312-cp312-linux_x86_64.whl`, built 19:32 |
+| `scale_dtype` in packaged `weight_format.py` | 5 occurrences |
+| Architecture pin | `compute_70`, count 1 |
+| Machine code | 91 `sm_70` ELF sections, no PTX-only library |
+| Model | `/srv/models/Qwen3.8-27B-FP8`, `model_format='fp8'` |
+| tp | 2 |
+| session_len | 8192 |
+| cache_max_entry_count | 0.6 |
+
+Three prompts, greedy decoding, `max_new_tokens` 64:
+
+| Prompt | finish | tokens | unique chars | degenerate |
+| --- | --- | ---: | ---: | --- |
+| capital of France | stop | 50 | 32 | no |
+| 17 * 23 | length | 64 | 41 | no |
+| nth Fibonacci | length | 64 | 41 | no |
+
+The arithmetic prompt computed `17*(20+3)=340+51=391`, which is correct. The
+result line reads `ALL_COHERENT`.
+
+`Warm-up for 8320 tokens failed with status 6` still appears. That probe sits
+above the configured `session_len` and is expected, as recorded above.
+
+### Five faults that preceded it
+
+Every one was infrastructure. None touched the kernel, and each produced a
+signal that looked like a model or numerics failure.
+
+1. **A stale wheel.** The wheel under test was built at 13:01 from a tree that
+   predated the 08:10 fix, while the staged source synced at 17:07 did contain
+   it. Generation returned only exclamation marks, which is exactly the symptom
+   `f7b18471` describes. Verify that the artifact contains the change before
+   attributing a failure to the change.
+
+2. **A missing build tool.** `requirements/build.txt` lists
+   `cmake_build_extension`, `pybind11` and `setuptools`, but not `build`, and
+   `tools/v100/build_v100.sh` invokes `python3 -m build`. Fixed in `17bfc09e`.
+
+3. **A pipeline that swallowed the exit code.** The runner called
+   `bash build_v100.sh | tail -25`. A pipeline returns the last command's
+   status, `tail` always succeeds, and the job reported success having built
+   nothing. `set -euo pipefail` inside the build script cannot protect a caller
+   that pipes it.
+
+4. **A missing `unzip`.** `verify_sm70.sh` unpacked the wheel with `unzip`,
+   which the slim CUDA image does not ship. The build succeeded, the
+   architecture check passed, and the script then exited 127. Fixed in
+   `4cd05d22` by extracting with `zipfile`, which leaves the PTX-only
+   fail-closed logic unchanged.
+
+5. **A heredoc as `__main__`.** TurboMind spawns worker processes, and the
+   spawn start method re-imports `__main__` by path. A script fed on stdin has
+   the path `<stdin>`, so every worker died with `FileNotFoundError` and the
+   engine reported `BrokenProcessPool`. Test scripts that construct a pipeline
+   must be written to a real file with an `if __name__ == '__main__'` guard.
+
+A sixth was a configuration error rather than a defect: `tp=1` cannot hold a
+28.8 GB checkpoint on a 32 GB V100 once `cache_max_entry_count` reserves KV,
+and it aborted at 69% of loading. The table above records tp for that reason.
+
+### Consequences for recorded numbers
+
+Any measurement taken against a wheel built before 19:32 ran on the pre-cast
+FP8 path and is void. That includes the 208.1 tok/s figure in `patch-matrix.md`
+and a 53.0 tok/s batch-1 figure measured during this session, which was
+computed from output that was entirely exclamation marks. Both need to be
+re-measured on the verified wheel.
+
+### The gate that should have existed
+
+A throughput number computed from degenerate output is worse than no number,
+because it is consistent across trials and therefore looks trustworthy. The
+53.0 tok/s figure reproduced within 0.1% over three trials. Every generation
+test now asserts on the text before reporting timing:
+
+```python
+uniq = len(set(text.strip()))
+degenerate = (not text.strip()) or uniq <= 2
+```
+
+`if text.strip()` is not sufficient. It accepts 256 tokens of `!`.
