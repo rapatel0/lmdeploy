@@ -88,7 +88,7 @@ The technique comes from donors C and F. No donor code is copied, so this is a
 re-implementation against the product base, not a port.
 
 | Field | Value |
-|---|---|
+| --- | --- |
 | Patch-family ID | `PHASE0B-FP8-PACK` |
 | Commit SHA | `c46dbf06`, `f7b18471` |
 | Donor file and blob hash | Technique only. See `donor-inventory.jsonl` for `csrc/sm70_turbomind/ops/awq_sm70_gemm.cu` in donor C and the `fp8` scale paths in donor F. |
