@@ -102,3 +102,43 @@ merely importable.
 | `manifests/lmdeploy-v100-next/01-build-base.yaml` | buildkit build job |
 | `manifests/lmdeploy-v100-next/02-retag-base.yaml` | crane re-tag to the pullable name |
 | `lmdeploy/tools/v100/run_island2.sh` | run a script on island 2 |
+
+## The retag step is not required, and crane:latest is broken
+
+Rebuilding as `v2` produced two findings that correct the section above.
+
+**`crane:latest` no longer starts.** All three retag pods terminated with
+`StartError` before running anything:
+
+```text
+exec: "/ko-app/crane": stat /ko-app/crane: no such file or directory
+```
+
+The upstream image layout changed, and it ships no shell either, so
+`/busybox/sh` fails the same way. A manifest that pins `:latest` for a tool it
+executes by absolute path will break without warning whenever upstream
+republishes. Pin a digest or a version tag if this step is ever restored.
+
+**The retag was unnecessary.** Despite all three retag pods failing,
+`localhost:32000/lmdeploy-v100-base:v2` pulls and runs, and the pulled image
+contains the `build` module that `v1` lacked:
+
+```text
+PULL_OK
+build present
+```
+
+Buildkit pushes to `registry.container-registry.svc.cluster.local:5000`, and
+the section above already records that both names address the same backing
+registry. That is the whole reason crane reported `existing manifest` rather
+than copying layers. An alias needs no second write: once buildkit has pushed,
+the image is already reachable under the `localhost:32000` name the kubelet
+requires.
+
+So `02-retag-base.yaml` was solving a problem that the shared backing registry
+had already solved. It appeared to work because it ran after a successful push
+and reported success on a no-op.
+
+This is worth stating plainly, because the job failed and the pipeline was
+fine. A failing step whose absence changes nothing is not a step; the previous
+runs of it proved only that the push had already succeeded.
