@@ -625,7 +625,7 @@ kernel could match. Two commits fixed it, following `1Cat-vLLM` and
 Measured facts:
 
 | Fact | Value |
-|---|---|
+| --- | --- |
 | Semantic gate | 8/8 |
 | Long-context needle retrieval | PASS |
 | Degenerate-output detector | False |
