@@ -179,6 +179,51 @@ have no matching base symbol.
 This is the outcome the specification's own instruction points to: port only
 missing behavior. The base is further along than the donor commit list assumes.
 
+## Fail-closed loader tests
+
+The specification requires fail-closed tests for seven items. They live in
+`tests/turbomind/test_weight_format_loader.py` and cover tensor-name coverage,
+scale-name coverage, scale semantics, ignored-module handling, quantization
+block shape, dense and MoE route ownership, and loaded tensor counts through
+the format-identity checks that guard fusion groups.
+
+Fail-closed means a checkpoint that does not match a declared format must
+raise rather than load as something else. A silent misclassification produces a
+model that runs and returns wrong numbers, which is the worst outcome for a
+quantization campaign.
+
+The tests import the compiled `_turbomind` extension, so they run on the V100
+against the built wheel rather than on a laptop:
+
+```text
+29 passed in 2.97s
+```
+
+### The tests were verified by mutation
+
+A passing test suite proves nothing until it is shown to fail. Removing the
+fail-closed guard from `TrivialFormat.accepts`, so that it accepts everything,
+produces:
+
+```text
+FAILED test_trivial_rejects_quantized_checkpoint
+FAILED test_trivial_rejects_integer_weight
+FAILED test_exactly_one_format_accepts_awq
+FAILED test_no_format_accepts_an_unknown_checkpoint
+4 failed, 25 passed
+```
+
+Exactly the four route-ownership and rejection tests fail, and the unrelated
+tests still pass. The suite detects the regression it exists to detect.
+
+Record one process failure with this. The first mutation attempt reported 29
+passed against a supposedly broken build, which would have been a false pass.
+The patch had used double-quoted source text while the installed wheel is
+single-quoted, so `str.replace` matched nothing and changed no code. The second
+attempt verifies that the mutation applied before drawing any conclusion, and
+prints the replaced body as evidence. Any mutation harness must fail loudly
+when it does not mutate.
+
 ## Deferred, default-off until independent qualification
 
 Unchanged from the specification: NVFP4, compact MXFP4 top-6 decode, DeepSeek
