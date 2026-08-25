@@ -61,9 +61,14 @@ RUN pip install \
 # LMDeploy runtime dependencies, resolved against the campaign constraints.
 # Only these two files are copied, so editing kernel source does not invalidate
 # this layer.
-# Both files sit at the context root, because the build context is a ConfigMap
-# and a ConfigMap has no directories.
+# All three files sit at the context root, because the build context is a
+# ConfigMap and a ConfigMap has no directories.
+#
+# common.txt is required, not optional: runtime_cuda.txt begins with
+# "-r common.txt". It declares no further includes, so these three files are
+# the complete closure.
 COPY runtime_cuda.txt /tmp/req/runtime_cuda.txt
+COPY common.txt /tmp/req/common.txt
 COPY constraints-v100.txt /tmp/req/constraints-v100.txt
 RUN pip install \
         -r /tmp/req/runtime_cuda.txt \
