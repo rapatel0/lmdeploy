@@ -31,7 +31,12 @@ if [ -d "${TARGET}" ]; then
     if [ "${#WHEELS[@]}" -gt 0 ]; then
         for wheel in "${WHEELS[@]}"; do
             echo "unpacking $(basename "${wheel}")"
-            unzip -q -o "${wheel}" -d "${WORK}/unpacked"
+            # A wheel is a zip, but `unzip` is absent from the slim CUDA build
+            # image while Python is always present. A missing unzip previously
+            # aborted this script with rc=127 *after* a successful build, which
+            # looks like a build failure and is not one.
+            python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                "${wheel}" "${WORK}/unpacked"
         done
         while IFS= read -r lib; do LIBS+=("${lib}"); done \
             < <(find "${WORK}/unpacked" -name '*.so' -o -name '*.so.*')
