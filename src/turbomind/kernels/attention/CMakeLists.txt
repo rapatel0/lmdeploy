@@ -30,12 +30,16 @@ if (BUILD_TEST)
         attention
         # flash_attention
         nvidia::cutlass::cutlass
-        models
-        # models pulls in the per-architecture gemm2 kernel archives, whose
-        # KernelImpl vtables reference Kernel::is_feasible. That definition
-        # lives in kernel.cu, which belongs to gemm2 rather than to the
-        # archives, so the archives cannot satisfy it alone.
-        gemm2
+        # models PUBLIC-links gemm2, and gemm2 whole-archives the
+        # per-architecture kernel libraries. Those force-included objects carry
+        # KernelImpl vtables that reference the gemm::Kernel base class, whose
+        # definition lives in kernel.cu inside libgemm2.a. A plain static link
+        # is resolved left to right without rescanning, so libgemm2.a is
+        # already consumed by the time those references appear.
+        #
+        # Whole-archive models, matching how the shipped turbomind target links
+        # it in src/turbomind/CMakeLists.txt.
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,models>"
         unfused_attention_kernels
         core
         cuda_utils
