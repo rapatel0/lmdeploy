@@ -73,36 +73,75 @@ technical prose, so the number describes real work.
 
 ### What it can and cannot be compared to
 
-This is **not** a like-for-like comparison with SGLang's 53.35. Two conditions
-differ, and both are recorded rather than smoothed over:
+This is **not** a like-for-like comparison with SGLang's 53.35: it is TP2
+against their TP4, and a roughly 20-token prompt against their 1024. It is
+kept as the TP2 data point. The matched run is below.
 
-- **tp.** Ours is TP2, SGLang's row is TP4. Fewer ranks means less parallelism
-  per token, so this understates what the same code does at TP4.
-- **Prompt length.** SGLang used 1024 input tokens; this used roughly 20.
-  Prefill is excluded from decode tok/s, but KV length affects per-step
-  attention cost, so a longer prompt would if anything be slower.
+## The matched comparison, TP4 at 1024 input tokens
 
-A TP4 rerun at 1024 input tokens is required before any multiplier against
-SGLang is quoted. The honest statement today is that our verified batch-1
-decode is 29.25 tok/s at TP2 with a short prompt.
+SGLang's exact conditions: batch 1, 1024 input tokens, 256 output tokens. The
+prompt was built by appending text and truncating with the model's own
+tokenizer, and the realized input length was asserted at 1024 rather than
+assumed. Run on island 2 through `tools/v100/run_island2.sh`, whose guard
+confirms four idle GPUs and no island-1 UUID before allocating.
+
+| Trial | tok/s | TPOT ms | degenerate |
+| --- | ---: | ---: | --- |
+| 1 | 51.06 | 19.58 | no |
+| 2 | 50.85 | 19.66 | no |
+| 3 | 51.10 | 19.57 | no |
+
+Mean **51.01 tok/s**, TPOT **19.61 ms**, spread 0.49 percent, output coherent.
+
+| Comparison | tok/s | Ratio to ours |
+| --- | ---: | ---: |
+| Ours, TP4, 1024 in | 51.01 | |
+| SGLang `target_only`, FP8 KV | 51.73 | 1.01x |
+| SGLang `target_only`, FP16 KV | 53.35 | 1.05x |
+| SGLang `dflash16`, FP16 KV | 117.58 | 2.31x |
+
+### This overturns the campaign's stated premise
+
+The section above claimed we were 2.05x behind on raw per-request decode and
+that this was "the gap we have never measured". Measured, it is **4.4 percent**
+against SGLang's FP16-KV baseline and **1.4 percent** against its FP8-KV
+baseline, which is the closer match to our FP8 weights.
+
+The 2.05x was an artifact of dividing a batch-8 aggregate by 8, on a wheel that
+predated the FP8 cast fix. Two errors compounded: assuming linear batch scaling,
+and timing a broken path. Neither survives direct measurement.
+
+So there is effectively **one gap, not two**. Per-request decode is at parity.
+The entire remaining deficit is speculative decoding, worth 2.31x here and
+2.20x on SGLang's own baseline-to-speculative comparison.
+
+TPOT tells the same story: 19.61 ms against SGLang's 17.48 ms, a 1.12x
+difference, consistent with the throughput ratio and far from 2x.
+
+### What this changes
+
+- **Do not plan work against a 2.05x per-request scheduling gap.** It is not
+  there. Any campaign phase justified by closing it needs re-justification.
+- **Speculative decoding is the only lever that reaches the north star.** It is
+  no longer the smaller of two multipliers; it is the whole remaining gap.
+- The MTP finding recorded in `mtp-report.md` therefore matters more, not less:
+  LMDeploy already ships six speculative proposers on the PyTorch backend,
+  while this campaign runs TurboMind, which has no speculative path. The
+  question is which backend reaches the north star, and that is a measurement.
 
 ## The gap is two independent problems
 
 | Step | tok/s | Multiplier | Cause |
 | --- | ---: | ---: | --- |
-| Ours, measured, TP2, short prompt | 29.25 | | not yet comparable |
-| SGLang single-request, TP4, 1024 in | 53.4 | 1.82x over ours | scheduling and per-request efficiency |
-| SGLang speculative | 117.6 | 2.20x over its own baseline | draft-and-verify, accept about 4.2 |
+| Ours, measured, TP4, 1024 in | 51.01 | | |
+| SGLang single-request, TP4, 1024 in | 53.35 | 1.05x over ours | at parity, not a real gap |
+| SGLang speculative | 117.58 | 2.20x over its own baseline | draft-and-verify, accept about 4.2 |
 
-The 1.82x is an upper bound on the first gap, not a measurement of it, because
-the conditions differ as described above. The 2.20x speculative multiplier is
-SGLang's own baseline against its own speculative run, so it is a clean figure.
+Under matched conditions the first gap is 1.05x, which is not a gap worth a
+campaign phase. The 2.20x speculative multiplier is SGLang's own baseline
+against its own speculative run and remains the clean figure.
 
-Speculative decoding is the more visible lever, but it may be the smaller of
-the two multipliers. The first gap has still never been measured under matched
-conditions.
-
-Both must close to reach parity.
+Only one lever remains.
 
 ## What this means for the campaign plan
 
