@@ -28,7 +28,7 @@ logger = get_logger('lmdeploy')
 
 def _build_resolver(model_format: str | None,
                     group_size: int | None,
-                    dtype: torch.dtype) -> (WeightFormatResolver, torch.dtype):
+                    dtype: torch.dtype) -> tuple[WeightFormatResolver, torch.dtype]:
     """Build the active resolver: quantized format (if any) + trivial fallback.
 
     Called after the int4 fp16 force but before the ``compressed-tensors →
@@ -38,13 +38,13 @@ def _build_resolver(model_format: str | None,
     if model_format in (None, 'hf'):
         pass
     elif model_format == 'awq':
-        formats.append(AWQFormat(block_in=group_size))
+        formats.append(AWQFormat(block_in=group_size or 1))
         dtype = torch.float16
     elif model_format == 'gptq':
-        formats.append(GPTQFormat(block_in=group_size))
+        formats.append(GPTQFormat(block_in=group_size or 1))
         dtype = torch.float16
     elif model_format == 'compressed-tensors':
-        formats.append(CompressedTensorFormat(block_in=group_size))
+        formats.append(CompressedTensorFormat(block_in=group_size or 1))
         dtype = torch.float16
     elif model_format == 'fp8':
         # Pass the resolved compute dtype: when the K-grouped scale expansion
@@ -102,9 +102,10 @@ def _validate_quant_group_size(model_format: str | None, group_size: int | None)
     are verified end to end.
     """
     if group_size in (None, 0):
-        group_size = _DEFAULT_GROUP_SIZES.get(model_format, group_size)
+        if model_format is not None:
+            group_size = _DEFAULT_GROUP_SIZES.get(model_format, group_size)
 
-    supported_group_sizes = _SUPPORTED_GROUP_SIZES.get(model_format)
+    supported_group_sizes = (None if model_format is None else _SUPPORTED_GROUP_SIZES.get(model_format))
     if supported_group_sizes is not None and group_size not in supported_group_sizes:
         supported = ', '.join(map(str, sorted(supported_group_sizes)))
         raise ValueError(f'Unsupported group_size={group_size} for model_format="{model_format}". '
@@ -113,7 +114,7 @@ def _validate_quant_group_size(model_format: str | None, group_size: int | None)
     return group_size
 
 
-def get_registered_name(model_path: str, arch: str = None):
+def get_registered_name(model_path: str, arch: str | None = None):
     """Get the registered name of a model. The name will be used to access the
     INPUT_MODELS registry.
 
@@ -122,7 +123,7 @@ def get_registered_name(model_path: str, arch: str = None):
         arch (str): optional architecture string, to avoid reloading config
     """
     if arch is None:
-        arch = get_model_arch(model_path)[0]
+        arch = str(get_model_arch(model_path)[0])
     register_name = SUPPORTED_ARCHS[arch]
     return register_name
 
@@ -156,7 +157,7 @@ def _resolve_dtype(requested: str, hf_model_cfg) -> str:
 
 def get_tm_config(model_path,
                   engine_config: TurbomindEngineConfig,
-                  group_size: int = None,
+                  group_size: int | None = None,
                   trust_remote_code: bool = False):
     """Resolve dtype/model_format/group_size/session_len, mutate engine_config
     in place, build the model.

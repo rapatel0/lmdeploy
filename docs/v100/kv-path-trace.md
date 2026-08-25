@@ -106,8 +106,46 @@ v_cache  rel_diff = 0.0262
 This run quantizes KV to INT8 while the reference keeps FP16, so the difference
 combines two sources: the kernel and the quantization. A few percent is the
 expected magnitude for INT8 KV, but expectation is not evidence. An FP16 KV
-control at the identical shape separates them, and its result decides the gate
-outcome.
+control at the identical shape separates them.
+
+### The FP16 KV control
+
+The control changes one thing. Same kernel, same shape, same code path, with
+`KV_INT8` unset so KV stays FP16.
+
+| KV format | output | k_cache | v_cache | outliers |
+|---|---:|---:|---:|---:|
+| INT8 | 0.03243 | 0.02472 | 0.02624 | 2270.1 |
+| FP16 | 0.00136 | 0.00000 | 0.00000 | 0.0 |
+
+The output error falls by a factor of 24, and both KV caches match the
+reference exactly with zero outliers.
+
+A faulty kernel cannot select a data type. If the SIMT decode kernel computed
+incorrect attention, the FP16 run would show it too. Instead the FP16 run
+reproduces the reference to 0.00136, which is ordinary floating-point
+accumulation-order noise, and writes both caches bit-exactly.
+
+The two to three percent in the INT8 run is therefore quantization error from
+the per-token format, not a kernel fault.
+
+### Gate outcome 1
+
+The SIMT decode route is correct for the campaign target.
+
+The campaign proceeds as planned. SIMT remains a valid host for the
+block-scaled reader.
+
+Evidence:
+
+- The kernel is bit-exact across ten iterations, so there is no race and no
+  uninitialized read.
+- With FP16 KV it matches the reference to 0.00136 with zero outliers, and
+  writes both KV caches bit-exactly.
+- With INT8 KV the error is confined to the magnitude that per-token
+  quantization predicts.
+- The tested kernel is `KT<half, uint8_t, 3>` at head_dim 256, which is the
+  kernel Qwen3.8 decode selects, not a proxy shape.
 
 ### Donor claim and campaign scope
 
