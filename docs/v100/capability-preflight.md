@@ -407,3 +407,86 @@ small model was selected.
 
 Option 1 is the smallest change and the natural next step, since the converter
 already dequantizes sibling weights in the same function.
+
+## Block-scaled FP8 is an SM90-only capability
+
+Qwen3.8-27B-FP8 cannot run on SM70 without a new kernel. This is a hardware
+capability gap in the GEMM library, not a configuration or packing problem.
+
+### The decisive comparison
+
+`MakeQuantDesc` in `src/turbomind/models/linear_weight.cc` classifies a weight
+by its blocking:
+
+```cpp
+if (fmt.dtype == kFloat8_e4m3) {
+    // Weight format has bidirectional blocking {128, 128} -> B-type.
+    if (fmt.block_sizes.size() > 1 && fmt.block_sizes[1] > 1) {
+        return {gemm::QuantType::kB, gs};
+    }
+    return {gemm::QuantType::kK, gs};
+}
+```
+
+The checkpoint declares `weight_block_size` `[128, 128]`, so every FP8 weight
+in this model resolves to `QuantType::kB`, meaning a two-dimensional block
+scale.
+
+Every kernel built from the generic `KernelImpl` declares the other type:
+
+```cpp
+desc_.quant_b = QuantDesc{QuantType::kDefault, OpV::kGroupSize};
+// QuantType::kDefault == kK
+```
+
+`Kernel::is_feasible` compares the two exactly:
+
+```cpp
+if (desc.quant_b.type != desc_.quant_b.type) return false;
+```
+
+`kB` is 3 and `kK` is 1, so no SM70 kernel can match, regardless of tile size,
+operand order, or packing.
+
+`QuantType::kB` is declared in exactly one place in the entire kernel tree:
+
+```
+src/turbomind/kernels/gemm/kernel_impl_sm90.h:125:
+    desc_.quant_b = QuantDesc{QuantType::kB, 128};
+```
+
+There is no pre-SM90 mainloop that consumes a two-dimensional block scale.
+
+### What the two failed attempts established
+
+**Attempt 1, dequantize the GDN output projection.** It worked, and the
+failure moved from `GatedDeltaNetLayer.cc:514` to `LlamaFfnLayer.cc:58`.
+`modules_to_not_convert` excludes only norms and gates, so every GEMM weight
+in the model is FP8. Dequantizing them one at a time is equivalent to running
+the model in FP16, at 57.6 GiB instead of 28.8 GiB, which discards the reason
+for choosing the FP8 checkpoint. Reverted.
+
+**Attempt 2, enable pre-SM90 weight packing.** The empty
+`else if (weight_format.dtype == kFloat8_e4m3)` branch in
+`LinearWeight::prepare` really did skip the converter, and removing it changed
+the dispatch descriptor from `ttt` to `tnt`, which proves the SM70 converter
+ran and packed the weight. The dispatch still failed, because packing was
+never the binding constraint. Reverted.
+
+Both attempts were necessary to locate the real constraint, and both are
+recorded here so the next campaign does not repeat them.
+
+### Consequences for the campaign
+
+The FP8 checkpoint is unusable on V100 as-is. Three paths remain.
+
+1. Use an INT4 AWQ or MXFP4 build of Qwen3.8-27B. Both are K-grouped, both
+   have working SM70 kernels in `sm70_884_4.cu`, and the INT4 SM70 path is
+   already proven in production on this cluster.
+2. Serve the unquantized checkpoint as FP16 at TP4. Weights are 14.4 GiB per
+   GPU, which fits a 32 GiB card, and every kernel needed already exists.
+3. Write an SM70 mainloop that consumes a two-dimensional block scale. That
+   is a genuine kernel project, not a configuration change.
+
+Option 1 preserves the memory advantage and is the natural next step. Option 2
+is the fastest route to a running baseline.
