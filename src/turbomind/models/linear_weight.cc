@@ -154,8 +154,8 @@ void LinearWeight::prepare()
         TM_CHECK_EQ(scales.dtype(), kFloat);
         process(scales, q_desc, float{});
     }
-    else if (weight_format.dtype == kFloat8_e4m3 && getSMVersion() >= 90) {
-        // FP8 non-native path on SM90 and above.
+    else if (weight_format.dtype == kFloat8_e4m3) {
+        // FP8 non-native path (non-SM90)
     }
     else {
         // General quantization format conversion path.
