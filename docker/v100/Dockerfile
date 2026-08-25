@@ -70,6 +70,12 @@ RUN pip install \
 COPY runtime_cuda.txt /tmp/req/runtime_cuda.txt
 COPY common.txt /tmp/req/common.txt
 COPY constraints-v100.txt /tmp/req/constraints-v100.txt
+
+# Wheel-build tooling. requirements/build.txt lists cmake_build_extension,
+# pybind11 and setuptools but not `build` itself, and tools/v100/build_v100.sh
+# invokes `python3 -m build`. Without this the build step fails with
+# "No module named build" after the toolchain checks have already passed.
+RUN pip install build cmake_build_extension "pybind11<=2.13.1" setuptools wheel
 RUN pip install \
         -r /tmp/req/runtime_cuda.txt \
         -c /tmp/req/constraints-v100.txt \
