@@ -32,10 +32,23 @@ DataFormat ResolveLinearWeightFormat(DataType data_type, DataType weight_dtype, 
     }
 
     if (weight_dtype == kFloat8_e4m3) {
-        TM_CHECK(block_in == 128 && block_out == 128)
-            << "FP8 weight format requires block_in==128 and block_out==128, got " << block_in << ", " << block_out;
-        fmt.block_sizes  = {128, 128};
-        fmt.scales.dtype = kFloat;
+        // Two accepted forms.
+        //
+        // {128, 128} is the native two-dimensional block scale that the
+        // checkpoint ships. MakeQuantDesc maps it to QuantType::kB, which only
+        // SM90 implements.
+        //
+        // {128, 1} is the K-grouped form the loader produces when it expands
+        // the block scale along N. MakeQuantDesc maps it to QuantType::kK,
+        // which the SM70 Config_E4M3 tiles implement. The expansion is exact,
+        // because every weight element still receives the scale of its own
+        // block. Scales stay 16-bit in that form, which matches the
+        // kFloat8_e4m3 case in the conv_s branch of LinearWeight::prepare.
+        TM_CHECK(block_in == 128 && (block_out == 128 || block_out == 1))
+            << "FP8 weight format requires block_in==128 and block_out in {128, 1}, got " << block_in << ", "
+            << block_out;
+        fmt.block_sizes  = {128, block_out};
+        fmt.scales.dtype = block_out == 128 ? kFloat : data_type;
         return fmt;
     }
 

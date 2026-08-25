@@ -137,10 +137,18 @@ class WeightFormat(ABC):
     def accepts(self, available: dict[str, Tensor]) -> bool: ...
 
     @abstractmethod
-    def normalize(self, tensor: Tensor, kind: str) -> Tensor: ...
+    def normalize(self, x: Tensor, kind: str) -> Tensor: ...
 
     def pack(self, tensor: Tensor, kind: str) -> PackedTensor:
         return PackedTensor(tensor, None, None)
+
+    def expand(self, tensor: Tensor, kind: str, out_dim: int) -> Tensor:
+        """Optional post-normalize layout expansion. Identity by default.
+
+        ``out_dim`` is the output dimension of the normalized weight, used to
+        trim a ragged final block.
+        """
+        return tensor
 
     def synthesize_zeros(self, scales: Tensor) -> Tensor:
         raise NotImplementedError(
@@ -346,6 +354,23 @@ class CompressedTensorFormat(WeightFormat):
         return result
 
 
+def _fp8_block_scales_need_expansion() -> bool:
+    """Whether FP8 block scales must be expanded to the K-grouped form.
+
+    The checkpoint ships a two-dimensional ``{128, 128}`` block scale, which
+    ``MakeQuantDesc`` maps to ``QuantType::kB``. Only SM90 implements ``kB``,
+    in ``kernel_impl_sm90.h``. Every other architecture must use the K-grouped
+    ``{128, 1}`` form, which maps to ``QuantType::kK`` and reaches the
+    ``Config_E4M3`` tiles.
+
+    Returns ``False`` when no CUDA device is visible, so a CPU-side conversion
+    keeps the checkpoint's native layout.
+    """
+    if not torch.cuda.is_available():
+        return False
+    return torch.cuda.get_device_capability() < (9, 0)
+
+
 class FP8Format(WeightFormat):
     name           = 'fp8'
     suffix_map     = {'.weight':           'weight',
@@ -354,8 +379,16 @@ class FP8Format(WeightFormat):
     weight_dtype   = _tm.DataType.TYPE_FP8_E4M3
     has_zero_point = False
 
-    def __init__(self):
-        super().__init__(block_in=128, block_out=128)
+    def __init__(self, *, expand_scales: bool | None = None):
+        # ``expand_scales`` converts the {128, 128} block scale into the
+        # K-grouped {128, 1} form by repeating each scale along N. The
+        # expansion is exact: every weight element still receives the scale of
+        # its own 128-by-128 block, so this is a layout change, not an
+        # approximation.
+        if expand_scales is None:
+            expand_scales = _fp8_block_scales_need_expansion()
+        self.expand_scales = expand_scales
+        super().__init__(block_in=128, block_out=1 if expand_scales else 128)
 
     def accepts(self, available: dict[str, Tensor]) -> bool:
         if '.weight_scale_inv' not in available:
@@ -370,6 +403,17 @@ class FP8Format(WeightFormat):
             x = x.t()
         return x
 
+    def expand(self, tensor: Tensor, kind: str, out_dim: int) -> Tensor:
+        """Expand block scales along N, after ``normalize`` has transposed.
+
+        In TM layout the scales are ``(K // 128, N // 128)``. Repeating along
+        dim 1 gives ``(K // 128, N)``, which is one scale per column per
+        128-element K group. ``out_dim`` trims a ragged final block.
+        """
+        if kind != 'scales' or not self.expand_scales or tensor.dim() < 2:
+            return tensor
+        return tensor.repeat_interleave(128, dim=1)[:, :out_dim].contiguous()
+
     def dequant(self, tensors, data_type):
         from .builders._base import _CPP_TO_TORCH
 
@@ -379,7 +423,9 @@ class FP8Format(WeightFormat):
         fp8_weight = weight.view(torch.float8_e4m3fn).float()
         scale = scales.float()
         scale = scale.repeat_interleave(block_size, dim=0)
-        scale = scale.repeat_interleave(block_size, dim=1)
+        if not self.expand_scales:
+            # Already one scale per column when the scales were expanded.
+            scale = scale.repeat_interleave(block_size, dim=1)
         scale = scale[: fp8_weight.shape[0], : fp8_weight.shape[1]]
         target_dtype = _CPP_TO_TORCH[data_type]
         result: dict[str, Tensor] = {'weight': (fp8_weight * scale).to(target_dtype)}
@@ -496,6 +542,16 @@ class WeightFormatResolver:
             for s, kind in fmt.suffix_map.items()
             if s in available
         }
+        # Optional per-format expansion, applied after normalize so every
+        # tensor is already in TM layout. Identity for every format that does
+        # not override it.
+        weight = tensors.get('weight')
+        if weight is not None and weight.dim() >= 2:
+            out_dim = weight.shape[1]
+            tensors = {
+                kind: fmt.expand(t, kind, out_dim)
+                for kind, t in tensors.items()
+            }
         if fmt.has_zero_point and 'zeros' not in tensors:
             tensors['zeros'] = fmt.synthesize_zeros(tensors['scales'])
         return Linear(tensors=tensors,
