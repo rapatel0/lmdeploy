@@ -78,6 +78,31 @@ commit-to-symbol map before any port.
 | `GRAPH-WORKSPACE-OWNERSHIP` | C | 3 | PENDING_REVIEW |
 | `COMPACT-REDUCTION-FIX` | C | 3 | PENDING_REVIEW |
 | `MARLIN-SM70-GROUPED-SCALE` | F | 3 | PENDING_REVIEW |
+| `PHASE0B-FP8-PACK` | C, F | 0B | IMPLEMENTED, PENDING_REVIEW |
+
+## Implemented family: PHASE0B-FP8-PACK
+
+This family is implemented and measured. It still needs reviewer approval.
+
+The technique comes from donors C and F. No donor code is copied, so this is a
+re-implementation against the product base, not a port.
+
+| Field | Value |
+|---|---|
+| Patch-family ID | `PHASE0B-FP8-PACK` |
+| Commit SHA | `c46dbf06`, `f7b18471` |
+| Donor file and blob hash | Technique only. See `donor-inventory.jsonl` for `csrc/sm70_turbomind/ops/awq_sm70_gemm.cu` in donor C and the `fp8` scale paths in donor F. |
+| Donor symbol | `fp8_sm70_prepare` in donor C. `marlin_utils_fp8` scale preparation in donor F. |
+| Current upstream equivalent | `src/turbomind/core/data_format.cc`, `lmdeploy/turbomind/weight_format.py`, `lmdeploy/turbomind/converter.py` |
+| Dependencies | Existing SM70 `Config_E4M3` tiles. No new kernel. |
+| SPDX license identifier | Apache-2.0 for C and F. Both resolve. |
+| Notice requirements | None. No donor source is copied. |
+| Classification | `V100_CORRECTNESS` |
+| Compatibility decision | Pre-SM90 only. Capability 9.0 and above keep the `{128, 128}` form, FP32 scales and the original dequantization. |
+| Test evidence | Phase 0B gate on island 2: 8 of 8 semantic checks, long-context needle retrieval PASS, degenerate-output detector False. |
+| Service evidence | Qwen3.8-27B-FP8 at TP4, 208.1 tok/s, 23.35 GiB per GPU, 30.4 s load, clean shutdown. |
+| Port decision | PENDING_REVIEW |
+| Reviewer approval | PENDING |
 
 ## Blocked family: SM70-DECODE-CORRECTNESS
 
