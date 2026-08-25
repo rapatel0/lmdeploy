@@ -23,6 +23,13 @@ draft tokens are accepted per verify step, which is what turns 53 into 117.
 
 ## Our number is not comparable, and it is worse
 
+> **Superseded in part.** The 208.1 tok/s figure below is void: it was measured
+> on a wheel built before the `f7b18471` FP8 scale cast, so it timed the
+> pre-cast path. The derived 26.0 tok/s per-request figure inherits that fault
+> and is also void. A direct batch-1 measurement now exists; see "The measured
+> batch-1 number" below. The reasoning about aggregate-versus-per-request
+> comparison stands and is the reason this section was written.
+
 Our recorded result is 208.1 tok/s for Qwen3.8-27B-FP8 at TP4. That looks like
 a win against 117.58 until the conditions are read.
 
@@ -31,30 +38,71 @@ request. Per request we are at 26.0 tok/s.
 
 | Measure | Value |
 | --- | ---: |
-| Ours, aggregate over batch 8 | 208.1 tok/s |
-| Ours, per request | 26.0 tok/s |
+| Ours, aggregate over batch 8 | 208.1 tok/s, VOID |
+| Ours, per request, derived by division | 26.0 tok/s, VOID |
 | SGLang, no speculation | 53.35 tok/s |
 | SGLang, speculative | 117.58 tok/s |
-
-That is 2.05x behind without speculation and 4.52x behind with it.
 
 Do not repeat the 208.1 number as a comparison against SGLang. It is an
 aggregate against a single-request measurement, and quoting it that way is how
 a campaign convinces itself it is winning while losing.
 
+## The measured batch-1 number
+
+Measured directly rather than derived by division, on the wheel verified to
+contain the FP8 cast, with every trial gated on non-degenerate output.
+
+| Field | Value |
+| --- | --- |
+| Wheel | built 19:32, `scale_dtype` present in the packaged source |
+| Image | `lmdeploy-v100-base:v2` |
+| Node source | `fe2e7eff4989`, `phase/fp8-verified-toolchain` |
+| Model | Qwen3.8-27B-FP8, `model_format='fp8'` |
+| tp | 2 |
+| Prompt | short, roughly 20 tokens, not SGLang's 1024 |
+| Output | 256 tokens, greedy |
+
+| Trial | tok/s | TPOT ms | degenerate |
+| --- | ---: | ---: | --- |
+| 1 | 29.24 | 34.20 | no |
+| 2 | 29.28 | 34.15 | no |
+| 3 | 29.24 | 34.20 | no |
+
+Mean 29.25 tok/s, TPOT 34.19 ms, spread 0.14 percent. Output was coherent
+technical prose, so the number describes real work.
+
+### What it can and cannot be compared to
+
+This is **not** a like-for-like comparison with SGLang's 53.35. Two conditions
+differ, and both are recorded rather than smoothed over:
+
+- **tp.** Ours is TP2, SGLang's row is TP4. Fewer ranks means less parallelism
+  per token, so this understates what the same code does at TP4.
+- **Prompt length.** SGLang used 1024 input tokens; this used roughly 20.
+  Prefill is excluded from decode tok/s, but KV length affects per-step
+  attention cost, so a longer prompt would if anything be slower.
+
+A TP4 rerun at 1024 input tokens is required before any multiplier against
+SGLang is quoted. The honest statement today is that our verified batch-1
+decode is 29.25 tok/s at TP2 with a short prompt.
+
 ## The gap is two independent problems
 
 | Step | tok/s | Multiplier | Cause |
 | --- | ---: | ---: | --- |
-| Our per-request baseline | 26.0 | | |
-| SGLang single-request | 53.4 | 2.05x | scheduling and per-request efficiency |
-| SGLang speculative | 117.6 | 2.20x | draft-and-verify, accept about 4.2 |
+| Ours, measured, TP2, short prompt | 29.25 | | not yet comparable |
+| SGLang single-request, TP4, 1024 in | 53.4 | 1.82x over ours | scheduling and per-request efficiency |
+| SGLang speculative | 117.6 | 2.20x over its own baseline | draft-and-verify, accept about 4.2 |
 
-Speculative decoding is the more visible lever, but it is the smaller of the
-two multipliers. The first gap is the one we have never measured.
+The 1.82x is an upper bound on the first gap, not a measurement of it, because
+the conditions differ as described above. The 2.20x speculative multiplier is
+SGLang's own baseline against its own speculative run, so it is a clean figure.
 
-Both must close to reach parity. Closing only the speculative gap leaves us at
-about 57 tok/s, still behind SGLang's speculative 117.58.
+Speculative decoding is the more visible lever, but it may be the smaller of
+the two multipliers. The first gap has still never been measured under matched
+conditions.
+
+Both must close to reach parity.
 
 ## What this means for the campaign plan
 
