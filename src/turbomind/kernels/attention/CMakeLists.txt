@@ -40,11 +40,22 @@ if (BUILD_TEST)
         # Whole-archive models, matching how the shipped turbomind target links
         # it in src/turbomind/CMakeLists.txt.
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,models>"
+        # Force-including every models object also pulls in translation units
+        # the fixture never calls, such as LlamaFfnLayer, so the whole set of
+        # dependencies the shipped turbomind target carries must be present.
+        device_comm
+        host_comm
+        memory
+        copy
+        memory_utils
+        nvtx_utils
         unfused_attention_kernels
         core
         cuda_utils
         fmt::fmt
-        cublas)
+        cublas
+        CUDA::cublasLt
+        CUDA::cudart)
 
     add_executable(test_quant test_quant.cu test_utils.cu)
     target_compile_options(test_quant PRIVATE
