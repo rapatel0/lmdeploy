@@ -391,3 +391,32 @@ The first TP1 Job reported SUCCEEDED while the container exited 134. The
 script ended on a heredoc whose status was never propagated, so Kubernetes saw
 the shell's status rather than Python's. The job script now ends with
 `exit $RC`.
+
+## Phase 0B TP4 baseline, Qwen3.5-4B
+
+Passed on the free island with a clean exit.
+
+| Fact | Value |
+| --- | --- |
+| Topology | NV1/NV2 mesh, every pair NVLink, no SYS hop |
+| NUMA | node 1, CPUs 20-39 and 60-79 |
+| NCCL | 2.27.5 |
+| Load | 17.1 s |
+| Per-GPU used | 20.61 GiB, identical on all four ranks |
+| Per-GPU free | 11.12 GiB |
+| Decode | 96 tokens in 0.46 s, 209.7 tok/s |
+| Exit | 0, `CLEAN_SHUTDOWN_OK` |
+
+TP4 decode is 1.92x TP1 decode, 209.7 against 109.5 tok/s, which is
+consistent with NVLink collectives rather than a PCIe fallback.
+
+Memory is identical to two decimal places across all four ranks, so the shard
+split is even and no rank carries a padded remainder.
+
+### A note on GPU indices
+
+The container sees GPUs 0 through 3. Those are physical GPUs 4 through 7,
+remapped by the device plugin. `nvidia-smi topo -m` inside the container
+reports NUMA node 1 and CPU affinity 20-39 and 60-79, which identifies the
+second island. Any rank-to-GPU map recorded from inside a container must be
+read with that remapping in mind.
