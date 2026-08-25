@@ -100,7 +100,7 @@ re-implementation against the product base, not a port.
 | Classification | `V100_CORRECTNESS` |
 | Compatibility decision | Pre-SM90 only. Capability 9.0 and above keep the `{128, 128}` form, FP32 scales and the original dequantization. |
 | Test evidence | Phase 0B gate on island 2: 8 of 8 semantic checks, long-context needle retrieval PASS, degenerate-output detector False. |
-| Service evidence | Qwen3.8-27B-FP8 at TP4, 208.1 tok/s, 23.35 GiB per GPU, 30.4 s load, clean shutdown. |
+| Service evidence | VOID, needs re-measurement. The recorded run was Qwen3.8-27B-FP8 at TP4, 208.1 tok/s, 23.35 GiB per GPU, 30.4 s load, clean shutdown. That wheel predated the `f7b18471` scale cast, so the throughput was produced by the pre-cast FP8 path. Correctness is separately confirmed on the 19:32 wheel at TP2, three coherent prompts with `17*23=391`. See `provenance.md`. |
 | Port decision | PENDING_REVIEW |
 | Reviewer approval | PENDING |
 
