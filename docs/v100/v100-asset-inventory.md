@@ -469,10 +469,12 @@ intrinsics used in `tc-grid`.
 
 Ranked by expected value against effort.
 
-1. Evaluate the FP16-accumulate `m8n8k4` wrapper as a possible doubling of
-   tensor-core throughput for our existing SM70 kernels. Gate it behind a
-   named switch and hold it to the recorded tolerance band. This is the only
-   genuinely unique asset here.
+1. Treat the FP16-accumulate `m8n8k4` wrapper as a research item, not a
+   scheduled task. It is the only unique asset here, and it is also the most
+   dangerous one. Do not adopt it as written. If it is attempted, adapt it so
+   the FP16 chain stays short and the outer reduction is FP32, gate it behind
+   a default-off switch, and qualify it on end-to-end output quality. The
+   recorded kernel tolerance band is not sufficient evidence. See section 9.1.
 2. Reuse the `dispatch.h` per-M champion pattern. Our current FP8 dispatch has
    no M-direction routing at all, and small-M decode against large-M prefill is
    exactly the split that table encodes.
