@@ -28,6 +28,7 @@ run this model are already compiled into our wheel.
 | `lmdeploy-v100` | 13M | Earlier LMDeploy V100 port. Closest lineage to our tree. |
 | `marlin_v100` | 6.9M | SM70 Marlin dense and MoE workspace. Independent confirmation of the scale technique. |
 | `Tilelang-FA-V100` | 352K | TileLang FlashAttention for V100, including paged and backward kernels. |
+| `ds4/kernels/` | — | Our own earlier V100 work. Holds the only FP16-accumulate `m8n8k4` wrapper found in any tree. |
 
 ## 1. The FP8 block-scale technique
 
@@ -272,7 +273,217 @@ INT8, so INT8 has no remaining advantage.
    default.
 5. Compare against the 1K and 4K rows in section 6.
 
-## 9. Attribution
+## 9. Our own ds4 kernels
+
+These are in `ds4/kernels/`, copied from a DeepSeek and llama.cpp working tree
+at commit `5903432d826b7b10cdc6d02d8d5da1bbe65371b8`. They are our own prior
+work, so there is no third-party licensing question, and `mma_sm70.cuh` is
+itself adapted from TurboMind's `core/mma.h`.
+
+### 9.1 The FP16-accumulate MMA wrapper
+
+This is the highest-value item in `ds4`, because no other tree has it.
+
+File: `ds4/kernels/tc-grid/kernels/mma_sm70.cuh`, line 103.
+
+```text
+mma.sync.aligned.m8n8k4.row.col.f16.f16.f16.f16
+```
+
+Every `m8n8k4` wrapper in our TurboMind and in the vendored copy inside
+`1Cat-vLLM` uses the FP32 accumulator form only:
+
+| Tree | `m8n8k4` accumulate forms present |
+|---|---|
+| `lmdeploy/src/turbomind/kernels/core/mma.h` | `f32` only |
+| `1Cat-vLLM` vendored `core/mma.h` | `f32` only |
+| `ds4/kernels/tc-grid/kernels/mma_sm70.cuh` | `f32` and `f16` |
+
+Both trees do contain `f16.f16.f16.f16` strings, but only for `m16n8k8` and
+`m16n8k16`, which are SM75 and later shapes. For the SM70 `m8n8k4` shape, the
+FP16 accumulator wrapper exists only in `ds4`.
+
+The source comments claim the FP16 accumulator doubles the tensor-core peak,
+from about 62 TFLOPS to about 125 TFLOPS, and halves the accumulator register
+footprint from 32 bytes to 16 bytes per atom fragment. Treat both numbers as
+unverified on our hardware until measured.
+
+### Do not accumulate in FP16 for this model
+
+The recorded tolerance is `rel <= 1e-3` and `p99 <= 0.05` and `maxabs <= 0.1`.
+That band was accepted for a GEMM microbenchmark. It is not sufficient evidence
+for a BF16 base model, and the FP16 accumulator must not be adopted as written.
+
+The checkpoint is BF16. Every tensor sampled from
+`/srv/models/Qwen3.8-27B-FP8` reports dtype `BF16`. BF16 carries 8 mantissa
+bits with the exponent range of FP32. FP16 carries 11 mantissa bits with a
+maximum finite value of 65504. Swapping an FP32 accumulator for an FP16 one
+therefore trades away exponent range that the model was trained to use.
+
+Two distinct failure modes apply, and only the first is loud:
+
+1. Overflow. A partial sum that reaches 65504 becomes infinity, and the value
+   never recovers.
+2. Swamping. Once the accumulator is large, small addends round away. With
+   `eps = 2^-11`, an accumulator near 1024 silently discards every addend
+   below 0.5.
+
+Swamping is the dangerous one. It produces no error and no warning. It removes
+the small contributions that a long reduction is supposed to sum, and the
+visible result is a model that is quietly worse rather than a model that fails.
+
+The reduction lengths here are long enough for this to matter:
+
+| Projection | K at TP4 | Worst-case `K * eps` | Random-walk `sqrt(K) * eps` |
+|---|---:|---:|---:|
+| `gate_up_proj` | 5120 | 2.50 | 0.035 |
+| `down_proj` | 4352 | 2.12 | 0.032 |
+| `down_proj`, unsharded K | 17408 | 8.50 | 0.064 |
+
+Even the optimistic random-walk column sits far above the `rel <= 1e-3` figure
+that the microbenchmark accepted.
+
+The accumulator is not reset inside the K-loop. In both `v12_kernels.cuh` and
+`v13_kernels.cuh`, `c_frag` is declared `half[ATOMS_M][ATOMS_N][8]`, zeroed
+once, and accumulated across the whole reduction. The full K chain runs in
+FP16.
+
+A microbenchmark also cannot see what we care about. Elementwise tolerance on
+one GEMM says nothing about accumulated degradation across 48 layers, and
+nothing about the long-context behavior where swamping compounds. The honest
+acceptance test is end-to-end output quality, not a per-kernel error bound.
+
+### A possible adaptation
+
+The idea is salvageable if the FP16 chain is kept short and the outer reduction
+stays in FP32. The SplitK kernel already does exactly this. When `KS > 1`,
+`v12s` reduces partial results with an FP32 `atomicAdd` in global memory:
+
+```cpp
+// v12_kernels.cuh:519
+//   - When KS  > 1: atomicAdd to gmem C. Caller MUST pre-zero C.
+atomicAdd(&C[(size_t) gm * N + gn + 0], f.x);
+```
+
+At `KS = 8`, each FP16 chain covers only `K / 8`:
+
+| Projection | K | Per-chain length at `KS = 8` |
+|---|---:|---:|
+| `gate_up_proj` | 5120 | 640 |
+| `down_proj` | 4352 | 544 |
+| `down_proj`, unsharded K | 17408 | 2176 |
+
+That is the shape of a safe adaptation: FP16 inside a short chain, FP32 across
+chains. It is still not proven for a BF16 model, and it costs some of the
+speedup, because the FP32 atomic reduction is extra traffic.
+
+A second option is to keep the FP32 accumulator and take only the register
+saving, which is unavailable, because the register saving comes from the FP16
+accumulator itself.
+
+### Required gate before any adoption
+
+If this is attempted, it must be behind a named switch that defaults to off,
+and it must clear end-to-end quality evidence rather than a kernel tolerance
+band. At minimum, compare greedy-decode outputs against the FP32-accumulator
+build on a fixed prompt set, at short and long context, and treat any
+systematic divergence as a failure. Do not accept a per-element error bound as
+a substitute.
+
+### 9.2 INT8 tensor-core GEMM for SM70
+
+This revises the INT8 conclusion in section 7. Section 7 says TurboMind has no
+INT8 format and no SM70 INT8 kernel, which remains true of TurboMind. It is not
+true of our own tree.
+
+| File | Lines | Content |
+|---|---:|---|
+| `tc-grid/kernels/v13_kernels.cuh` | 2090 | Eight INT8 GEMM variants, `v13_rf` through `v13_rf_v8`. |
+| `tc-grid/kernels/v12_kernels.cuh` | 719 | `mm_int8_lut_v12`, `_v12_ms3`, and the SplitK `v12s`. |
+| `tc-grid/include/dispatch.h` | 130 | Per-M champion table and `choose_kernel(M, N, K)`. |
+| `tc-grid/include/tc_grid.h` | 145 | Format and unpack-path enums, block sizes, harness types. |
+
+The design line is documented and specific. `v13_rf` stores raw INT8 in shared
+memory at 1 byte per weight and dequantizes with PRMT in registers between the
+load and the MMA, instead of round-tripping dequantized FP16 through shared
+memory at 2 bytes per weight. The comment states this matches what TurboMind's
+`Transform_HMMA_SIMT_B` already does inside `SmemCopyAtom_Pack_v3`.
+
+Recorded results, all unverified by us:
+
+- `v13_rf_v6` beats `v12_ms3` by 27 percent at M=2048, N=K=7168, and reaches a
+  50 TFLOPS goal.
+- It wins on 23 of 24 asymmetric shapes, with a best case of 177 percent at
+  M=256, N=7168, K=18944.
+- The starting point was 31.7 percent HMMA-active against 56 percent for
+  TurboMind FP8 at the same shape and MMA family.
+
+The dispatcher encodes the champions:
+
+```text
+M in [1, 128)    -> v12s_64x128x32_w4_ks8       (SplitK, KS=8)
+M in [128, 512)  -> v13_rf_v6_128x128x16_w4
+M >= 512         -> v13_rf_v6_128x128x16_w4
+```
+
+`dispatch.h` was written to be shared between the lab harness and a TurboMind
+runtime integration, and it names `LlamaLinear.cu` and `moe_ffn_layer.cc` as
+the intended runtime callers. That integration wrapper does not exist in our
+tree yet.
+
+### 9.3 Standalone V100 kernels in ds4/kernels/v100
+
+A separate set of header-only kernels, 3442 lines in total.
+
+| File | Lines | Notable kernels |
+|---|---:|---|
+| `attention.cuh` | 1002 | `attention_raw_swa_window_kernel`, `kv_fp8_round_store_raw_swa_kernel`, `rope_tail_rows_kernel`. Sliding-window attention with an FP8 KV store. |
+| `router.cuh` | 429 | `router_logits_ep_from_rank_major_kernel`, `router_logits_allreduce_partial_kernel`, `shard_top1_kernel`. MoE routing with expert parallelism. |
+| `norm.cuh` | 229 | `rms_norm_plain_rows_stable_kernel`, `head_rms_norm_local_heads_kernel`. |
+| `hc_mix.cuh` | 225 | Weighted-sum and shard-mixing kernels. |
+| `dense.cuh` | 185 | `f8_b128_dense_kernel` and `f8_b128_dense_hmma_m16_kernel`. |
+
+### 9.4 Why dense.cuh does not solve the FP8 problem
+
+`f8_b128_dense_kernel` looks like an exact match for our format and is not one.
+It assumes a GGUF-style interleaved layout, where one E8M0 scale byte is
+followed by 128 E4M3 data bytes in a 129-byte stride:
+
+```cpp
+const uint8_t *block = wrow + (uint64_t)(c / 128u) * 129ull;
+const float scale = f8_e8m0_to_f32_dev(block[0]);
+const float w = f8_e4m3fn_to_f32_dev(block[1u + (c % 128u)]) * scale;
+```
+
+Our checkpoint stores a separate `weight_scale_inv` tensor in BF16, with one
+scale per 128-by-128 tile, and the weight bytes are contiguous. The scale type,
+the blocking, and the memory layout all differ. The mathematical idea is the
+same, the data layout is not, so this kernel is a reference for the arithmetic
+rather than a drop-in path.
+
+Its second variant uses the `wmma` API with 16-by-16-by-16 tiles and an FP32
+accumulator, which is a different and less tuned path than the `m8n8k4`
+intrinsics used in `tc-grid`.
+
+### 9.5 How to use ds4 in this project
+
+Ranked by expected value against effort.
+
+1. Evaluate the FP16-accumulate `m8n8k4` wrapper as a possible doubling of
+   tensor-core throughput for our existing SM70 kernels. Gate it behind a
+   named switch and hold it to the recorded tolerance band. This is the only
+   genuinely unique asset here.
+2. Reuse the `dispatch.h` per-M champion pattern. Our current FP8 dispatch has
+   no M-direction routing at all, and small-M decode against large-M prefill is
+   exactly the split that table encodes.
+3. Keep the INT8 stack as evidence, not as a plan. It shows INT8 on SM70 is
+   achievable and roughly what it costs. It does not change the section 7
+   recommendation, because INT4 AWQ is already supported end to end and uses
+   half the memory.
+4. Treat `attention.cuh` and `router.cuh` as alternates to the TileLang path,
+   worth reading only if TileLang attention does not integrate cleanly.
+
+## 10. Attribution
 
 `sglang-V100` carries a commit titled `docs(v100): document upstream
 attribution`. Any code we copy from these trees must carry the same
