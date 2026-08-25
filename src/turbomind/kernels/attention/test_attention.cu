@@ -214,13 +214,23 @@ double get_memory_bandwidth()  // -> GB/s
     return 2. * (double)clock_rate_khz / 1e6 * (double)bus_width_bits / 8.;
 }
 
+// Mode selectors. Each keeps its historical default when the build does not
+// override it.
+#ifndef KV_INT8
 #define KV_INT8 0
+#endif
 
+#ifndef KV_INT4
 #define KV_INT4 0
+#endif
 
+#ifndef DECODING
 #define DECODING 0
+#endif
 
+#ifndef SINK
 #define SINK 5
+#endif
 
 template<class T, bool Causal>
 int test_attention()
@@ -228,18 +238,37 @@ int test_attention()
     AttentionParams<T> params{};
     params.causal = Causal;
 
-    constexpr size_t kHeadDim    = 128;
+    // Shape overrides. Every default below is unchanged, so a build that sets
+    // none of them keeps the historical configuration. Define them to target
+    // one registered kernel: TM_TEST_HEAD_DIM=256 with a query group size of 6
+    // reaches KT<half, uint8_t, 3> in decoding_sm70_256.cu, which is the
+    // kernel Qwen3.8 decode selects.
+#ifndef TM_TEST_HEAD_DIM
+#define TM_TEST_HEAD_DIM 128
+#endif
+#ifndef TM_TEST_HEAD_NUM
+#define TM_TEST_HEAD_NUM 64
+#endif
+#ifndef TM_TEST_KV_HEAD_DIV
+#define TM_TEST_KV_HEAD_DIV 8
+#endif
+#ifndef TM_TEST_BATCH_SIZE
+#define TM_TEST_BATCH_SIZE 256
+#endif
+#ifndef TM_TEST_SEQ_LEN
+#define TM_TEST_SEQ_LEN 1000
+#endif
+
+    constexpr size_t kHeadDim    = TM_TEST_HEAD_DIM;
     constexpr int    kWindowSize = 128 << 20;
 
 #if DECODING
-    // constexpr size_t kHeadNum   = 32;
-    // constexpr size_t kBatchSize = 64;
-    constexpr size_t kHeadNum   = 64;
-    constexpr size_t KvHeadNum  = kHeadNum / 8;
-    constexpr size_t kBatchSize = 256;
+    constexpr size_t kHeadNum   = TM_TEST_HEAD_NUM;
+    constexpr size_t KvHeadNum  = kHeadNum / TM_TEST_KV_HEAD_DIV;
+    constexpr size_t kBatchSize = TM_TEST_BATCH_SIZE;
     constexpr size_t kInputLen  = 1;
 
-    constexpr size_t kSequenceLen = 1000;
+    constexpr size_t kSequenceLen = TM_TEST_SEQ_LEN;
     // constexpr size_t kSequenceLen = 4095;
     // constexpr size_t kSequenceLen = 511;
     // constexpr size_t kSequenceLen = 2047;
