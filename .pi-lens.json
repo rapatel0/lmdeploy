@@ -21,7 +21,8 @@
     "src/turbomind/**/*.cu",
     "src/turbomind/**/*.h",
     "src/turbomind/**/*.hpp",
-    "src/turbomind/**/*.cuh"
+    "src/turbomind/**/*.cuh",
+    "lmdeploy/turbomind/models/qwen3_5.py"
   ],
   "rules": {
     "no-assert-tuple": "off",
