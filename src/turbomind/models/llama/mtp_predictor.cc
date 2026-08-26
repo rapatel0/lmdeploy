@@ -70,7 +70,7 @@ Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_state
                   weights_.pre_fc_norm_embedding->norm_eps_,
                   weights_.pre_fc_norm_embedding->zero_centered_,
                   stream);
-    sync_check_cuda_error();
+    TM_CUDA_CHECK(cudaGetLastError());
 
     Tensor normed_hidden{{batch_size, hidden_units_}, dtype_, kDEVICE};
     invokeRMSNorm(normed_hidden,
@@ -79,7 +79,7 @@ Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_state
                   weights_.pre_fc_norm_hidden->norm_eps_,
                   weights_.pre_fc_norm_hidden->zero_centered_,
                   stream);
-    sync_check_cuda_error();
+    TM_CUDA_CHECK(cudaGetLastError());
 
     // Concatenate along the feature axis into [batch, 2 * hidden].
     //
@@ -106,11 +106,11 @@ Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_state
                                         cudaMemcpyDeviceToDevice,
                                         stream));
     }
-    sync_check_cuda_error();
+    TM_CUDA_CHECK(cudaGetLastError());
 
     Tensor projected{{batch_size, hidden_units_}, dtype_, kDEVICE};
     linear_.Forward(fused, *weights_.fc, projected);
-    sync_check_cuda_error();
+    TM_CUDA_CHECK(cudaGetLastError());
 
     return projected;
 }
@@ -139,14 +139,14 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
                   layer.attention_norm->norm_eps_,
                   layer.attention_norm->zero_centered_,
                   stream);
-    sync_check_cuda_error();
+    TM_CUDA_CHECK(cudaGetLastError());
 
     // Passing the MTP layer's own AttentionWeight is what routes the keys and
     // values into the MTP KV slot: the cache offset is read from
     // `weights.cache_block_offset`, which registration stamped onto this very
     // weight. `attn_index_` only names the layer for debug output.
     attn_layer_.Forward({phase, hidden, hidden, layer.attention.get(), attn_index_});
-    sync_check_cuda_error();
+    TM_CUDA_CHECK(cudaGetLastError());
 
     // Fused residual-add plus the pre-FFN norm. This writes the post-add value
     // back into `residual` and the normalised value into `hidden`, so both are
@@ -164,7 +164,7 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
     TM_CUDA_CHECK(cudaGetLastError());
 
     ffn_layer_->forward({hidden, hidden, layer.feed_forward.get(), attn_index_});
-    sync_check_cuda_error();
+    TM_CUDA_CHECK(cudaGetLastError());
 
     // Final residual add followed by the MTP block's own final_norm, leaving
     // `hidden` ready for the shared lm_head.
@@ -195,7 +195,8 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     const auto stream = ctx_.stream;
 
     DraftResult result;
-    result.draft_tokens = Buffer_<int>{(size_t)batch_size * num_draft_tokens, kDEVICE};
+    // Buffer_ takes a signed ssize_t extent.
+    result.draft_tokens = Buffer_<int>{(ssize_t)batch_size * num_draft_tokens, kDEVICE};
     result.num_drafts   = 0;
 
     // The checkpoint ships a single MTP layer, so depth beyond one is reached
@@ -220,7 +221,8 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
         // Write this step's tokens into column `step` of the [batch, K]
         // result. A per-step view keeps the layout batch-major, which is what
         // the verifier reads.
-        Buffer_<int> step_out{result.draft_tokens.data() + (size_t)step * batch_size, (size_t)batch_size, kDEVICE};
+        Buffer_<int> step_out{
+            result.draft_tokens.data() + (ssize_t)step * batch_size, (ssize_t)batch_size, kDEVICE};
         invokeArgmax(step_out, logits, stream);
 
         result.num_drafts = step + 1;

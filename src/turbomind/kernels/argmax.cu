@@ -63,7 +63,8 @@ void invokeArgmax(Buffer_<int>& out, const Tensor& logits, cudaStream_t st)
     TM_CHECK_EQ(logits.ndim(), 2);
     const int rows  = logits.shape(0);
     const int vocab = logits.shape(1);
-    TM_CHECK_GE(out.size(), (size_t)rows);
+    // Buffer_::size() is a signed ssize_t, so compare signed to signed.
+    TM_CHECK_GE(out.size(), (ssize_t)rows);
 
     if (rows == 0) {
         return;
