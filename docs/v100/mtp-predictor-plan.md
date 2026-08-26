@@ -118,6 +118,38 @@ against 48 linear-attention layers. That is the price of rollback, and it is
 charged whether or not the drafts are accepted, so it counts against the
 speculation win.
 
+## Work item 1, verified
+
+```text
+full-attention layers  : 16
+=> expect MTP at index : 16
+[MTP] registered a KV slot for the draft layer at attention index 16 of 17   x4 ranks
+parsed: index=16 total=17
+VERIFY_MTP_KV_SLOT_PASS
+```
+
+The draft layer sits at index 16, one past the target's last, on all four TP
+ranks, and the model still generates coherent text. So the slot exists, it
+does not overlap a target layer, and adding it did not disturb the target.
+
+Four runs were needed, and the first three failed on the driver rather than
+the code:
+
+1. A checkpoint path that does not exist. The job named
+   `Qwen3.5-27B-A3B-FP8`; the mounted model is `Qwen3.8-27B-FP8`.
+2. Reading layer fields from the top of `config.json`. This checkpoint is
+   `Qwen3_5ForConditionalGeneration`, so they live under `text_config`, and
+   the top level returned `None` for all of them. That produced the message
+   "this checkpoint declares no MTP layer", which is exactly what a genuinely
+   MTP-free checkpoint would print. The driver was blaming the model for its
+   own defect.
+3. `%d` in the log line. `TM_LOG_INFO` forwards to `fmt::format`, so the
+   specifier was printed literally. The registration had been firing on all
+   four ranks the whole time; only the message was unreadable.
+
+Worth keeping in mind: each of those failures looked like a finding about the
+model, and none of them was.
+
 ## The layer split, settled
 
 The checkpoint has 64 layers at `full_attention_interval: 4`. HuggingFace's
@@ -140,7 +172,7 @@ against correct code.
 
 | item | state |
 | --- | --- |
-| 1. KV slot for the draft layer | implemented, compiles for SM70, verification running |
+| 1. KV slot for the draft layer | **done and verified on hardware** |
 | 2. `MTPPredictor` class | interface and fc projection committed; attention, FFN and argmax outstanding |
 | 3. Draft loop | not started |
 | 4. Verify and roll back | design known, GDN snapshot must be ported |
