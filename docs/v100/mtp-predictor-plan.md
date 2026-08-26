@@ -152,6 +152,38 @@ So this closes the "does the draft path execute" question and nothing more. The
 first number that means anything is accept length, and that is not measurable
 until the KV seeding below is done.
 
+## Correction 3: the MTP slot does accumulate decode history
+
+Tracing the seeding work turned up a third error in my own account.
+
+`k_offsets` is a prefix sum over `sequence_length_`, recomputed every forward
+(`language_model.cc:575`), and `sequence_length_` advances by one on every
+decode step. The MTP attention consumes `params.cu_k_len = d.k_offsets`, the
+same buffer the target uses. So on each decode step the draft writes its K/V at
+the *current* sequence position, one step further along than the last.
+
+The MTP slot therefore holds one genuine entry per decode step already: an
+unbroken run of draft-step-0 states at exactly the positions the target's own
+tokens occupy. It is not the target's history -- these are the draft layer's
+projections, not the target layer's -- but it is coherent, correctly ordered,
+and it grows.
+
+That explains 56.2% far better than "the current token is in cache" alone, and
+it revises the seeding plan again:
+
+- **Wrong:** "nothing is ever written to the MTP slot."
+- **Wrong:** "every draft step writes the same cache position." Across *decode
+  steps* the position advances correctly.
+- **Right, and now the only real defect:** within one `Draft` call, steps
+  1..K-1 reuse the step-0 offsets, so the K drafted tokens all land on the same
+  position and each sees a history missing its predecessors.
+
+So the work is smaller and better targeted than "seed the KV": the per-decode
+history is already correct, and what is missing is advancing the position
+*within* a multi-step draft. That is also exactly why step-1 acceptance is
+healthy while K>1 would not be -- a prediction the measurement now supports
+rather than merely asserts.
+
 ## Correction 2: "attending to nothing" was too strong
 
 The first acceptance measurement came back **56.2%**, having predicted near
