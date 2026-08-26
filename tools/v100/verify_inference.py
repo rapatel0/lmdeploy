@@ -79,7 +79,7 @@ def final_answer(text: str) -> str:
     """
     marker = "</think>"
     idx = text.rfind(marker)
-    return text[idx + len(marker):] if idx >= 0 else text
+    return text[idx + len(marker) :] if idx >= 0 else text
 
 
 def degenerate(text: str) -> bool:
@@ -120,9 +120,7 @@ def main() -> int:
                 continue
             answer = final_answer(text)
             if not re.search(pattern, answer):
-                failures.append(
-                    f"{tag}: no match for /{pattern}/ in final answer {answer.strip()[:120]!r}"
-                )
+                failures.append(f"{tag}: no match for /{pattern}/ in final answer {answer.strip()[:120]!r}")
             if degenerate(text):
                 failures.append(f"{tag}: degenerate repetition in {text.strip()[:120]!r}")
             if reason not in (None, "stop", "length"):

@@ -42,7 +42,7 @@ def final_answer(text: str) -> str:
     """Drop chain-of-thought; the model restates candidate answers while reasoning."""
     marker = "</think>"
     idx = text.rfind(marker)
-    return text[idx + len(marker):] if idx >= 0 else text
+    return text[idx + len(marker) :] if idx >= 0 else text
 
 
 def degenerate(text: str) -> bool:
@@ -128,7 +128,7 @@ def main() -> int:
     elif degenerate(long_text):
         failures.append(f"long generation degenerate: {long_text.strip()[:100]!r}")
     else:
-        print(f"    produced {len(long_text.split())} words, finish={getattr(long_out,'finish_reason',None)}")
+        print(f"    produced {len(long_text.split())} words, finish={getattr(long_out, 'finish_reason', None)}")
 
     if failures:
         print()

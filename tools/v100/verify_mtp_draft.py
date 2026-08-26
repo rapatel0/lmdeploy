@@ -147,6 +147,18 @@ def main() -> int:
         with open(args.emit_text, "w", encoding="utf-8") as f:
             f.write(text.strip())
         print(f"  text: {text.strip()[:160]!r}", flush=True)
+        # Report how the process actually leaves.
+        #
+        # This path returned 0 and the job still saw rc=1, which I explained
+        # all session as "aborted during teardown" without ever capturing it.
+        # rc=1 is not SIGABRT (134) or SIGSEGV (139): nothing crashed. It comes
+        # from interpreter shutdown, after main() returns, when the pipeline
+        # object is finalised. Flushing and reporting here distinguishes "the
+        # work finished" from "the process left cleanly", which the single exit
+        # code conflated.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        print("EMIT_TEXT_COMPLETE", flush=True)
         return 0
 
     prompt = PROMPT

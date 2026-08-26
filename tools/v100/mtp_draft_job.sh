@@ -103,6 +103,10 @@ if [ ! -s /tmp/base.txt ]; then
     exit 4
 fi
 BASE_RC="${PIPESTATUS[0]}"
+if ! grep -q "EMIT_TEXT_COMPLETE" "${BASE_LOG}"; then
+    echo "FAIL: baseline did not reach the end of main(); rc=${BASE_RC}" >&2
+    exit 8
+fi
 if [ "${BASE_RC}" -ne 0 ]; then
     # Report the actual status. 134 is SIGABRT, 139 SIGSEGV, 1 an ordinary
     # non-zero return; calling all of them "teardown" hid which one this is.
@@ -119,6 +123,10 @@ if [ ! -s /tmp/spec.txt ]; then
     exit 5
 fi
 SPEC_RC="${PIPESTATUS[0]}"
+if ! grep -q "EMIT_TEXT_COMPLETE" "${SPEC_LOG}"; then
+    echo "FAIL: speculative run did not reach the end of main(); rc=${SPEC_RC}" >&2
+    exit 8
+fi
 if [ "${SPEC_RC}" -ne 0 ]; then
     echo "  NOTE: speculative run generated text, then exited rc=${SPEC_RC} after the text was written"
 fi
