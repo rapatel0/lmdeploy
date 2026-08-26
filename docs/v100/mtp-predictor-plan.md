@@ -350,6 +350,34 @@ end, so attention never reaches those bytes. They are stale but unreachable,
 and the next forward overwrites them. That is only true while they are also
 unpublished, which is what the guard above secures.
 
+### My own guard becomes a silent 48% tax
+
+`d.all_decode` (language_model.cc:454, `d.all_decode &= c.input_len == 1`) was
+the right guard for a draft-only path: drafting needs a pure decode batch. Once
+verification lands it turns into a self-cancelling oscillator:
+
+```
+step 1: no drafts pending -> input_len 1   -> all_decode true  -> draft
+step 2: drafts pending    -> input_len K+1 -> all_decode false -> NO draft
+step 3: no drafts pending -> input_len 1   -> all_decode true  -> draft
+```
+
+Speculation fires on alternate steps. At the measured numbers that is 1.74x ->
+1.38x, **losing 48% of the gain**.
+
+The reason to write this down now, before it happens: it produces no failing
+test. Output stays byte-correct, acceptance stays 64.1%, every assertion passes.
+Only throughput suffers, and only against a counterfactual that is never
+measured. It is the same failure shape as the four defects in the last review
+-- valid-looking, check-passing, silently wrong -- except this one is mine and
+is already in the tree.
+
+The fix is not to delete the guard. Drafting genuinely requires knowing which
+row position holds the last accepted token, which is why it was restricted to
+pure-decode batches in the first place. The correct form is "every row is
+either decode or a *verifying* row", with the draft reading the hidden state at
+the accepted end rather than at position 0 of the row.
+
 **Smallest honest increment:** `bsz==1`, greedy, prefix caching off,
 `cache_generation='none'`, K=1.
 Under those constraints steps 1-3 are local and step 4 is satisfied by
