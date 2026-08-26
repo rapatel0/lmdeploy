@@ -64,9 +64,7 @@ def count_full_attention_layers(cfg: dict) -> int:
         total = int(cfg.get("num_hidden_layers", 0))
         period = int(cfg.get("full_attention_interval", 4))
     except (TypeError, ValueError) as exc:
-        raise SystemExit(
-            f"FAIL: config.json has a non-numeric layer count: {exc}"
-        ) from None
+        raise SystemExit(f"FAIL: config.json has a non-numeric layer count: {exc}") from None
     return total // period if period else total
 
 
