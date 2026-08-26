@@ -14,6 +14,10 @@
 
 cmake_minimum_required(VERSION 3.25)
 
+add_library(argmax STATIC argmax.cu)
+set_property(TARGET argmax PROPERTY POSITION_INDEPENDENT_CODE  ON)
+set_property(TARGET argmax PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS  ON)
+
 add_library(ban_bad_words STATIC ban_bad_words.cu)
 set_property(TARGET ban_bad_words PROPERTY POSITION_INDEPENDENT_CODE  ON)
 set_property(TARGET ban_bad_words PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS  ON)

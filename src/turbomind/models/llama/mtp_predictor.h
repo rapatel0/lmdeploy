@@ -1,6 +1,7 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -49,11 +50,23 @@ public:
         int num_drafts{0};
     };
 
-    MTPPredictor(const MTPLayerWeight& weights,
+    /// Look up token embeddings through the target's shared table.
+    using EmbedFn = std::function<Tensor(const Buffer_<int>&)>;
+    /// Project hidden states to vocabulary logits through the target's lm_head.
+    using LogitsFn = std::function<Tensor(const Tensor&)>;
+
+    /// `embed` and `logits` are supplied by the target rather than owned here,
+    /// because this checkpoint sets `mtp_use_dedicated_embeddings` to false:
+    /// the draft layer shares the target's embedding table and lm_head. Taking
+    /// them as callbacks keeps the tensor-parallel gather logic in the one
+    /// place that already implements it.
+    MTPPredictor(const MTPLayerWeight&  weights,
                  UnifiedAttentionLayer& attn_layer,
                  int                    attn_index,
                  const EngineParam&     engine,
-                 const Context&         ctx);
+                 const Context&         ctx,
+                 EmbedFn                embed,
+                 LogitsFn               logits);
 
     ~MTPPredictor();
 
@@ -106,6 +119,9 @@ private:
     /// `mtp.layers.0.mlp.gate` entries in the config's exclude list have no
     /// tensor on disk, consistent with there being no MoE here.
     std::unique_ptr<LlamaFfnLayer> ffn_layer_;
+
+    const EmbedFn  embed_fn_;
+    const LogitsFn logits_fn_;
 };
 
 }  // namespace turbomind

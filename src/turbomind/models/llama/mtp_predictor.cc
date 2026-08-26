@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 
 #include "src/turbomind/core/check.h"
+#include "src/turbomind/kernels/argmax.h"
 #include "src/turbomind/kernels/norm/rms_norm.h"
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/llama/LlamaFfnLayer.h"
@@ -18,7 +19,9 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
                            UnifiedAttentionLayer& attn_layer,
                            int                    attn_index,
                            const EngineParam&     engine,
-                           const Context&         ctx):
+                           const Context&         ctx,
+                           EmbedFn                embed,
+                           LogitsFn               logits):
     weights_{weights},
     attn_layer_{attn_layer},
     attn_index_{attn_index},
@@ -27,8 +30,12 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
     tp_rank_{engine.attn_dp_rank},
     dtype_{engine.data_type},
     linear_{*ctx.linear},
-    ctx_{ctx}
+    ctx_{ctx},
+    embed_fn_{std::move(embed)},
+    logits_fn_{std::move(logits)}
 {
+    TM_CHECK(embed_fn_) << "MTP predictor needs the target's embedding lookup";
+    TM_CHECK(logits_fn_) << "MTP predictor needs the target's lm_head";
     // The fc projection consumes the two normalised halves concatenated, so
     // its input is exactly twice the hidden size. Deriving hidden_units_ from
     // the weight rather than from config keeps the two from disagreeing.
@@ -174,6 +181,56 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
     TM_CUDA_CHECK(cudaGetLastError());
 
     return hidden;
+}
+
+MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
+                                             const Tensor&       hidden_states,
+                                             const Buffer_<int>& last_tokens,
+                                             int                 num_draft_tokens,
+                                             TensorMap&          env)
+{
+    TM_CHECK_GT(batch_size, 0);
+    TM_CHECK_GT(num_draft_tokens, 0);
+
+    const auto stream = ctx_.stream;
+
+    DraftResult result;
+    result.draft_tokens = Buffer_<int>{(size_t)batch_size * num_draft_tokens, kDEVICE};
+    result.num_drafts   = 0;
+
+    // The checkpoint ships a single MTP layer, so depth beyond one is reached
+    // by running that layer again with its own previous output: the token it
+    // just drafted becomes the next input, and the hidden state it produced
+    // becomes the next context. Each pass appends one entry to the MTP KV
+    // slot, exactly as a real decode step would.
+    Buffer_<int> cur_tokens = last_tokens;
+    Tensor       cur_hidden = hidden_states;
+
+    for (int step = 0; step < num_draft_tokens; ++step) {
+        // Embedding of the previous token, through the target's shared table.
+        Tensor embedding = embed_fn_(cur_tokens);
+
+        Tensor projected = Project(embedding, cur_hidden, batch_size);
+
+        // Decode phase: the draft always extends one token per sequence.
+        Tensor out = DecodeStep(std::move(projected), /*phase=*/0, env);
+
+        Tensor logits = logits_fn_(out);
+
+        // Write this step's tokens into column `step` of the [batch, K]
+        // result. A per-step view keeps the layout batch-major, which is what
+        // the verifier reads.
+        Buffer_<int> step_out{result.draft_tokens.data() + (size_t)step * batch_size, (size_t)batch_size, kDEVICE};
+        invokeArgmax(step_out, logits, stream);
+
+        result.num_drafts = step + 1;
+
+        // Feed forward for the next iteration.
+        cur_tokens = step_out;
+        cur_hidden = std::move(out);
+    }
+
+    return result;
 }
 
 }  // namespace turbomind

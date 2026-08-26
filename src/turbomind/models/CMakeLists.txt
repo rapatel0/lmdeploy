@@ -33,10 +33,12 @@ add_library(models STATIC
         llama/llama_utils.cu
         llama/mla_utils.cu
         llama/GatedDeltaNetLayer.cc
+        llama/mtp_predictor.cc
         llama/gated_delta_net_kernels.cu)
 set_property(TARGET models PROPERTY POSITION_INDEPENDENT_CODE ON)
 set_property(TARGET models PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 target_link_libraries(models PUBLIC
+        argmax
         linear_attn
         generation
         core
