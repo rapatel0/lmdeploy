@@ -241,3 +241,21 @@ CONC_SPEC_RC="${PIPESTATUS[0]}"
 echo
 echo "=== concurrency verdict ==="
 echo "  drafting off rc=${CONC_BASE_RC}, drafting on rc=${CONC_SPEC_RC}"
+
+# Prove the batch really was concurrent rather than five sequential requests.
+#
+# Passing a list to the pipeline is not evidence: Pipeline._infer creates a
+# task per prompt under a semaphore of max_batch_size, but a scheduler that
+# admitted them one at a time would still return five correct answers and the
+# test would pass having measured nothing.
+#
+# The scheduler logs one line per admitted request carrying its uid. More than
+# one DISTINCT uid inside the concurrency sections means rows genuinely shared
+# a forward -- which is the shape MTP's min-slack-across-the-batch has never
+# been exercised in.
+UIDS="$(grep -aoE "req [0-9]+ \(uid [0-9]+\)" "${RESULTS}/console.log" 2>/dev/null |
+    sort -u | wc -l | tr -d " ")"
+echo "  distinct scheduler uids observed: ${UIDS}"
+if [ "${UIDS}" -lt 2 ]; then
+    echo "  WARNING: never saw two requests admitted; concurrency was NOT exercised"
+fi

@@ -96,6 +96,13 @@ def main() -> int:
 
     for rep in range(args.repeats):
         print(f"  batch round {rep}: {len(prompts)} prompts in one call")
+        # Concurrency has to be PROVEN, not assumed from passing a list.
+        # Pipeline._infer creates one asyncio task per prompt and gathers them
+        # under a semaphore sized to max_batch_size (128), so five prompts do
+        # overlap -- but a scheduler that admitted them one at a time would
+        # still return five correct answers and this test would pass while
+        # measuring nothing. The engine logs each forward's batch size, so the
+        # job greps the C++ log for a bsz > 1 line as separate evidence.
         outs = pipe(prompts, gen_config=cfg)
         if len(outs) != len(prompts):
             failures.append(f"r{rep}: got {len(outs)} outputs for {len(prompts)} prompts")
