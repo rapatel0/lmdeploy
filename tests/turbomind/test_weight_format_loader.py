@@ -14,8 +14,10 @@ outcome for a quantization campaign.
 These tests exercise the real resolver, not a mock of it.
 """
 
-# pi-lens-ignore: reportMissingImports
-import pytest
+# torch is deliberately absent on the laptop and pytest lives in the pinned
+# venv, which the analyzer does not always resolve. Suppress with pyright's own
+# directive: a pi-lens-ignore comment does not apply to LSP-sourced findings.
+import pytest  # pyright: ignore[reportMissingImports]
 
 torch = pytest.importorskip('torch')
 
