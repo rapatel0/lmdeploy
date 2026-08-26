@@ -14,7 +14,14 @@ set -uo pipefail
 # Stamp the directory with the source commit actually under test, read from
 # /src rather than passed in, so the name cannot claim a commit the build did
 # not use.
-SRC_COMMIT="$(git -C /src rev-parse --short HEAD 2>/dev/null || echo unknown)"
+#
+# Read SOURCE_STAMP, not git. sync_src.sh ships the tree with `git archive`,
+# which deliberately carries no .git directory, so `git rev-parse` here finds
+# no repository and quietly yields "unknown" -- which is what the first two
+# result directories are named. The stamp is the mechanism that already exists
+# for exactly this question.
+SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/null)"
+[ -n "${SRC_COMMIT}" ] || SRC_COMMIT=unknown
 RESULTS=/results/$(date +%Y%m%d_%H%M%S)-${SRC_COMMIT}
 mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
