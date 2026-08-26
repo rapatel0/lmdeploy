@@ -6,10 +6,20 @@ records the target numbers and the honest distance to them.
 The short version: we are behind, and the campaign plan does not currently
 target the thing that would close the gap.
 
+## Correction: the reference baseline was the wrong model
+
+> **This section's original target numbers came from `qwen36_27b_fp8`, which is
+> Qwen3.**6**-27B, not our model.** The correct reference for Qwen3.**8**-27B-FP8
+> is `benchmark/qwen38_27b_fp8_target_e5m2_v100_20260822/`, an audited
+> target-only sweep on the same checkpoint we run. Its 1K decode is **58.21
+> tok/s**, not 51.73. Every ratio computed from the 3.6 numbers understated the
+> gap. The corrected comparison is in "The corrected Qwen3.8 baseline" below.
+
 ## The target numbers
 
-`sglang-V100/benchmark/qwen36_27b_fp8_v100_20260801/results.csv`, same model
-class, same hardware, batch of 1, 1024 in, 256 out:
+`sglang-V100/benchmark/qwen36_27b_fp8_v100_20260801/results.csv`, **Qwen3.6**,
+not our model, retained because the campaign reasoned from it for several
+phases:
 
 | Mode | KV | Output tok/s | TPOT ms | Accept length |
 | --- | --- | ---: | ---: | ---: |
@@ -141,7 +151,51 @@ Under matched conditions the first gap is 1.05x, which is not a gap worth a
 campaign phase. The 2.20x speculative multiplier is SGLang's own baseline
 against its own speculative run and remains the clean figure.
 
-Only one lever remains.
+## The corrected Qwen3.8 baseline
+
+The numbers above compare against Qwen3.6. Our model is Qwen3.8-27B-FP8, and
+`sglang-V100` benchmarks it directly in
+`benchmark/qwen38_27b_fp8_target_e5m2_v100_20260822/`.
+
+That run is target-only with speculative decoding absent from both the
+environment and the server arguments, TP4, FP16 activations, E5M2 KV,
+`--attention-backend tilelang_fa_v100`, one request at a time, 256 generated
+tokens, cold cache enforced by a warm-then-flush protocol:
+
+| Input | TTFT | Prefill | TPOT | Decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,024 | 342.3 ms | 2,991.9 tok/s | 17.18 ms | **58.21 tok/s** |
+| 4,096 | 990.2 ms | 4,136.5 tok/s | 17.36 ms | 57.62 tok/s |
+| 25,000 | 6,731.9 ms | 3,713.7 tok/s | 19.70 ms | 50.75 tok/s |
+| 70,000 | 23,488.2 ms | 2,980.2 tok/s | 25.76 ms | 38.82 tok/s |
+| 128,000 | 54,322.9 ms | 2,356.3 tok/s | 33.29 ms | 30.04 tok/s |
+
+Against our measured 51.01 tok/s at TP4, 1024 in:
+
+| | Decode tok/s | TPOT ms | Ratio to ours |
+| --- | ---: | ---: | ---: |
+| Ours, TP4, 1024 in | 51.01 | 19.61 | |
+| SGLang Qwen3.8 target-only, 1K | 58.21 | 17.18 | **1.14x** |
+| SGLang Qwen3.6 target-only FP8 (wrong model) | 51.73 | 17.96 | 1.01x |
+
+**The non-speculative gap is 1.14x, not 1.05x.** It is still not a 2x gap, and
+speculation remains the dominant lever, but the earlier "at parity" claim was
+too generous and rested on the wrong checkpoint.
+
+Three things this changes:
+
+1. **There is a real per-request deficit**, roughly 14 percent, worth
+   attributing before it is dismissed. TPOT shows the same thing: 19.61 ms
+   against 17.18 ms.
+2. **Their configuration differs from ours in ways we have not matched.** They
+   run E5M2 KV and `tilelang_fa_v100`; our 51.01 run used the default
+   attention path and FP16 KV. Part of the 14 percent may be configuration
+   rather than engine.
+3. **The speculative target rises.** DFlash2-8 on the same checkpoint reaches
+   136.6 tok/s at 1K, which is 2.35x over their own 58.21 baseline and 2.68x
+   over our 51.01.
+
+Only one lever dominates, but the baseline lever is not yet closed.
 
 ## What this means for the campaign plan
 
