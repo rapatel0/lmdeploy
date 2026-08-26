@@ -152,6 +152,54 @@ So this closes the "does the draft path execute" question and nothing more. The
 first number that means anything is accept length, and that is not measurable
 until the KV seeding below is done.
 
+## The economics work: 51.5x, and robust to being badly wrong
+
+Measured on 4x V100, tp=4, Qwen3.8-27B-FP8 (commit 488ca359):
+
+```
+prefill:    328.9 us/token   (marginal, 512 extra prompt tokens)
+decode :  16936.4 us/token   (marginal, 64 extra generated tokens)
+ratio:       51.5x
+```
+
+Decode at 16.9 ms/step is 59 tok/s. Sanity check: 27B weights over 4 ranks is
+~6.8 GB/GPU, and at ~900 GB/s HBM that floors a step at ~7.5 ms. Measured is
+~2.2x that floor, which is what one expects from tp=4 with a per-layer NCCL
+all-reduce over PCIe rather than NVLink. The number is plausible, not an
+artefact.
+
+Both costs are differenced, so model load, request overhead and the single
+decode step cancel. The one known bias is in the decode figure: KV grows across
+the 64 extra steps, so later steps carry slightly more attention work. At
+`seq_len` 40-104 that is negligible against a 27B weight read, and it biases
+decode *upward*, i.e. against the conclusion.
+
+Implied ceiling at the measured accept lengths:
+
+```
+K=1, accepted 0.64  ->  1.61x
+K=4, accepted 0.87  ->  1.74x
+```
+
+**Why this settles the question rather than merely supporting it:** the
+conclusion holds even if the ratio is wrong by an order of magnitude.
+
+```
+ratio 51.5x  ->  K=1 1.61x   K=4 1.74x
+ratio 25.0x  ->  K=1 1.58x   K=4 1.61x
+ratio 10.0x  ->  K=1 1.49x   K=4 1.34x
+ratio  5.0x  ->  K=1 1.37x   K=4 1.04x
+```
+
+Speculation only stops paying below roughly 5x, and the measurement would have
+to be off by 10x to get there. So the prefill-shaped verifying forward is not a
+problem for this hardware -- it is the reason the approach works. Decode on
+V100 is so thoroughly weight-bound that K extra token-slots are nearly free.
+
+This is a ceiling, not a promise: it excludes the draft layer's own cost, which
+is one extra layer per drafted token, and any verification overhead. But it
+establishes that the remaining work is worth doing, which is what it was for.
+
 ## Verification: where it attaches in this codebase
 
 Traced against the real code rather than restated from the review. The
