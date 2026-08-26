@@ -286,6 +286,42 @@ same forward, so that guard needs revisiting at the same time, and this is
 exactly the kind of interaction that would otherwise surface as a Check failure
 deep in attention.
 
+### The write path, traced to the line
+
+`sequence_length` is advanced in exactly one place, and it is not in the engine:
+
+```cpp
+// kernels/sampling_kernels.cu:64
+if (tid == 0) {
+    sequence_length[batch_id] += 1;
+}
+```
+
+Everything downstream reads it. `stop_criteria` tests it against the length
+limit, `logits_processor` uses it to index token history, `AppendTokenIds`
+writes `token_ids[output_pos]` where `output_pos` was copied from it *before*
+sampling, and `Engine::Update()` assigns `c.seq_len = sequence_length[j]`.
+
+So verification does not need to touch `Engine::Update()` at all: writing the
+accepted end into this buffer makes the append loop, the stop criteria and the
+engine's own bookkeeping follow. `Update()` already copies
+`c.seq_len - c.tokens.size()` tokens rather than assuming one, so it
+generalises unchanged.
+
+What must change, minimally:
+
+1. `sequence_length[batch_id] += 1` becomes `+= accepted + 1`, or a separate
+   post-sampling kernel adds the accepted count. The `+= 1` is inside the
+   sampling kernel, which also runs for non-speculative rows, so this wants a
+   per-row count defaulting to zero rather than an edit to the increment.
+2. `output_pos` is snapshotted before sampling; with K+1 positions each
+   accepted token needs its own slot, so `AppendTokenIds` must write a run.
+3. `engine.cc:748` sets `inflight_new_tokens = c.generating`; it becomes
+   `c.generating ? 1 + accepted : 0`.
+
+That is three touch points, all local, none of them the scheduler rewrite I
+originally described.
+
 **Smallest honest increment:** `bsz==1`, greedy, prefix caching off, K=1.
 Under those constraints steps 1-3 are local and step 4 is satisfied by
 construction, since publication is disabled. That is enough to produce a
