@@ -303,13 +303,22 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     else {
         max_extend = 0;
     }
-    if (max_extend < num_draft_tokens - 1 && !extend_warned_) {
-        extend_warned_ = true;
-        TM_LOG_WARNING(
-            "[MTP] drafted positions limited to {} of {} steps by KV block capacity; "
-            "steps beyond that reuse the last valid position and will draft poorly",
-            max_extend,
-            num_draft_tokens);
+    // Report the cap whenever it CHANGES, not once ever.
+    //
+    // The once-only latch made this warning actively misleading, and I misread
+    // it. The verify prompt is 63 tokens, so the first draft runs at seq_len
+    // 64 -- exactly on a 64-token block boundary, where slack is 0. The
+    // warning fired "limited to 0 of 4" on that first step and then suppressed
+    // itself for the whole run, while max_extend was in fact 4 for every step
+    // after it. Read as a steady state it says the advance never happens. The
+    // truth is that it fails only on the first step.
+    if (max_extend != last_warned_extend_) {
+        last_warned_extend_ = max_extend;
+        TM_LOG_WARNING("[MTP] drafted positions limited to {} of {} steps by KV block capacity "
+                       "(seq_len[0]={}); steps beyond that reuse the last valid position",
+                       max_extend,
+                       num_draft_tokens,
+                       batch_size > 0 ? seq_lens[0] : -1);
     }
 
     for (int step = 0; step < num_draft_tokens; ++step) {

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <numeric>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -163,6 +164,8 @@ struct LanguageModel::Impl {
     /// Cumulative step-1 acceptance, reported periodically.
     size_t mtp_scored_{0};
     size_t mtp_matched_{0};
+    // Distinct drafted token ids; see the note at the insert site.
+    std::set<int> mtp_distinct_;
     size_t mtp_echo_{0};    ///< draft equalled the token it was conditioned on
     size_t mtp_repeat_{0};  ///< target itself repeated that token
 
@@ -761,6 +764,15 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                 for (int i = 0; i < bsz; ++i) {
                     ++mtp_scored_;
                     mtp_matched_ += (actual[i] == mtp_prev_draft_[i]);
+                    // How many DISTINCT tokens the draft head has ever
+                    // produced. This separates two states the acceptance rate
+                    // cannot: a predictor that is genuinely predicting, and
+                    // one that emits a near-constant token which happens to
+                    // match often because natural text is repetitive. A
+                    // handful of distinct values across hundreds of draws
+                    // means the head is inert regardless of what percentage it
+                    // scores.
+                    mtp_distinct_.insert(mtp_prev_draft_[i]);
                     if (i < (int)mtp_prev_input_.size()) {
                         mtp_echo_ += (mtp_prev_draft_[i] == mtp_prev_input_[i]);
                         mtp_repeat_ += (actual[i] == mtp_prev_input_[i]);
@@ -895,12 +907,13 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             // at all for the standard run and look like the meter was broken.
             if (mtp_scored_ >= 32 && mtp_scored_ % 32 == 0) {
                 TM_LOG_INFO("[MTP] step-1 draft acceptance: {}/{} = {:.1f}% "
-                            "(echo {:.1f}%, target-repeat {:.1f}%)",
+                            "(echo {:.1f}%, target-repeat {:.1f}%, distinct drafts {})",
                             mtp_matched_,
                             mtp_scored_,
                             100.0 * (double)mtp_matched_ / (double)mtp_scored_,
                             100.0 * (double)mtp_echo_ / (double)mtp_scored_,
-                            100.0 * (double)mtp_repeat_ / (double)mtp_scored_);
+                            100.0 * (double)mtp_repeat_ / (double)mtp_scored_,
+                            mtp_distinct_.size());
 
                 for (size_t k = 0; k < mtp_step_scored_.size(); ++k) {
                     if (mtp_step_scored_[k] == 0) {

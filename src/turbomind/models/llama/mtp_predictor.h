@@ -108,7 +108,11 @@ private:
     UnifiedAttentionLayer& attn_layer_;
 
     /// Warn once when KV block capacity truncates the drafted positions.
-    bool extend_warned_{false};
+    // The last reported capacity cap. Initialised to a value max_extend can
+    // never take so the first computation always reports, then reports only on
+    // change. A once-only bool hid that the cap binds on the first draft and
+    // never again.
+    int last_warned_extend_{-1};
 
     /// Position of the draft layer in the attention weight list.
     ///
