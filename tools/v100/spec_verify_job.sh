@@ -32,10 +32,24 @@ cat /src/SOURCE_STAMP 2>/dev/null || echo "no SOURCE_STAMP"
 echo
 echo "=== build ==="
 cd /src
-bash /src/tools/v100/build_v100.sh 2>&1 | tail -5 || {
+# Keep the FULL build log.
+#
+# `| tail -5` discarded the compiler diagnostic and left only cmake's
+# "returned non-zero exit status 1", which reports that a build failed but not
+# why. A one-line compile error then costs an entire GPU job to observe.
+#
+# The pipe was also swallowing the exit status: `cmd | tail` reports tail's
+# status, so only `set -o pipefail` made that `||` fire at all.
+if ! bash /src/tools/v100/build_v100.sh >"${RESULTS}/build.log" 2>&1; then
     echo "FAIL: build" >&2
+    echo "--- compiler diagnostics ---"
+    grep -aE "error:|Error [0-9]+|undefined reference|no member named|no matching" \
+        "${RESULTS}/build.log" | head -40
+    echo "--- tail of build log ---"
+    tail -25 "${RESULTS}/build.log"
     exit 2
-}
+fi
+tail -3 "${RESULTS}/build.log"
 
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' 2>/dev/null |
     sort -rn | head -1 | cut -d' ' -f2-)"

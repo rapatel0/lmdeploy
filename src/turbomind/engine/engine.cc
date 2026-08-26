@@ -804,8 +804,10 @@ void Engine::Impl::Update(BatchData& b, std::vector<Signal>& signals)
     // after `d->done` has been waited on, which orders it after everything the
     // executor did for this batch.
     if (param_.num_draft_tokens > 0) {
+        // s.rc holds unique_ptr<Sequence>, so bind by reference; `auto*` cannot
+        // deduce from a smart pointer. Same form as the other loops here.
         for (int i = 0; i < s.size(); ++i) {
-            if (auto* p = s.rc[i]; p && !p->retiring) {
+            if (auto& p = s.rc[i]; p && !p->retiring) {
                 p->num_drafts = p->pending_num_drafts;
                 std::copy_n(p->pending_draft_tokens, p->pending_num_drafts, p->draft_tokens);
             }
