@@ -152,6 +152,49 @@ So this closes the "does the draft path execute" question and nothing more. The
 first number that means anything is accept length, and that is not measurable
 until the KV seeding below is done.
 
+## Correction 2: "attending to nothing" was too strong
+
+The first acceptance measurement came back **56.2%**, having predicted near
+zero. A number that far from the prediction indicts the analysis, the
+instrument, or both. The analysis was wrong, and here is the mechanism.
+
+`AttentionUniversal::operator()` stores the current token's K/V into the cache
+*before* attending:
+
+```cpp
+if (ti >= readonly_len) {
+    iterator.block_head_.with(iterator.block_ptrs_, local_ti, [&](auto k_cache, auto v_cache, ...) {
+        Store(&k_cache[di], out_K[0][c]);
+        if constexpr (HAS_V) { Store(&v_cache[di], out_V[0][c]); }
+    });
+}
+```
+
+The SM70 decode kernels (`kernel/decoding_sm70_*.cu`) instantiate exactly this
+template, so the draft's own token *is* written to the MTP slot and *is*
+visible to its own attention. The draft is therefore not attending to nothing:
+it attends to itself, plus whatever the allocator left in the positions the
+target's history should occupy.
+
+So the earlier claim needs splitting in two:
+
+- **False:** "the draft attends to uninitialised memory, so acceptance is
+  meaningless." The current position is real.
+- **Still true:** prior positions were never written by the MTP layer, because
+  `UnifiedDecoder::Forward` runs only the target's layers. And `cu_k_len` never
+  advances across draft steps, so steps 1..K-1 keep overwriting one slot.
+
+That is enough to explain a non-trivial step-1 rate -- step 1 is the step that
+depends least on history -- while steps beyond it stay unreliable. It also
+reframes the seeding work: it should raise step-1 modestly and matter far more
+for K>1, rather than moving the rate off zero.
+
+**Not yet established:** whether 56.2% reflects prediction at all. If the
+predictor tends to echo its conditioning token, it scores free on every
+repeated token in the text. Echo/repeat controls are now recorded alongside the
+rate to settle that; until they report, 56.2% is an unexplained number, not a
+result.
+
 ## Correction: the KV slot IS byte-isolated, but it is never filled
 
 I traced the cache path to settle this properly, and both my earlier claim and
