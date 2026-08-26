@@ -350,6 +350,39 @@ end, so attention never reaches those bytes. They are stale but unreachable,
 and the next forward overwrites them. That is only true while they are also
 unpublished, which is what the guard above secures.
 
+### The batch-wide slack minimum does not scale, and the arithmetic says so
+
+`MTPPredictor::Draft` takes `max_extend` as the minimum block slack across the
+whole batch, because one `k_offsets` array bounds every row. A row can draft
+full depth K=4 only when `seq_len % 64` falls in [1, 60], i.e. with probability
+60/64. Every row must satisfy it simultaneously:
+
+```
+bsz  1:  93.8% of steps draft at full depth
+bsz  2:  87.9%
+bsz  4:  77.2%
+bsz  8:  59.7%
+bsz 16:  35.6%
+bsz 32:  12.7%
+```
+
+At realistic serving batch sizes the drafted depth collapses -- not because the
+predictor degrades, but because the worst-positioned row caps everyone. This is
+a property of the implementation I wrote, quantified rather than guessed, and
+it is invisible in every measurement taken so far because all of them used
+`bsz == 1`, where the term is at its most favourable value.
+
+It does not affect correctness: a capped row simply drafts fewer useful
+positions, and drafts are discarded today. It bounds the speedup speculation
+can deliver under load, which matters because the 1.74x ceiling was computed
+from single-row measurements.
+
+The fix is per-row offsets rather than one shared array, so each row advances
+as far as its own block allows. That is a larger change than the current draft
+path and should not be attempted before verification exists -- but it belongs
+in the record now, while the reason is fresh, rather than being rediscovered as
+a disappointing benchmark later.
+
 ### Inference is correct, not merely self-consistent (commit bc2b09ec)
 
 Every earlier check compared speculative text to baseline text and asserted
