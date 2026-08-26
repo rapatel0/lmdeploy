@@ -350,6 +350,38 @@ end, so attention never reaches those bytes. They are stale but unreachable,
 and the next forward overwrites them. That is only true while they are also
 unpublished, which is what the guard above secures.
 
+### Settled by probe: the MTP slot holds zeros, not another sequence's bytes
+
+```
+unshifted,  32 samples: 18/32 = 56.2%, echo 3.1%, distinct 25
+shifted -8, 32 samples: 18/32 = 56.2%, echo 3.1%, distinct 25
+```
+
+Moving the base eight positions down changed nothing, on a clean run with no
+illegal access. With the earlier +1 result that is a nine-position range over
+which the absolute base is irrelevant. Only zeros behave that way: attention
+over zero-valued K/V contributes a constant however many entries are spanned.
+Another sequence's leftover bytes would not survive being read at a different
+offset.
+
+Also measured, and it corrects two claims made earlier in this document:
+
+```
+step-1 acceptance 41/64 = 64.1%, distinct drafts 39
+capacity cap by seq_len: 64->0, 65->4, 125->3, 126->2, 127->1, 128->0
+```
+
+**39 distinct tokens across 64 predictions** rules out an inert head emitting a
+near-constant token (which would show 1-3). And the cap tracks `seq_len`
+exactly as the modulo predicts -- the slack computation was always correct, and
+a once-only warning latch made it look permanently stuck at zero. "The draft
+attends to nothing" was wrong; 64.1% is a real number.
+
+What remains true is narrower: the MTP slot is not seeded with the target's
+history, so the draft attends to its own entries over a field of zeros rather
+than over real context. That is a quality ceiling on deep steps, not a
+correctness or safety defect, and it is why step 4 sits near zero.
+
 ### A fix that changed nothing, and why that is informative
 
 Codex's highest-confidence P1 (0.98) was that step 0 writes at `L-1` rather than
