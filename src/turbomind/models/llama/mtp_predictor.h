@@ -102,7 +102,13 @@ public:
     ///
     /// `env` must carry the batch, block pointers, q/k offsets and finished
     /// flags for the decode shape, one query token per sequence.
+    /// Register the draft layer's KV slot. Needs the engine's setup-time env,
+    /// which is the only one carrying `requests`.
     void SetupAttention(int phase, TensorMap& env);
+
+    /// Borrow this step's attention offsets for the draft layer. Needs the
+    /// prepared env: `finished` and the offset buffers do not exist at setup.
+    void PrepareAttention(int phase, TensorMap& env);
 
 private:
     /// Normalise both inputs, concatenate them per row, and project back down

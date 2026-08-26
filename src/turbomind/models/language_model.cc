@@ -328,8 +328,18 @@ LanguageModel::Impl::Impl(
     // Build the draft predictor when the checkpoint supplies an MTP layer and
     // the decoder gave it a KV slot. Both conditions are required: the weights
     // alone are inert without somewhere to write keys and values.
-    if (weights_.mtp && weights_.mtp->decoder_layer && unified_decoder_->mtp_attn_index() >= 0
-        && unified_decoder_->attn_layer()) {
+    // num_draft_tokens > 0 is part of the condition, not an afterthought.
+    //
+    // The predictor is built from the weights, which are present in the
+    // checkpoint whether or not speculation is enabled. Without this clause a
+    // K=0 run still constructed it, still ran its attention Setup/Prepare, and
+    // still paid for a draft layer whose output nothing consumes -- and an
+    // error in that path took down plain decoding, which is exactly what
+    // happened: K=0 aborted on a missing `finished` key.
+    //
+    // Speculation off must mean the speculative code does not run at all.
+    if (engine.num_draft_tokens > 0 && weights_.mtp && weights_.mtp->decoder_layer
+        && unified_decoder_->mtp_attn_index() >= 0 && unified_decoder_->attn_layer()) {
         mtp_predictor_ = std::make_unique<MTPPredictor>(
             *weights_.mtp,
             *unified_decoder_->attn_layer(),
@@ -548,7 +558,7 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     generation_->Run(BatchOp::kSetup, phase, env);
     output_processor_->Run(BatchOp::kSetup, phase, env);
 
-    // Seed the draft layer's KV slot.
+    // Register the draft layer's KV slot.
     //
     // This must happen here rather than at draft time. The MTP attention layer
     // needs `requests` to set up its block table, and only the engine's Setup
@@ -558,6 +568,8 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     // The target's UnifiedDecoder walks only its own layers, so nothing else
     // populates this slot. Without it the draft attends to uninitialised cache
     // entries, which is what made the earlier acceptance measurement worthless.
+    //
+    // Only the kSetup half belongs here; see PrepareAttention for the rest.
     if (mtp_predictor_) {
         mtp_predictor_->SetupAttention(phase, env);
     }
@@ -632,6 +644,12 @@ void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
     unified_decoder_->Run(BatchOp::kPrepare, phase, env);
     generation_->Run(BatchOp::kPrepare, phase, env);
     output_processor_->Run(BatchOp::kPrepare, phase, env);
+
+    // The draft layer's attention borrows this step's offsets, which only
+    // exist once the tensors above have been produced.
+    if (mtp_predictor_) {
+        mtp_predictor_->PrepareAttention(phase, env);
+    }
 }
 
 void LanguageModel::Impl::BuildTokenMask(const bool* finished, const int* q_offsets, const BatchData& b)

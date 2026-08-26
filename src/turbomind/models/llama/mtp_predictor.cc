@@ -87,6 +87,20 @@ void MTPPredictor::SetupAttention(int phase, TensorMap& env)
     TM_CHECK(env.try_("requests")) << "SetupAttention needs the setup-time env";
 
     attn_layer_.Run(BatchOp::kSetup, phase, env);
+}
+
+void MTPPredictor::PrepareAttention(int phase, TensorMap& env)
+{
+    // Separate from SetupAttention because the two ops need different things.
+    //
+    // kSetup needs `requests`, which exists only in the engine's setup env.
+    // kPrepare borrows `finished`, `q_offsets`, `k_offsets` and
+    // `readonly_block_num`, none of which exist yet at setup time -- the
+    // language model produces them in its own Prepare. Running both together
+    // aborted on the missing `finished` key, and did so on the K=0 path too,
+    // because Setup runs regardless of whether speculation is active.
+    TM_CHECK(env.try_("finished")) << "PrepareAttention needs the prepared env";
+
     attn_layer_.Run(BatchOp::kPrepare, phase, env);
 }
 
