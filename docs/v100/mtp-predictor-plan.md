@@ -92,6 +92,38 @@ identical in output to one that works, and reports a lower token rate than
 no speculation at all. Any claim that MTP works must cite an accept length
 above zero, measured, not inferred.
 
+## Rollback: v0.16.0 already has the primitive
+
+The fork's approach, a pair of shadow buffers with explicit Snapshot and
+Restore, does not fit this tree, and it does not need to. v0.16.0 keeps the
+GDN recurrent state in registry-allocated cache blocks rather than in flat
+device buffers:
+
+```cpp
+// GatedDeltaNetLayer.cc
+rec_base_ = registry.checkpoint().Register({{block_bytes_, 1, num_blocks_}});
+registry.checkpoint().Register(conv_total_bytes_, 1);
+```
+
+So the state is already a `checkpoint` category object, and the scheduler
+already knows how to copy one block into another:
+
+```cpp
+// scheduler.cc, restoring a checkpoint into the live frontier
+s.restore_copies.push_back({best.ckpt, s.frontier.get()});
+```
+
+Those copies are executed by `model_executor.cc` via `RunCopies`. The
+machinery exists because a resumed request must restore recurrent state that
+a prefix-cache hit cannot reconstruct, which is the same problem a rejected
+draft creates.
+
+That makes item 4 a matter of reusing `restore_copies` with a
+speculation-owned checkpoint block, rather than porting the fork's buffers.
+The fork's design is still worth recording, below, because it names the two
+traps: the conv and recurrent states have different element types, and the
+shadow memory should not be allocated when speculation is off.
+
 ## How the fork rolls back GDN state
 
 The fork does solve this, in `gated_delta_net_layer.cc`, and our v0.16.0
