@@ -194,6 +194,30 @@ either way, so the estimate does not depend on that subtlety.
 Remaining caveats: one prompt, greedy, bsz=1, step-4 statistics are empty, and
 the KV capacity guard still truncates the drafted range at block boundaries.
 
+### What is actually limiting acceptance
+
+Worth sizing before optimising the wrong thing. With `block=64` and `K=4`, the
+capacity guard shortens the drafted range on 3 of every 64 decode steps --
+about **4.7%**. Allocating one spare block per sequence would recover it.
+
+The dominant term is elsewhere: conditional accuracy falls from 64.1% at step 1
+to **27.5%** at step 2. That single drop is what caps the chain at 1.87, and no
+amount of block-boundary work touches it.
+
+Whether 27.5% is a defect or simply this MTP layer's quality is not yet
+established. One candidate defect remains: the MTP slot accumulates the *draft
+layer's* own K/V per decode step, never the target layer's, so the draft
+attends to a history it wrote itself rather than to the target's. Published MTP
+implementations condition on the target's hidden states. That is the next thing
+worth testing, and it is a substantially larger change than advancing offsets.
+
+Order of work, by expected value:
+
+1. **Verification** -- without it there is no speedup at all, only a ceiling.
+2. **Target-state conditioning** -- may raise step-2 conditional accuracy,
+   which is the term that dominates the chain.
+3. **Spare KV block** -- worth ~4.7% of steps; cheap, but do it last.
+
 ## Position advance: step 2 improves, and the metric is the wrong one
 
 After `84d9631f` (commit 84d9631f, run 20260826_155803):
