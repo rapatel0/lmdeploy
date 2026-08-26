@@ -215,7 +215,17 @@ class Qwen3_5TextModel(TextModel):
         # modules_to_not_convert. FP8Format.accepts dispatches per tensor group
         # on the presence of a scale, so the mixed module resolves correctly
         # with no special handling here.
-        m.fc = self._linear(pfx + 'fc')
+        # Must go through add_fc, not `m.fc = ...`. Only _add_linear builds
+        # the per-GPU LinearWeight and fills in input_dim; a directly assigned
+        # fc reaches C++ with input_dim == 0, and the predictor derives its
+        # hidden size from that field.
+        #
+        # _linear returns None only when no tensor resolves, which the
+        # `fc.weight` guard above has already excluded.
+        fc = self._linear(pfx + 'fc')
+        if fc is None:
+            raise RuntimeError(f'{pfx}fc.weight resolved to no tensor after passing the presence check')
+        m.add_fc(fc)
 
         d = DecoderLayerBuilder(DecoderLayerConfig(), self._ctx)
         layer_pfx = pfx + 'layers.0'
