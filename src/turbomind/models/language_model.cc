@@ -1118,6 +1118,10 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     env.produce("num_accepted", result.num_accepted);
     env.produce("bonus_tokens", result.bonus_tokens);
 
+    // Generation::Rollback needs the drafts themselves to append the accepted
+    // ones to its own copy of each sequence.
+    env.produce("draft_tokens", drafts);
+
     // The bonus token is the tip the next draft conditions on.
     Copy(result.bonus_tokens, autoreg_ids_.slice(0, bsz));
 
@@ -1135,31 +1139,65 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
     core::Context::stream().Sync();
 
+    // Do NOT write token_ids or seq_len here.
+    //
+    // Engine::Update already owns both. For every generating row it runs
+    //
+    //   c.token_ids[c.seq_len] = output_ids[j];
+    //   c.seq_len              = sequence_length[j];
+    //
+    // so writing the accepted tokens here as well would append them twice and
+    // advance seq_len past its own writes. The fix is not to duplicate that
+    // loop but to feed it: publish the accepted prefix through `output_ids`
+    // and the new length through `sequence_length`, which are the two buffers
+    // Update reads.
+    //
+    // Update writes exactly one token per row, so only the bonus token travels
+    // through output_ids. The accepted drafts are placed into token_ids here at
+    // their own offsets and covered by the advanced sequence_length. Update's
+    // `new_tokens` calculation then picks up the whole run, because it appends
+    // token_ids[seq_len - new_tokens .. seq_len) rather than a single token.
+    Buffer_<int> seq_lens{bsz, kCPU};
+    Copy(d.sequence_length.slice(0, bsz), seq_lens);
+    core::Context::stream().Sync();
+
     for (int i = 0; i < bsz; ++i) {
         auto& c = *d.rows[i];
+
         if (!c.generating || d.num_drafts[i] == 0) {
-            continue;
+            continue;  // not a verification row; its published length stands
         }
 
         const int n = accepted[i];
         TM_CHECK_GE(n, 0);
         TM_CHECK_LE(n, d.num_drafts[i]);
 
-        // The sequence was extended by 1 + num_drafts speculatively. Keep the
-        // bonus token plus the accepted prefix and drop the rest. KV entries
-        // past the new tip are stale and get overwritten by the next forward.
+        // `seq_len` still points at the tip from before this forward, because
+        // Update has not run yet for this step.
         const int base = c.seq_len;
-        c.token_ids[base] = bonus[i];
+
+        // token_ids[base] is the bonus token and is written by Update from
+        // output_ids. The accepted drafts follow it; the rejected tail is
+        // simply not counted.
         for (int k = 0; k < n; ++k) {
             c.token_ids[base + 1 + k] = c.draft_tokens[k];
         }
-        c.seq_len = base + 1 + n;
 
-        c.all_accepted = (n == d.num_drafts[i]);
+        // The KV entries for the rejected tail stay allocated but are logically
+        // dead: the next forward starts at this length and overwrites them.
+        seq_lens[i] = base + 1 + n;
 
         mtp_accepted_ += n;
         mtp_steps_ += 1;
     }
+
+    Copy(seq_lens, d.sequence_length.slice(0, bsz));
+    env.produce("sequence_length", d.sequence_length.slice(0, bsz));
+
+    // Generation keeps its own copy of each sequence for repetition penalties
+    // and stop criteria. It must advance by the same accepted run, or those
+    // two subsystems silently operate on a stale sequence.
+    generation_->Run(BatchOp::kRollback, phase, env);
 
     // Accept length is the quantity that decides whether this is worth doing:
     // 1 + mean accepted drafts is the tokens produced per forward.

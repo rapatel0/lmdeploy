@@ -21,7 +21,7 @@ exec > >(tee -a "${RESULTS}/console.log") 2>&1
 
 finish() {
     rc=$?
-    echo "$rc" > "${RESULTS}/exit_code"
+    echo "$rc" >"${RESULTS}/exit_code"
     echo "artifacts in ${RESULTS} (exit ${rc})"
 }
 trap finish EXIT
@@ -32,11 +32,17 @@ cat /src/SOURCE_STAMP 2>/dev/null || echo "no SOURCE_STAMP"
 echo
 echo "=== build ==="
 cd /src
-bash /src/tools/v100/build_v100.sh 2>&1 | tail -5 || { echo "FAIL: build" >&2; exit 2; }
+bash /src/tools/v100/build_v100.sh 2>&1 | tail -5 || {
+    echo "FAIL: build" >&2
+    exit 2
+}
 
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' 2>/dev/null |
     sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo "FAIL: no wheel" >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo "FAIL: no wheel" >&2
+    exit 2
+}
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 
 MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
@@ -47,7 +53,10 @@ cd /
 echo
 echo "=== configuration ==="
 echo "  MODEL=${MODEL} TP=${TP} K=${K}"
-[ "${TP}" = "4" ] || { echo "FAIL: island is 4 GPUs, TP=${TP} invalid" >&2; exit 3; }
+[ "${TP}" = "4" ] || {
+    echo "FAIL: island is 4 GPUs, TP=${TP} invalid" >&2
+    exit 3
+}
 
 echo
 echo "=== 1. correctness: K=0 vs K=${K}, output must be identical ==="
@@ -118,10 +127,19 @@ PY
 echo
 echo "=== verdict ==="
 FAILED=0
-[ "${IDENT_RC}" -ne 0 ] && { echo "FAIL: output differs between K=0 and K=${K}" >&2; FAILED=1; }
-[ "${ACC_SEEN}" -ne 1 ] && { echo "FAIL: engine never reported accept length" >&2; FAILED=1; }
+[ "${IDENT_RC}" -ne 0 ] && {
+    echo "FAIL: output differs between K=0 and K=${K}" >&2
+    FAILED=1
+}
+[ "${ACC_SEEN}" -ne 1 ] && {
+    echo "FAIL: engine never reported accept length" >&2
+    FAILED=1
+}
 for f in bench_k0.json "bench_k${K}.json" identity.json; do
-    [ -s "${RESULTS}/${f}" ] || { echo "FAIL: missing ${f}" >&2; FAILED=1; }
+    [ -s "${RESULTS}/${f}" ] || {
+        echo "FAIL: missing ${f}" >&2
+        FAILED=1
+    }
 done
 if [ "${FAILED}" -ne 0 ]; then
     echo "SPEC_VERIFY_FAIL" >&2

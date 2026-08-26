@@ -66,6 +66,11 @@ struct Generation::Impl {
     Buffer_<bool>     random_init_buf_;
     Buffer_<int>      random_state_indices_buf_;
     Buffer_<int*>     token_ids_ptrs_buf_;
+
+    /// Speculative rollback scratch; see Rollback.
+    Buffer_<int*> token_ids_ptrs_dev_;
+    Buffer_<int>  output_pos_;
+    Buffer_<int>  scratch_row_;
     Buffer_<int>      token_ids_buf_;
     Buffer_<int>      output_ids_buf_;
 
@@ -109,6 +114,16 @@ struct Generation::Impl {
         random_state_indices_buf_ = {max_batch_size_, kCPUpinned};
 
         token_ids_ptrs_buf_ = {max_batch_size_, kCPUpinned};
+
+        // Speculative rollback scratch.
+        //
+        // `scratch_row_` is a sink for rows that accepted fewer tokens than the
+        // widest row in the batch: pointing their write at it means the kernel
+        // runs uniformly while those rows receive no update. It must be at
+        // least as long as the furthest slot any row can address.
+        token_ids_ptrs_dev_ = {max_batch_size_, kDEVICE};
+        output_pos_         = {max_batch_size_, kDEVICE};
+        scratch_row_        = {session_len_ + Sequence::kMaxDraftTokens + 1, kDEVICE};
         token_ids_buf_      = {max_batch_size_ * (ssize_t)session_len_, kCPUpinned};
 
         output_ids_buf_ = {max_batch_size_, kCPUpinned};
@@ -244,6 +259,96 @@ struct Generation::Impl {
         sampling_->Update(phase, env);
     }
 
+    /// Publish the outcome of a verification step.
+    ///
+    /// Ownership is the whole point of this function. Engine::Update is the
+    /// only place that advances a sequence:
+    ///
+    ///   c.token_ids[c.seq_len] = output_ids[j];
+    ///   c.seq_len              = sequence_length[j];
+    ///
+    /// so rejection must not write those fields itself, or every accepted
+    /// token lands twice. Rejection instead writes the two buffers Update
+    /// reads: the bonus token into `output_ids`, and the post-acceptance
+    /// length into `sequence_length`.
+    ///
+    /// The generation-side copy of each sequence must advance too, because
+    /// repetition penalties and stop criteria read it. AppendTokenIds is run
+    /// once per accepted slot. Rows that accepted fewer tokens are pointed at
+    /// a scratch row for the remaining slots, so they receive no write rather
+    /// than a wrong one -- masking by pointer avoids needing a predicated
+    /// variant of the kernel.
+    void Rollback(int phase, TensorMap& env)
+    {
+        TM_FUNCTION_SCOPE();
+
+        auto&     d      = *data_.at(phase);
+        auto&     b      = *env.at("batch").data<BatchData*>()[0];
+        auto      stream = core::Context::stream().handle();
+        const int bsz    = b.bsz;
+        const int gs     = d.generation_size;
+        if (gs == 0) {
+            return;
+        }
+
+        Buffer_<int> accepted{bsz, kCPU};
+        Buffer_<int> bonus{bsz, kCPU};
+        Copy(env.at("num_accepted").buffer().slice(0, bsz), accepted);
+        Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
+
+        Buffer_<int> base_len{bsz, kCPU};
+        Copy(env.at("sequence_length").buffer().slice(0, bsz), base_len);
+        core::Context::stream().Sync();
+
+        // The bonus token is what Engine::Update writes at token_ids[seq_len].
+        Buffer_<int> host_out{max_batch_size_, kCPU};
+        for (int i = 0; i < bsz; ++i) {
+            host_out[i] = bonus[i];
+        }
+        Copy(host_out.slice(0, bsz), output_ids_.slice(0, bsz));
+        Copy(output_ids_, bsz, d.output_ids);
+
+        // Slot 0 is the bonus token, slots 1..n the accepted drafts.
+        //
+        // The row stride is K, not Sequence::kMaxDraftTokens: RejectDrafts
+        // builds this buffer as [bsz, K] to match the rejection kernel's
+        // layout. Reading it with the larger compile-time stride would walk off
+        // the end of each row into the next one.
+        const auto   draft_buf = env.at("draft_tokens").buffer();
+        const int    stride    = bsz > 0 ? (int)draft_buf.size() / bsz : 0;
+        Buffer_<int> drafts{draft_buf.size(), kCPU};
+        Copy(draft_buf, drafts);
+        core::Context::stream().Sync();
+
+        int max_accepted = 0;
+        for (int i = 0; i < bsz; ++i) {
+            max_accepted = std::max(max_accepted, accepted[i]);
+        }
+
+        Buffer_<int*> ptrs{max_batch_size_, kCPU};
+        Buffer_<int>  pos{max_batch_size_, kCPU};
+        Buffer_<int>  tok{max_batch_size_, kCPU};
+
+        for (int slot = 0; slot <= max_accepted; ++slot) {
+            for (int i = 0; i < gs; ++i) {
+                const bool active = slot <= accepted[i];
+                ptrs[i] = active ? token_ids_ptrs_buf_[i] : scratch_row_.data();
+                pos[i]  = active ? base_len[i] + slot : 0;
+                tok[i]  = slot == 0 ? bonus[i] : drafts[i * stride + slot - 1];
+            }
+            Copy(ptrs.slice(0, gs), token_ids_ptrs_dev_.slice(0, gs));
+            Copy(pos.slice(0, gs), output_pos_.slice(0, gs));
+            Copy(tok.slice(0, gs), output_ids_.slice(0, gs));
+            AppendTokenIds(
+                token_ids_ptrs_dev_.data(), output_ids_.data(), output_pos_.data(), gs, stream);
+        }
+
+        // Restore output_ids to the bonus token: Fetch publishes it, and
+        // Engine::Update writes exactly that one value per row.
+        Copy(host_out.slice(0, bsz), output_ids_.slice(0, bsz));
+        Copy(output_ids_, bsz, d.output_ids);
+    }
+
     void Forward(int phase, TensorMap& env)
     {
         TM_FUNCTION_SCOPE();
@@ -333,6 +438,9 @@ void Generation::Run(BatchOp op, int phase, TensorMap& env)
     }
     else if (op == BatchOp::kUpdate) {
         return impl_->Update(phase, env);
+    }
+    else if (op == BatchOp::kRollback) {
+        return impl_->Rollback(phase, env);
     }
 }
 

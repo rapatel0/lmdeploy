@@ -36,7 +36,7 @@ PROMPTS = [
 ]
 
 CHILD = textwrap.dedent(
-    '''
+    """
     import json, sys
     from lmdeploy import GenerationConfig, TurbomindEngineConfig
     from lmdeploy.api import pipeline
@@ -75,7 +75,7 @@ CHILD = textwrap.dedent(
     ]
     json.dump(rows, open(out_path, "w"))
     pipe.close()
-    '''
+    """
 ).strip()
 
 
