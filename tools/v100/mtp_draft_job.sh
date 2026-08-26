@@ -24,12 +24,18 @@ echo "=== installing $(basename "${WHEEL}") ==="
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -2
 
 # The wheel must actually contain the fix that is in /src.
-python3 - <<'CHECK' || exit 2
-import pathlib, lmdeploy.turbomind.builders.mtp_layer as m
-src = pathlib.Path(m.__file__).read_text()
-if "add_fc" not in src:
-    raise SystemExit("FAIL: installed wheel predates the fc fix")
-print("  installed mtp_layer.py carries add_fc")
+#
+# Read the wheel itself, not an import. cwd is /src from the build above, so
+# `import lmdeploy` resolves to the source tree and would report the fix
+# present no matter what the wheel holds -- the same class of false green
+# signal that let a stale wheel masquerade as a tested fix.
+python3 - "${WHEEL}" <<'CHECK' || exit 2
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    blob = z.read("lmdeploy/turbomind/builders/mtp_layer.py").decode()
+if "add_fc" not in blob:
+    raise SystemExit("FAIL: the built wheel predates the fc fix")
+print("  the wheel's mtp_layer.py carries add_fc")
 CHECK
 
 MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
