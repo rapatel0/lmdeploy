@@ -14,6 +14,7 @@ outcome for a quantization campaign.
 These tests exercise the real resolver, not a mock of it.
 """
 
+# pi-lens-ignore: reportMissingImports
 import pytest
 
 torch = pytest.importorskip('torch')

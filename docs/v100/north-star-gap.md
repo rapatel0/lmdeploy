@@ -251,6 +251,71 @@ Attribution comes before optimization. The gap may be configuration rather
 than engine, and a phase justified by "our engine is slower" would be premature
 until these are matched or ruled out.
 
+### Prefill, and the corrected decode number
+
+The first confirming run measured only an inclusive token rate, so it could not
+be compared against the reference on prefill and its decode number carried the
+first generated token. A second run measures both.
+
+TTFT comes from a separate `max_new_tokens=1` request, because the synchronous
+API returns only on completion. That request is prefill plus one decode step,
+so it overstates TTFT and understates prefill throughput.
+
+| Metric | Ours | SGLang, 1,024 in | Ratio |
+| --- | ---: | ---: | ---: |
+| TTFT | 403.7 ms | 342.3 ms | 1.18x |
+| **Prefill** | **2,603.6 tok/s** | **2,991.9 tok/s** | **1.15x** |
+| Decode, first token excluded | 55.06 tok/s | 58.21 tok/s | **1.06x** |
+| Decode, inclusive | 50.85 tok/s | | |
+
+Two corrections to the earlier entry:
+
+1. **Decode is 1.06x behind, not 1.15x.** Measuring on the reference's own
+   definition, excluding the first generated token, closes most of the gap.
+   The 1.15x figure compared an inclusive rate against a TPOT-derived one.
+2. **Prefill is 1.15x behind**, and that is now the larger of the two gaps.
+
+### What 1Cat-vLLM 1.3.0 did on prefill
+
+`1Cat-vLLM/RELEASE.md`, version 1.3.0. The release reports latencies rather
+than a prefill token rate, so the rates below are derived from the 64K shape:
+
+| Matched path | Before | 1.3.0 | Change | Derived tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| FP16 paged-prefill operator, 64K | 43.605 ms | 31.717 ms | -27.26% | operator only |
+| 27B-AWQ TP4 full-model prefill, 64K | 47.98 s | 33.10 s | -31.01% | 1,366 -> 1,980 |
+| 27B-AWQ TP2 FP8-KV prefill, 64K | 127.84 s | 62.96 s | -50.75% | 513 -> 1,041 |
+
+The techniques, from the release notes:
+
+- Replaced the D=256 paged-prefill BM16 path with **exact BM32 phase reuse**.
+- **All-P scheduling** and conflict-reduced pair scratch.
+- **8,096-token chunking**.
+- One-pass **FP8 E5M2-to-FP16 KV bridging** and graph-safe FP8 XQA decode.
+- Fixed stale CUDA Graph partition metadata so decode scans the live KV length.
+
+They preserved softmax, FP16 probability rounding, FP32 accumulation order and
+exact output on the accepted prefill paths, so this is a scheduling and tiling
+change rather than a precision trade.
+
+**The roughly 4K tok/s figure is SGLang's, not 1Cat's.** SGLang's audited sweep
+on our exact checkpoint reaches **4,136.5 tok/s at 4,096 input**, its peak.
+1Cat's 1.3.0 prefill work lands near 1,980 tok/s at 64K on a different model
+and weight route, which is a different shape and not directly comparable.
+
+So there are two distinct prefill targets:
+
+| Target | Shape | tok/s |
+| --- | --- | ---: |
+| SGLang peak, same checkpoint | 4,096 in | 4,136.5 |
+| SGLang at our measured shape | 1,024 in | 2,991.9 |
+| Ours, measured | 1,051 in | 2,603.6 |
+
+Our 2,603.6 is measured only at roughly 1K. The reference curve rises to its
+peak at 4K and falls thereafter, so our shape is not where either project's
+prefill is strongest, and a single-point comparison understates the work
+remaining at long context. A prefill sweep is the missing measurement.
+
 ### A separate finding from the same run
 
 The staged wheel predates `c9ff318d`:
