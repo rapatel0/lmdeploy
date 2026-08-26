@@ -3,7 +3,7 @@
 import _turbomind as _tm
 
 from ..linear import Linear
-from ._base import Builder, SplitSide
+from ._base import Builder
 
 MTPLayerConfig = _tm.MTPLayerConfig
 
@@ -26,11 +26,21 @@ class MTPLayerBuilder(Builder):
     """
 
     def add_fc(self, fc: Linear):
-        """Commit the fc projection.
+        """Commit the fc projection, replicated on every rank.
 
-        fc consumes the two normalised branches concatenated, so its input is
-        hidden*2 and its output is hidden. Under tensor parallelism the
-        concatenated input is the dimension that shards, matching the o_proj
-        and down_proj convention, so it splits on the input side.
+        fc consumes the two normalised branches concatenated (hidden*2) and
+        projects back to hidden. It is deliberately NOT sharded.
+
+        Its output feeds the draft decoder layer's attention, which is itself
+        tensor-parallel and expects the full hidden vector on every rank -- the
+        same position the target's layers are in after their own input norm.
+        Sharding fc would hand each rank a slice of the feature axis and the
+        attention would then read a partial vector as if it were whole.
+
+        Passing no split side is what makes this replicated: _add_linear only
+        divides a dimension when a split side is given. This builder also never
+        sets self.tp, so it stays ParallelGroup(1), and a split side would
+        divide by one and silently produce a replicated weight anyway. Saying
+        None states the intent instead of relying on that coincidence.
         """
-        self._add_linear('fc', fc, SplitSide.INPUT)
+        self._add_linear('fc', fc)
