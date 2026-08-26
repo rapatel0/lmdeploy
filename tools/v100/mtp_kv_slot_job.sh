@@ -17,5 +17,13 @@ pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -2
 echo
 echo "=== verify the KV slot ==="
 cd /
-python3 /src/tools/v100/verify_mtp_kv_slot.py \
-    --model-dir "${MODEL_DIR:-/models/Qwen3.5-27B-A3B-FP8}" --tp 4
+# Same checkpoint the load and benchmark jobs use. Fail loudly rather than
+# falling back, so a missing mount is never mistaken for a code failure.
+MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
+if [ ! -f "${MODEL}/config.json" ]; then
+    echo "FAIL: no checkpoint at ${MODEL}; available:" >&2
+    ls -1 /models 2>/dev/null | sed 's/^/  /' >&2
+    exit 3
+fi
+
+python3 /src/tools/v100/verify_mtp_kv_slot.py --model-dir "${MODEL}" --tp 4
