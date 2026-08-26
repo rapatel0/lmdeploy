@@ -278,16 +278,37 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     //   zeros   -> still bit-identical, the count of them cannot matter
     //   garbage -> lands on different bytes, output moves
     //
-    // Off unless TM_MTP_PROBE_SHIFT is set, and it deliberately does not
-    // respect block slack, so it must never be set on a run whose output is
-    // trusted. It exists to be run once and read.
+    // Shift NEGATIVE, never positive.
+    //
+    // The first attempt at this probe used +32 and died with an illegal memory
+    // access in argmax: forward slack is only 1..63 and usually below 32, so
+    // the base crossed the block boundary and dereferenced a block pointer
+    // past the end of the row's allocation. That is precisely the hazard
+    // max_extend exists to prevent, and the probe bypassed it deliberately --
+    // so the crash confirmed the guard rather than revealing a new defect, but
+    // it discriminated nothing because no clean run happened.
+    //
+    // Shifting backward stays inside memory the row already owns: positions
+    // below the base are within the same allocated blocks, being the target's
+    // own earlier KV region. So a negative shift is bounded by seq_len rather
+    // than by block slack, and it answers the same question -- if the entries
+    // under the base are zeros, moving the base among them cannot change a
+    // single argmax.
+    //
+    // Clamped so the base cannot go below 1.
     static const int probe_shift = [] {
         const char* s = std::getenv("TM_MTP_PROBE_SHIFT");
         return s ? std::atoi(s) : 0;
     }();
-    if (probe_shift) {
-        AdvanceCuSeqLens(k_offsets.data(), batch_size, probe_shift, stream);
-        advanced += probe_shift;
+    if (probe_shift < 0) {
+        int shift = probe_shift;
+        for (int i = 0; i < batch_size; ++i) {
+            shift = std::max(shift, 1 - seq_lens[i]);
+        }
+        if (shift < 0) {
+            AdvanceCuSeqLens(k_offsets.data(), batch_size, shift, stream);
+            advanced += shift;
+        }
     }
 
     // How far the drafted positions may safely walk.
