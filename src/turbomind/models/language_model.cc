@@ -99,6 +99,12 @@ struct LanguageModel::Impl {
     /// Draft-token generator, present only when the checkpoint carries an MTP
     /// layer and the decoder registered a KV slot for it.
     std::unique_ptr<MTPPredictor> mtp_predictor_;
+
+    /// Engine parameters, retained for the speculation settings.
+    const EngineParam engine_param_;
+
+    /// Emit the drafting record once rather than on every decode step.
+    bool mtp_logged_{false};
     std::optional<OutputProcessor>  output_processor_;
     std::unique_ptr<Generation>     generation_;  // token generator
 
@@ -150,7 +156,8 @@ LanguageModel::Impl::Impl(
     attn_dp_size_{engine.attn_dp_size},
     attn_dp_rank_{engine.attn_dp_rank},
     max_batch_size_{engine.max_batch_size},
-    debug_{isDebug()}
+    debug_{isDebug()},
+    engine_param_{engine}
 {
 
     false_ = {engine.max_batch_size, kDEVICE};
@@ -559,6 +566,33 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     if (d.n_generating) {
         generation_->Run(BatchOp::kForward, phase, env);
         Copy(env.at("output_ids").buffer(), autoreg_ids_);
+
+        // Multi-Token Prediction: draft the next few tokens from the state we
+        // already have. `output_ids` is the token just sampled and
+        // `hidden_states` is the state that produced it, which are exactly the
+        // two inputs the draft layer consumes.
+        //
+        // The drafts are produced but not yet consumed. Verification and
+        // rollback are not implemented, so accepting them would change output.
+        // Running the draft here measures its cost and proves the path
+        // executes, without altering a single generated token.
+        if (mtp_predictor_ && engine_param_.num_draft_tokens > 0) {
+            const int n_draft = engine_param_.num_draft_tokens;
+            auto      ids     = env.at("output_ids").buffer().view<int>();
+
+            auto drafts = mtp_predictor_->Draft(d.n_generating,  //
+                                                hidden_states,
+                                                ids,
+                                                n_draft,
+                                                env);
+
+            if (!mtp_logged_) {
+                mtp_logged_ = true;
+                TM_LOG_INFO("[MTP] drafted {} token(s) for {} sequence(s); drafts are not yet verified",
+                            drafts.num_drafts,
+                            d.n_generating);
+            }
+        }
     }
 }
 
