@@ -34,6 +34,15 @@ public:
 
     void Run(BatchOp op, int phase, TensorMap& env);
 
+    /// Does this phase's batch carry drafts that the next forward must verify?
+    /// Answered here because BatchData holds no sequence pointers; the state is
+    /// captured during Setup.
+    bool HasDraftsToVerify(int phase) const;
+
+    /// Is this phase's batch a real decode step, so drafting from it is valid?
+    /// A final prefill chunk is `generating` but is not a decode step.
+    bool CanDraft(int phase) const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

@@ -27,6 +27,7 @@
 #include "src/turbomind/models/llama/llama_params.h"
 #include "src/turbomind/models/llama/llama_utils.h"
 #include "src/turbomind/models/llama/mtp_predictor.h"
+#include "src/turbomind/models/llama/rejection_sampling.h"
 #include "src/turbomind/models/llama/unified_decoder.h"
 #include "src/turbomind/models/model_weight.h"
 #include "src/turbomind/models/mtp_weight.h"
@@ -104,6 +105,22 @@ struct LanguageModel::Impl {
 
         /// Per-row key length for this step, host-side, all rows.
         std::vector<int> seq_lens;
+
+        /// Row sequence pointers, retained from Setup.
+        ///
+        /// `requests` is removed from the env map before Forward, but the
+        /// speculative ops run after Forward and must write accepted tokens and
+        /// the new seq_len back onto the sequence itself. Holding the pointers
+        /// here is what lets kReject and kRollback reach them.
+        ///
+        /// Valid only within the step that filled them.
+        std::vector<Sequence*> rows;
+
+        /// Per-row draft count for this step, captured in Setup for the same
+        /// reason. num_drafts on the sequence is rewritten by kDraft at the end
+        /// of the step, so the value the forward actually verified must be kept
+        /// separately or rejection would read the wrong K.
+        std::vector<int> num_drafts;
     };
 
     vector<Data> data_;
@@ -114,6 +131,15 @@ struct LanguageModel::Impl {
     /// Draft-token generator, present only when the checkpoint carries an MTP
     /// layer and the decoder registered a KV slot for it.
     std::unique_ptr<MTPPredictor> mtp_predictor_;
+
+    /// Verification logits, held between Forward and kReject because the env
+    /// map is rebuilt in between.
+    Tensor verify_logits_;
+
+    /// Accept-length accounting. 1 + accepted/steps is the tokens emitted per
+    /// forward, which is the number that decides whether speculation pays.
+    size_t mtp_accepted_ = 0;
+    size_t mtp_steps_    = 0;
 
     /// Drafts from the previous decode step, held on the host so the next step
     /// can score them against the token the target actually sampled.
@@ -190,6 +216,12 @@ struct LanguageModel::Impl {
                 return Unprep(phase, env);
             case BatchOp::kFetch:
                 return Fetch(phase, env);
+            case BatchOp::kDraft:
+                return DraftTokens(phase, env);
+            case BatchOp::kReject:
+                return RejectDrafts(phase, env);
+            case BatchOp::kRollback:
+                return Rollback(phase, env);
             default:
                 input_processor_->Run(op, phase, env);
                 unified_decoder_->Run(op, phase, env);
@@ -212,6 +244,44 @@ struct LanguageModel::Impl {
     void Forward(int phase, TensorMap& env);
     void Unprep(int phase, TensorMap& env);
     void Fetch(int phase, TensorMap& env);
+
+    /// Does this phase's batch carry drafts for the next forward to verify?
+    bool HasDraftsToVerify(int phase) const
+    {
+        const auto& d = data_.at(phase);
+        for (size_t i = 0; i < d.rows.size(); ++i) {
+            if (d.rows[i] && d.rows[i]->generating && d.rows[i]->num_drafts > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Is this a real decode step? `generating` alone is not enough: the last
+    /// prefill chunk is also generating, and drafting from it would submit one
+    /// row per sequence against attention statistics prepared for a longer
+    /// prefill shape.
+    bool CanDraft(int phase) const
+    {
+        const auto& d = data_.at(phase);
+        if (d.rows.empty() || !mtp_predictor_) {
+            return false;
+        }
+        for (size_t i = 0; i < d.rows.size(); ++i) {
+            if (!d.rows[i] || !d.rows[i]->generating || !d.autoregres[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Propose K drafts from the current tip and store them on each sequence.
+    void DraftTokens(int phase, TensorMap& env);
+    /// Compare the verification logits against the drafts; produce the accepted
+    /// count and bonus token per row.
+    void RejectDrafts(int phase, TensorMap& env);
+    /// Commit the accepted prefix: write the tokens and set the new seq_len.
+    void Rollback(int phase, TensorMap& env);
 };
 
 LanguageModel::Impl::Impl(
@@ -447,9 +517,13 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
 
     d.uids.resize(rc.size());
     d.seq_lens.resize(rc.size());
+    d.rows.resize(rc.size());
+    d.num_drafts.resize(rc.size());
 
     for (int i = 0; i < rc.size(); ++i) {
         auto& c         = *rc[i];
+        d.rows[i]       = &c;
+        d.num_drafts[i] = c.num_drafts;
         d.uids[i]       = c.req->unique_id;
         d.autoregres[i] = c.autoregres;
         d.generating[i] = c.generating;
@@ -645,6 +719,27 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     env.produce("logits", PostEmbedding(hidden_states, symm_buf_));
 
     output_processor_->OutputHiddenStatesAndLogits(phase, env, 1);
+
+    // On a verification step the sampler must not run.
+    //
+    // Generation::Forward samples one token per row and advances seq_len by
+    // one. A verification forward has already submitted [bonus, D0..D_{K-1}]
+    // and the tokens it will keep are decided by kReject and kRollback, from
+    // the logits, not by sampling. Letting the sampler run here would append a
+    // token on top of the accepted prefix and corrupt the sequence.
+    bool spec_verify = false;
+    for (int i = 0; i < (int)d.rows.size(); ++i) {
+        if (d.rows[i] && d.rows[i]->generating && d.num_drafts[i] > 0 && !d.autoregres[i]) {
+            spec_verify = true;
+            break;
+        }
+    }
+    if (spec_verify) {
+        // Keep the logits for kReject; it runs after Unprep, by which point the
+        // env map has been rebuilt.
+        verify_logits_ = env.at("logits");
+        return;
+    }
 
     if (d.n_generating) {
         generation_->Run(BatchOp::kForward, phase, env);
@@ -935,6 +1030,147 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     }
 }
 
+void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
+{
+    TM_CHECK_NOTNULL(mtp_predictor_.get());
+
+    auto&     d   = data_.at(phase);
+    const int bsz = (int)d.rows.size();
+    const int K   = engine_param_.num_draft_tokens;
+    if (bsz == 0 || K <= 0) {
+        return;
+    }
+
+    // Seed the MTP attention state before drafting.
+    //
+    // Without this the draft attends to an uninitialised KV slot, because the
+    // target's UnifiedDecoder only walks its own layers. That is what made the
+    // previously measured acceptance rate meaningless.
+    mtp_predictor_->SetupAttention(phase, env);
+
+    // Draft from the accepted tip.
+    auto hidden = env.at("hidden_states");
+    auto ids    = autoreg_ids_.slice(0, bsz);
+
+    // Each row's key length after this step's accepted tokens, which is what
+    // the draft needs to know how much slack its last KV block still has.
+    std::vector<int> seq_lens(bsz);
+    for (int i = 0; i < bsz; ++i) {
+        seq_lens[i] = d.rows[i]->seq_len;
+    }
+
+    auto drafts = mtp_predictor_->Draft(bsz, hidden, ids, K, phase, seq_lens.data(), env);
+
+    // Store them on the sequences so the next step's Setup can inject them.
+    // Layout is [step][batch], so draft k for row i is at k*bsz + i.
+    if (drafts.num_drafts > 0) {
+        const int n = drafts.num_drafts;
+        Buffer_<int> host{n * bsz, kCPU};
+        core::Copy(drafts.draft_tokens, n * bsz, host);
+        core::Context::stream().Sync();
+        for (int i = 0; i < bsz; ++i) {
+            auto& c      = *d.rows[i];
+            c.num_drafts = n;
+            for (int k = 0; k < n; ++k) {
+                c.draft_tokens[k] = host[k * bsz + i];
+            }
+        }
+    }
+    else {
+        // No capacity to draft this step. Zeroing matters: a stale count would
+        // make the next Setup inject drafts that were never produced.
+        for (int i = 0; i < bsz; ++i) {
+            d.rows[i]->num_drafts = 0;
+        }
+    }
+}
+
+void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
+{
+    TM_CHECK_NOTNULL(mtp_predictor_.get());
+
+    auto&     d   = data_.at(phase);
+    const int bsz = (int)d.rows.size();
+    const int K   = engine_param_.num_draft_tokens;
+    const auto st = core::Context::stream().handle();
+
+    TM_CHECK(verify_logits_) << "kReject ran without verification logits";
+
+    // Drafts, laid out [bsz, K] to match GreedyReject.
+    Buffer_<int> drafts{bsz * K, kDEVICE};
+    {
+        Buffer_<int> host{bsz * K, kCPU};
+        for (int i = 0; i < bsz; ++i) {
+            for (int k = 0; k < K; ++k) {
+                host[i * K + k] = (k < d.num_drafts[i]) ? d.rows[i]->draft_tokens[k] : -1;
+            }
+        }
+        Copy(host, drafts);
+    }
+
+    const int vocab_size = weights_.vocab_size;
+
+    // verify_logits_ is [bsz*(K+1), vocab], because Setup selected every
+    // submitted position rather than only the last one.
+    auto result = GreedyReject(
+        verify_logits_.raw_data(), drafts.data(), bsz, K, vocab_size, weights_.data_type, st);
+
+    env.produce("num_accepted", result.num_accepted);
+    env.produce("bonus_tokens", result.bonus_tokens);
+
+    // The bonus token is the tip the next draft conditions on.
+    Copy(result.bonus_tokens, autoreg_ids_.slice(0, bsz));
+
+    verify_logits_ = {};
+}
+
+void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
+{
+    auto&     d   = data_.at(phase);
+    const int bsz = (int)d.rows.size();
+
+    Buffer_<int> accepted{bsz, kCPU};
+    Buffer_<int> bonus{bsz, kCPU};
+    Copy(env.at("num_accepted").buffer().slice(0, bsz), accepted);
+    Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
+    core::Context::stream().Sync();
+
+    for (int i = 0; i < bsz; ++i) {
+        auto& c = *d.rows[i];
+        if (!c.generating || d.num_drafts[i] == 0) {
+            continue;
+        }
+
+        const int n = accepted[i];
+        TM_CHECK_GE(n, 0);
+        TM_CHECK_LE(n, d.num_drafts[i]);
+
+        // The sequence was extended by 1 + num_drafts speculatively. Keep the
+        // bonus token plus the accepted prefix and drop the rest. KV entries
+        // past the new tip are stale and get overwritten by the next forward.
+        const int base = c.seq_len;
+        c.token_ids[base] = bonus[i];
+        for (int k = 0; k < n; ++k) {
+            c.token_ids[base + 1 + k] = c.draft_tokens[k];
+        }
+        c.seq_len = base + 1 + n;
+
+        c.all_accepted = (n == d.num_drafts[i]);
+
+        mtp_accepted_ += n;
+        mtp_steps_ += 1;
+    }
+
+    // Accept length is the quantity that decides whether this is worth doing:
+    // 1 + mean accepted drafts is the tokens produced per forward.
+    if (mtp_steps_ >= 64 && mtp_steps_ % 64 == 0) {
+        TM_LOG_INFO("[MTP] accept length {:.2f} tokens/step over {} steps ({} drafts accepted)",
+                    1.0 + (double)mtp_accepted_ / (double)mtp_steps_,
+                    mtp_steps_,
+                    mtp_accepted_);
+    }
+}
+
 void LanguageModel::Impl::Unprep(int phase, TensorMap& env)
 {
     auto& d    = data_.at(phase);
@@ -972,6 +1208,16 @@ LanguageModel::LanguageModel(
     CacheRegistry& registry, const EngineParam& engine, const Context& ctx, const ModelWeight& weights, int phases)
 {
     impl_ = std::make_unique<Impl>(registry, engine, ctx, weights, phases);
+}
+
+bool LanguageModel::HasDraftsToVerify(int phase) const
+{
+    return impl_->HasDraftsToVerify(phase);
+}
+
+bool LanguageModel::CanDraft(int phase) const
+{
+    return impl_->CanDraft(phase);
 }
 
 void LanguageModel::Run(BatchOp op, int phase, TensorMap& env)

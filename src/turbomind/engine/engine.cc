@@ -533,6 +533,31 @@ void Engine::Impl::Schedule()
         c.autoregres = c.generating && c.input_len == 1;
     }
 
+    // Inject the previous step's drafts so this forward verifies them.
+    //
+    // The bonus token already sits at token_ids[seq_len - 1], written by the
+    // last Rollback. The drafts follow it, so the forward sees the contiguous
+    // run [bonus, D0 .. D_{K-1}] and produces a logit for each position. Those
+    // logits are what kReject compares against the drafts.
+    //
+    // autoregres is cleared because this is no longer a one-token decode: the
+    // row now carries K+1 query tokens and must take the prefill-shaped path.
+    // Leaving it set would describe a shape the attention layer does not have,
+    // which is the mismatch that previously aborted with
+    // `d.prefill.q_sum + d.decode.n == q_count`.
+    if (param_.num_draft_tokens > 0) {
+        for (auto i : existing) {
+            auto& c = *eligible[i];
+            if (c.generating && c.num_drafts > 0) {
+                TM_CHECK_LE(c.num_drafts, Sequence::kMaxDraftTokens);
+                for (int k = 0; k < c.num_drafts; ++k) {
+                    c.token_ids[c.seq_len + k] = c.draft_tokens[k];
+                }
+                c.autoregres = false;
+            }
+        }
+    }
+
     for (auto i : active) {
         auto& c      = *eligible[i];
         c.generating = c.resume_len + c.inflight_input_len + c.input_len == c.seq_len + c.inflight_new_tokens;
@@ -740,12 +765,26 @@ void Engine::Impl::Update(BatchData& b, std::vector<Signal>& signals)
     // b.rc.clear();
 
     if (async_) {
+        // Reserve room for the drafts as well as the bonus token.
+        //
+        // inflight_new_tokens feeds Scheduler::EnsureBlocks through
+        // `seq_len + inflight_new_tokens`, so it decides how much KV space the
+        // next step may write. Left at `c.generating` it is a bool: one token
+        // per step, and a K+1-token verification forward has nowhere to put the
+        // extra entries. That single line is why drafts could only ever be
+        // computed and discarded.
+        //
+        // A generating row that carries drafts needs 1 + num_drafts: the bonus
+        // token plus each draft being verified. num_drafts is 0 on the first
+        // decode, which reduces this to the original behaviour, so the
+        // non-speculative path is unchanged by construction.
+        const int K    = param_.num_draft_tokens;
         const int size = s.active + s.swapout;
         for (int i = 0; i < size; ++i) {
             auto& c = *s.rc[i];
             if (i < s.active) {
                 c.inflight_input_len  = c.input_len;
-                c.inflight_new_tokens = c.generating;
+                c.inflight_new_tokens = c.generating ? 1 + (K > 0 ? c.num_drafts : 0) : 0;
             }
             else {
                 // Just got swaped-out
@@ -777,9 +816,12 @@ void Engine::Impl::InternalThreadEntry()
     core::ContextGuard ctx{stream, Allocator(kCPU), Allocator(stream, false)};
 
     unique_ptr<BatchData> d = std::make_unique<BatchData>(0);
+    d->spec_decode          = param_.num_draft_tokens > 0;
 
     for (unsigned i = 1; i < data_.size(); ++i) {
-        inbound_.push(std::make_unique<BatchData>(i));
+        auto bd          = std::make_unique<BatchData>(i);
+        bd->spec_decode  = param_.num_draft_tokens > 0;
+        inbound_.push(std::move(bd));
     }
 
     while (true) {

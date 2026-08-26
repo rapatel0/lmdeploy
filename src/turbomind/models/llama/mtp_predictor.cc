@@ -69,6 +69,22 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
 
 MTPPredictor::~MTPPredictor() = default;
 
+void MTPPredictor::SetupAttention(int phase, TensorMap& env)
+{
+    // Run the MTP attention layer's own Setup and Prepare.
+    //
+    // The target's UnifiedDecoder never does this for the draft layer: its
+    // Forward iterates weights_.layers_list(), which returns only the target's
+    // `layers` child. So without this call the MTP KV slot is never populated,
+    // the first draft attention reads uninitialised entries, and every step
+    // reuses one set of q/k offsets and writes the same cache position.
+    //
+    // That is why the acceptance figure measured before this existed could not
+    // be trusted as a predictor: it described a draft attending to nothing.
+    attn_layer_.Run(BatchOp::kSetup, phase, env);
+    attn_layer_.Run(BatchOp::kPrepare, phase, env);
+}
+
 Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_states, int batch_size)
 {
     // The ACTIVE stream, not ctx_.stream. ctx_.stream is created once when the

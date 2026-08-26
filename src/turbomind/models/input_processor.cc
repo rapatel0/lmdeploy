@@ -20,13 +20,16 @@ public:
         input_ids_buf_         = {max_forward_token_num_, kCPUpinned};
         input_ids_offsets_buf_ = {max_batch_size_ + 1, kCPUpinned};
         decode_token_pos_buf_  = {max_batch_size_, kCPUpinned};
+        spec_token_pos_buf_    = {max_forward_token_num_, kCPUpinned};
 
         data_.reserve(phases);
         for (int i = 0; i < phases; ++i) {
             auto& d              = data_.emplace_back();
             d.input_ids          = empty_like(input_ids_buf_, kDEVICE);
             d.input_ids_offsets  = empty_like(input_ids_offsets_buf_, kDEVICE);
-            d.selected_token_pos = empty_like(decode_token_pos_buf_, kDEVICE);
+            // Sized from the verification staging buffer, not the batch-sized
+            // one: a verification step writes K+1 positions per row here.
+            d.selected_token_pos = empty_like(spec_token_pos_buf_, kDEVICE);
 
             d.autoreg_ids_pos = {max_batch_size_, kCPU};  // ! CPU buffer
 
@@ -116,6 +119,18 @@ public:
 
         Buffer_<Sequence*> rc = env.at("requests").buffer();
 
+        // A verification step is one where a generating row carries drafts to
+        // check. Detected from the sequences themselves rather than from a
+        // flag, so it cannot disagree with what the batch actually contains.
+        bool spec_verify = false;
+        for (int i = 0; i < rc.size(); ++i) {
+            const auto& c = *rc[i];
+            if (c.generating && c.num_drafts > 0 && c.input_len > 1) {
+                spec_verify = true;
+                break;
+            }
+        }
+
         input_ids_offsets_buf_[0] = 0;
         for (int i = 0; i < rc.size(); ++i) {
             input_ids_offsets_buf_[i + 1] = input_ids_offsets_buf_[i];
@@ -131,6 +146,33 @@ public:
                 input_ids_offsets_buf_[i + 1] += 1;
             }
             decode_token_pos_buf_[i] = input_ids_offsets_buf_[i + 1] - 1;
+        }
+
+        // Speculative verification needs a logit for EVERY submitted position,
+        // not just the last one.
+        //
+        // Normally one row contributes one selected position, because only the
+        // final token's logit is sampled. A verification step submits
+        // [bonus, D0..D_{K-1}] and must compare each draft against the logit at
+        // its own position, so all K+1 positions are selected and the hidden
+        // state comes back as [bsz*(K+1), hidden] instead of [bsz, hidden].
+        //
+        // Selecting only the last position here would silently verify one token
+        // and treat the rest as accepted, which corrupts output rather than
+        // failing -- the worst available outcome.
+        if (spec_verify) {
+            int w = 0;
+            for (int i = 0; i < rc.size(); ++i) {
+                const auto& c = *rc[i];
+                for (int k = 0; k < c.input_len; ++k) {
+                    spec_token_pos_buf_[w++] = input_ids_offsets_buf_[i] + k;
+                }
+            }
+            copy(spec_token_pos_buf_, w, d.selected_token_pos);
+            d.spec_selected_num = w;
+        }
+        else {
+            d.spec_selected_num = 0;
         }
 
         // dbg(core::to_vector<int>(input_ids_offsets_buf_.slice(0, bsz + 1)));
@@ -192,7 +234,11 @@ public:
 
         env.produce("input_ids", d.input_ids.slice(0, d.input_token_num));
         env.produce("q_offsets", d.input_ids_offsets.slice(0, b.bsz + 1));
-        env.produce("selected_token_pos", d.selected_token_pos.slice(0, b.bsz));
+        // On a verification step this is bsz*(K+1) wide, not bsz: every
+        // submitted position needs its own logit so each draft can be compared
+        // against the target's choice at that position.
+        env.produce("selected_token_pos",
+                    d.selected_token_pos.slice(0, d.spec_selected_num > 0 ? d.spec_selected_num : b.bsz));
     }
 
     void PatchInputEmbedding(int phase, Tensor& embeds, BatchCopy& copy)
@@ -239,6 +285,11 @@ private:
 
         Buffer_<int> selected_token_pos;
 
+        // Number of positions selected for speculative verification, or 0 for
+        // an ordinary step. Read downstream to size the logits view, which is
+        // [bsz, vocab] normally and [bsz*(K+1), vocab] when verifying.
+        int spec_selected_num = 0;
+
         Buffer_<int> autoreg_ids_pos;
 
         Tensor                      input_embeds_buf;
@@ -255,6 +306,11 @@ private:
     Buffer_<int> input_ids_offsets_buf_;
 
     Buffer_<int> decode_token_pos_buf_;
+
+    // Staging for verification positions. Sized by forward tokens rather than
+    // batch size: a verification step selects K+1 positions per row, so the
+    // batch-sized buffer beside it is too small by a factor of K+1.
+    Buffer_<int> spec_token_pos_buf_;
 };
 
 InputProcessor::~InputProcessor() = default;

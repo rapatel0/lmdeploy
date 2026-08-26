@@ -210,6 +210,28 @@ struct Sequence {
     int inflight_input_len  = 0;  // submitted input tokens not yet reflected into filled_len
     int inflight_new_tokens = 0;  // submitted generated tokens not yet reflected into seq_len
 
+    // Speculative decoding state, carried between steps.
+    //
+    // The drafts produced at the end of step N are consumed at step N+1, which
+    // verifies them in a single K+1-token forward. They live on the request
+    // rather than in the batch because the batch is rebuilt each iteration
+    // while the sequence persists.
+    //
+    // The array is fixed at 8 to keep RequestCache trivially copyable and to
+    // bound the verification shape; K is validated against this at setup, so a
+    // larger num_draft_tokens fails loudly instead of writing out of bounds.
+    static constexpr int kMaxDraftTokens = 8;
+    int  draft_tokens[kMaxDraftTokens] = {};  // drafts from the previous step
+    int  num_drafts                    = 0;   // valid entries; 0 on the first decode
+    bool all_accepted                  = false;  // every draft accepted last step
+
+    // Pending growth, consumed by SequenceManager when it sizes the next step.
+    // alpha is the growth of cache_len (drafts plus input), beta the growth of
+    // seq_len. Without these the scheduler reserves room for exactly one new
+    // token and a K+1-token forward has nowhere to write.
+    int alpha = 0;
+    int beta  = 0;
+
     float rope_base = 0.f;
 
     Interval output_hidden_states;

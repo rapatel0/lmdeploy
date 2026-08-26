@@ -50,7 +50,30 @@ struct ModelExecutor::Impl {
         while (inbound_.pop(d)) {
             TM_CHECK_NOTNULL(d);
             core::Context::stream().Wait(d->ready);
-            Run(*d);
+
+            // Two speculative shapes, distinguished by whether drafts exist.
+            //
+            // Steady state: the batch already carries drafts from the previous
+            // step, so the forward verifies them and the pipeline continues
+            // into reject, rollback and a fresh draft.
+            //
+            // First decode: no drafts yet. Run the ordinary forward, then draft
+            // once so the next step has something to verify. Without this the
+            // steady state can never be entered.
+            // BatchData carries no sequence pointers in this tree, so the two
+            // questions -- are there drafts to verify, is there a decode step
+            // to draft from -- are answered by the model, which captured that
+            // state during Setup.
+            if (d->spec_decode && model_.HasDraftsToVerify(d->phase)) {
+                RunWithDrafts(*d);
+            }
+            else {
+                Run(*d);
+                if (d->spec_decode && model_.CanDraft(d->phase)) {
+                    RunDraftOnly(*d);
+                }
+            }
+
             d->done.Record(core::Context::stream());
             outbound_.push(std::move(d));
         }
@@ -63,6 +86,54 @@ struct ModelExecutor::Impl {
                  Buffer_<uint8_t>{static_cast<uint8_t*>(c.dst), static_cast<ssize_t>(c.bytes), kDEVICE});
         }
         copies.clear();
+    }
+
+    // Steady-state speculative decode: Forward(K+1) -> Reject -> Rollback -> Draft.
+    //
+    // The forward consumes [bonus, D0..D_{K-1}] in one prefill-shaped pass and
+    // emits a logit per position. kReject compares those logits against the
+    // drafts and finds the longest correct prefix; kRollback truncates to the
+    // first rejection; kDraft proposes again from the new tip.
+    //
+    // The whole scheme is only worth doing because one K+1-shaped forward costs
+    // less than K+1 separate decode forwards.
+    void RunWithDrafts(BatchData& d)
+    {
+        TM_FUNCTION_SCOPE();
+
+        BatchCopy copy;
+        TensorMap env{{"batch", d.buf()}, {"copy", copy.buf()}};
+
+        RunCopies(d.restore_copies);
+
+        model_.Run(BatchOp::kPrepare, d.phase, env);
+        copy.Run();
+
+        model_.Run(BatchOp::kForward, d.phase, env);
+
+        model_.Run(BatchOp::kUnprep, d.phase, env);
+        copy.Run();
+
+        model_.Run(BatchOp::kReject, d.phase, env);
+        model_.Run(BatchOp::kRollback, d.phase, env);
+        model_.Run(BatchOp::kDraft, d.phase, env);
+
+        RunCopies(d.publish_copies);
+
+        AnomalyHandler::instance().Summarize([](...) {});
+        AnomalyHandler::instance().Reset();
+    }
+
+    // First decode after prefill: prime the drafts so the next step has
+    // something to verify.
+    void RunDraftOnly(BatchData& d)
+    {
+        TM_FUNCTION_SCOPE();
+
+        BatchCopy copy;
+        TensorMap env{{"batch", d.buf()}, {"copy", copy.buf()}};
+        model_.Run(BatchOp::kDraft, d.phase, env);
+        copy.Run();
     }
 
     void Run(BatchData& d)

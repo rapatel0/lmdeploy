@@ -91,6 +91,19 @@ public:
                       const int*          seq_lens,
                       TensorMap&          env);
 
+    /// Prepare the MTP attention layer's dispatch state for a decode-only batch.
+    ///
+    /// This must run before Draft(). Without it the draft attention reads
+    /// uninitialised KV entries: UnifiedDecoder::Forward iterates
+    /// weights_.layers_list(), which returns only the target's `layers` child,
+    /// so nothing ever populates the MTP layer's own slot. Drafting from an
+    /// empty cache is why the measured acceptance rate could not be trusted --
+    /// the draft was attending to nothing.
+    ///
+    /// `env` must carry the batch, block pointers, q/k offsets and finished
+    /// flags for the decode shape, one query token per sequence.
+    void SetupAttention(int phase, TensorMap& env);
+
 private:
     /// Normalise both inputs, concatenate them per row, and project back down
     /// to hidden size. Returns [batch, hidden].

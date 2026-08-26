@@ -81,6 +81,12 @@ struct BatchData {
     int bs0 = 0;  // prev batch size
     int bsz = 0;  // curr batch size
 
+    // Speculative decoding is enabled for this run. Set once from the engine
+    // config; the executor still checks whether drafts actually exist before
+    // taking the verification path, so enabling it does not by itself change
+    // the shape of any step.
+    bool spec_decode = false;
+
     Buffer_<int> perm;
 
     std::vector<ResolvedCopy> restore_copies;  // run before BatchOp::kPrepare
