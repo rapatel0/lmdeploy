@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 
 
 def read_config(model_dir: str) -> dict:
@@ -72,10 +73,15 @@ def generate(model_dir: str, tp: int, num_draft: int, prompt: str) -> tuple[str,
 
     # TM_LOG_INFO writes to the process stderr from C++, which the Python
     # handler above never sees. Capture the descriptor too.
+    #
+    # A file, not a pipe. A pipe holds 64KB and then blocks its writer, and
+    # TurboMind emits far more than that while loading, so a pipe deadlocks
+    # the engine. A file also survives a crash: if the process aborts, the
+    # abort message is still on disk, and that message is the entire reason
+    # for capturing stderr in the first place.
     saved_fd = os.dup(2)
-    r_fd, w_fd = os.pipe()
-    os.dup2(w_fd, 2)
-    os.close(w_fd)
+    tmp = tempfile.NamedTemporaryFile(prefix="mtp-stderr-", suffix=".log", delete=False)
+    os.dup2(tmp.fileno(), 2)
 
     try:
         pipe = pipeline(
@@ -91,27 +97,33 @@ def generate(model_dir: str, tp: int, num_draft: int, prompt: str) -> tuple[str,
         out = pipe([prompt], gen_config=GenerationConfig(temperature=0.0, max_new_tokens=64))
         text = out[0].text if out else ""
     except Exception as exc:  # noqa: BLE001 - the message is the artifact
-        os.dup2(saved_fd, 2)
-        os.close(saved_fd)
-        os.close(r_fd)
+        _restore(saved_fd)
+        # Echo what the engine said before it failed, or the reason is lost.
+        sys.stderr.write(_drain(tmp.name))
         lm_logger.removeHandler(handler)
         raise SystemExit(f"FAIL: generation failed at num_draft_tokens={num_draft}: {exc}") from None
     finally:
-        try:
-            os.dup2(saved_fd, 2)
-            os.close(saved_fd)
-        except OSError:
-            pass
+        _restore(saved_fd)
 
-    try:
-        os.set_blocking(r_fd, False)
-        captured = os.read(r_fd, 1 << 22).decode("utf-8", "replace")
-    except OSError:
-        captured = ""
-    os.close(r_fd)
     lm_logger.removeHandler(handler)
+    return text, _drain(tmp.name) + buf.getvalue()
 
-    return text, captured + buf.getvalue()
+
+def _restore(saved_fd: int) -> None:
+    """Put the real stderr back. Safe to call twice."""
+    try:
+        os.dup2(saved_fd, 2)
+        os.close(saved_fd)
+    except OSError:
+        pass
+
+
+def _drain(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
 
 
 def main() -> int:
@@ -133,8 +145,7 @@ def main() -> int:
     print(f"  text: {base_text.strip()[:160]!r}")
     if any("[MTP] drafted" in ln for ln in base_log.splitlines()):
         print(
-            "FAIL: a draft record appeared with num_draft_tokens=0, so the "
-            "speculation guard is not honoured",
+            "FAIL: a draft record appeared with num_draft_tokens=0, so the speculation guard is not honoured",
             file=sys.stderr,
         )
         return 3
