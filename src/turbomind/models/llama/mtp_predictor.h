@@ -68,6 +68,10 @@ public:
                       TensorMap&          env);
 
 private:
+    /// Normalise both inputs, concatenate them per row, and project back down
+    /// to hidden size. Returns [batch, hidden].
+    Tensor Project(const Tensor& embedding, const Tensor& hidden_states, int batch_size);
+
     const MTPLayerWeight& weights_;
 
     /// Owned by UnifiedDecoder. The draft layer shares that instance and
