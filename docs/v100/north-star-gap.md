@@ -336,7 +336,7 @@ Restart this work if a prefill sweep shows the gap widening beyond roughly 1.2x
 at long context, or once speculative decoding lands and prefill becomes the
 dominant remaining cost.
 
-### Is 1Cat's D=256 paged-prefill work worth porting? No.
+### Is 1Cat's D=256 paged-prefill work worth porting? No
 
 Assessed rather than assumed. Four findings, any one of which is decisive.
 
