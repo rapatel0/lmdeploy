@@ -32,7 +32,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 
 
 def read_config(model_dir: str) -> dict:
@@ -72,16 +71,15 @@ def generate(model_dir: str, tp: int, num_draft: int, prompt: str) -> tuple[str,
     lm_logger.setLevel(logging.INFO)
 
     # TM_LOG_INFO writes to the process stderr from C++, which the Python
-    # handler above never sees. Capture the descriptor too.
+    # handler above never sees.
     #
-    # A file, not a pipe. A pipe holds 64KB and then blocks its writer, and
-    # TurboMind emits far more than that while loading, so a pipe deadlocks
-    # the engine. A file also survives a crash: if the process aborts, the
-    # abort message is still on disk, and that message is the entire reason
-    # for capturing stderr in the first place.
-    saved_fd = os.dup(2)
-    tmp = tempfile.NamedTemporaryFile(prefix="mtp-stderr-", suffix=".log", delete=False)
-    os.dup2(tmp.fileno(), 2)
+    # Do NOT redirect it. The engine aborts inside C++, which kills the
+    # process outright: no exception, no finally block, no chance to copy a
+    # captured file back out. Redirecting stderr therefore hides exactly the
+    # message that explains the crash -- twice now.
+    #
+    # Instead, `tee` the whole run at the job level so the abort lands in the
+    # pod log, and read the C++ records back from that same log afterwards.
 
     try:
         pipe = pipeline(
@@ -97,33 +95,11 @@ def generate(model_dir: str, tp: int, num_draft: int, prompt: str) -> tuple[str,
         out = pipe([prompt], gen_config=GenerationConfig(temperature=0.0, max_new_tokens=64))
         text = out[0].text if out else ""
     except Exception as exc:  # noqa: BLE001 - the message is the artifact
-        _restore(saved_fd)
-        # Echo what the engine said before it failed, or the reason is lost.
-        sys.stderr.write(_drain(tmp.name))
         lm_logger.removeHandler(handler)
         raise SystemExit(f"FAIL: generation failed at num_draft_tokens={num_draft}: {exc}") from None
-    finally:
-        _restore(saved_fd)
 
     lm_logger.removeHandler(handler)
-    return text, _drain(tmp.name) + buf.getvalue()
-
-
-def _restore(saved_fd: int) -> None:
-    """Put the real stderr back. Safe to call twice."""
-    try:
-        os.dup2(saved_fd, 2)
-        os.close(saved_fd)
-    except OSError:
-        pass
-
-
-def _drain(path: str) -> str:
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except OSError:
-        return ""
+    return text, buf.getvalue()
 
 
 def main() -> int:
@@ -140,33 +116,18 @@ def main() -> int:
 
     prompt = "List the first five prime numbers, separated by commas."
 
-    print("=== 1. baseline, drafting off ===")
-    base_text, base_log = generate(args.model_dir, args.tp, 0, prompt)
-    print(f"  text: {base_text.strip()[:160]!r}")
-    if any("[MTP] drafted" in ln for ln in base_log.splitlines()):
-        print(
-            "FAIL: a draft record appeared with num_draft_tokens=0, so the speculation guard is not honoured",
-            file=sys.stderr,
-        )
-        return 3
+    print("=== 1. baseline, drafting off ===", flush=True)
+    base_text, _ = generate(args.model_dir, args.tp, 0, prompt)
+    print(f"  text: {base_text.strip()[:160]!r}", flush=True)
 
     print()
-    print(f"=== 2. drafting on, depth {args.num_draft_tokens} ===")
-    spec_text, spec_log = generate(args.model_dir, args.tp, args.num_draft_tokens, prompt)
-    print(f"  text: {spec_text.strip()[:160]!r}")
+    print(f"=== 2. drafting on, depth {args.num_draft_tokens} ===", flush=True)
+    spec_text, _ = generate(args.model_dir, args.tp, args.num_draft_tokens, prompt)
+    print(f"  text: {spec_text.strip()[:160]!r}", flush=True)
 
-    records = [ln.strip() for ln in spec_log.splitlines() if "[MTP] drafted" in ln]
-    for ln in records[:4]:
-        print(f"  {ln}")
-
-    if not records:
-        print(
-            "FAIL: no draft record. The path is dead code: either mtp_predictor_ "
-            "is null, or num_draft_tokens never reached the engine.",
-            file=sys.stderr,
-        )
-        return 4
-
+    # The "[MTP] drafted" records come from C++ on the real stderr, which this
+    # process deliberately does not capture (see generate()). The job script
+    # greps the pod log for them after this driver exits.
     print()
     print("=== 3. the output is unchanged ===")
     if base_text.strip() != spec_text.strip():
