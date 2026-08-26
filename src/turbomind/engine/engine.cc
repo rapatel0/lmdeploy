@@ -450,6 +450,24 @@ void Engine::Impl::Schedule()
         }
         auto& c = *p;
         if (!c.retiring) {
+            // Widen the reservation for rows carrying drafts, BEFORE the
+            // scheduler reads it.
+            //
+            // ForwardTokenResource::Test derives the admissible length from
+            // `seq_len + inflight_new_tokens - inflight_input_len -
+            // resume_len`, and ClampForwardEnd bounds input_len by the same
+            // ctx_end. This one field is what lets a decode row request K+1
+            // forward tokens instead of 1.
+            //
+            // It cannot be set in Update: Update runs before kDraft in the same
+            // step, so it sees the previous step's num_drafts and would reserve
+            // a single token on exactly the step that must verify K+1. The
+            // forward then submitted one token while kReject still expected
+            // per-position logits, which is the `verify_logits_` abort.
+            if (param_.num_draft_tokens > 0 && c.generating && c.num_drafts > 0) {
+                c.inflight_new_tokens = 1 + c.num_drafts;
+            }
+
             eligible.push_back(&c);
             was_active.push_back(c.is_active);
             context_length.push_back(c.seq_len + c.inflight_new_tokens /* plus draft tokens */);
@@ -553,7 +571,18 @@ void Engine::Impl::Schedule()
                 for (int k = 0; k < c.num_drafts; ++k) {
                     c.token_ids[c.seq_len + k] = c.draft_tokens[k];
                 }
-                c.autoregres = false;
+
+                // autoregres is NOT cleared by hand here. It is derived above
+                // as `generating && input_len == 1`, and with the reservation
+                // widened before scheduling this row's input_len is K+1, so it
+                // is already false. Forcing it would hide a disagreement
+                // between the shape the scheduler admitted and the shape the
+                // attention layer is told to expect; leaving it derived means
+                // the two cannot silently diverge.
+                TM_CHECK(!c.autoregres)
+                    << "a row carrying " << c.num_drafts
+                    << " drafts was scheduled with input_len=" << c.input_len
+                    << "; the K+1 reservation did not take effect";
             }
         }
     }
@@ -778,13 +807,17 @@ void Engine::Impl::Update(BatchData& b, std::vector<Signal>& signals)
         // token plus each draft being verified. num_drafts is 0 on the first
         // decode, which reduces this to the original behaviour, so the
         // non-speculative path is unchanged by construction.
-        const int K    = param_.num_draft_tokens;
+        // NOT `1 + c.num_drafts` here. Update runs before kDraft in the same
+        // step, so num_drafts is still the PREVIOUS step's value and would
+        // reserve one token on the very step that must verify K+1. The
+        // reservation is made in Schedule instead, once this step's drafts
+        // exist.
         const int size = s.active + s.swapout;
         for (int i = 0; i < size; ++i) {
             auto& c = *s.rc[i];
             if (i < s.active) {
                 c.inflight_input_len  = c.input_len;
-                c.inflight_new_tokens = c.generating ? 1 + (K > 0 ? c.num_drafts : 0) : 0;
+                c.inflight_new_tokens = c.generating;
             }
             else {
                 // Just got swaped-out
