@@ -1,24 +1,32 @@
 {
   "_comment": [
-    "This repository builds CUDA for SM70 inside a container. The development",
-    "host is macOS with no CUDA toolkit, and there is no compile_commands.json,",
-    "so clangd cannot resolve <cuda_runtime.h> or any project include. Clang",
-    "stops the translation unit at the first missing header and then reports",
-    "every later type as undeclared, producing roughly 21 findings per file",
-    "for files nobody has edited.",
+    "This directory is the git root, so this is the config pi-lens reads.",
+    "Patterns are relative to it.",
     "",
-    "Those cascades are not defects and cannot be fixed here, because the",
-    "toolchain they need does not exist on this machine. Real compilation runs",
-    "in the SM70 container via tools/v100/build_only.sh, which fails the job on",
-    "any compiler error, so C++ correctness is still enforced, just not here.",
+    "TurboMind builds CUDA for SM70 in a container. This host is macOS with no",
+    "CUDA toolkit and no compile_commands.json, so clangd resolves no include",
+    "and reports ~21 cascading errors per file, including untouched upstream",
+    "files. Real compilation runs via tools/v100/build_only.sh, which fails the",
+    "job on any compiler error, so C++ correctness is enforced there.",
     "",
-    "Ignore the C++ and CUDA sources rather than dismissing the same cascade",
-    "one finding at a time. Python, shell, JSON and markdown are unaffected."
+    "The disabled rules fire only on upstream Python style that predates this",
+    "work: asserts on tuple literals, a bare except, an identity comparison on",
+    "a literal, and unguarded calls in entry points. Pyright's implicit-Optional",
+    "findings are handled in pyrightconfig.json, where the interpreter is",
+    "already pinned. Everything else stays on."
   ],
   "ignore": [
     "src/turbomind/**/*.cc",
+    "src/turbomind/**/*.cpp",
     "src/turbomind/**/*.cu",
     "src/turbomind/**/*.h",
+    "src/turbomind/**/*.hpp",
     "src/turbomind/**/*.cuh"
-  ]
+  ],
+  "rules": {
+    "no-assert-tuple": "off",
+    "no-bare-except": "off",
+    "no-identity-operator-on-literals": "off",
+    "unchecked-throwing-call-python": "off"
+  }
 }

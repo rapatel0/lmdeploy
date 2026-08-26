@@ -333,6 +333,7 @@ class TurbomindEngineConfig:
     revision: str | None = None
     max_prefill_token_num: int = 8192
     num_tokens_per_iter: int = 0
+    num_draft_tokens: int = 0
     max_prefill_iters: int = 1
     async_: int = 1
     devices: list[int] | None = None
@@ -360,6 +361,7 @@ class TurbomindEngineConfig:
         assert self.max_prefill_token_num >= 0, \
             'invalid max_prefill_token_num'
         assert self.num_tokens_per_iter >= 0, 'invalid num_tokens_per_iter'
+        assert self.num_draft_tokens >= 0, 'invalid num_draft_tokens'
         assert self.cache_prompt in ('all', 'auto'), 'invalid cache_prompt'
         assert self.cache_generation in ('all', 'auto', 'none'), 'invalid cache_generation'
         assert self.cache_checkpoint_interval > 0, 'invalid cache_checkpoint_interval'

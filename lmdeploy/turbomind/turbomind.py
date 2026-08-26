@@ -255,6 +255,7 @@ class TurboMind:
         ec.cache_generation = engine_config.cache_generation
         ec.enable_metrics = engine_config.enable_metrics
         ec.num_tokens_per_iter = engine_config.num_tokens_per_iter
+        ec.num_draft_tokens = engine_config.num_draft_tokens
         ec.max_prefill_iters = engine_config.max_prefill_iters
         ec.async_ = engine_config.async_
         ec.outer_dp_size = engine_config.outer_dp_size
