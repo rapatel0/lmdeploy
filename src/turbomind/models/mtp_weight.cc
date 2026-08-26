@@ -14,6 +14,18 @@ MTPLayerWeight::MTPLayerWeight(const core::ModuleConfig&) {}
 
 MTPLayerWeight::~MTPLayerWeight() = default;
 
+/// Note: nothing calls this today.
+///
+/// `Module::verify` is declared in core/module.h and overridden here, in
+/// ModelWeight and in DecoderLayerWeight, but no C++ caller invokes it and it
+/// is not bound into Python. The two upstream overrides arrived dormant in
+/// #4557 and remain so.
+///
+/// The override is kept rather than deleted because it is the natural home for
+/// these checks once a caller exists, and because deleting it would diverge
+/// from the two sibling modules that also define one. Its log line is
+/// therefore not evidence of loading: the Python loader in qwen3_5.py emits
+/// the record that is actually observed.
 bool MTPLayerWeight::verify(std::vector<std::string>& missing)
 {
     // `missing` is a single vector threaded through the whole weight tree, so
