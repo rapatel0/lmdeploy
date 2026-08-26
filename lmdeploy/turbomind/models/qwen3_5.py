@@ -87,6 +87,7 @@ def map_packed_qwen35_experts(name: str) -> str:
 class Qwen3_5TextModel(TextModel):
     """Weight model for Qwen3.5 (dense + linear-attn + optional MoE)."""
 
+    # pi-lens-ignore: python-mutable-class-attr
     _loader_mappings = [map_packed_qwen35_experts]
     cfg: Qwen3_5TextConfig | Qwen3_5MoeTextConfig
 

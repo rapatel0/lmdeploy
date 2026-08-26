@@ -97,7 +97,9 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
         if (mtp_layer->attention) {
             attn_weights.push_back(mtp_layer->attention.get());
             mtp_attn_index_ = static_cast<int>(attn_weights.size()) - 1;
-            TM_LOG_INFO("[MTP] registered a KV slot for the draft layer at attention index %d of %d",
+            // TM_LOG_INFO formats with fmt, not printf: a %d is emitted
+            // literally and the value never appears.
+            TM_LOG_INFO("[MTP] registered a KV slot for the draft layer at attention index {} of {}",
                         mtp_attn_index_,
                         (int)attn_weights.size());
         }

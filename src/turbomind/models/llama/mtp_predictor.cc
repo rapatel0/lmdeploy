@@ -33,7 +33,9 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
     TM_CHECK_GT(hidden_units_, 0) << "MTP fc weight missing or malformed";
     TM_CHECK_GE(attn_index_, 0) << "MTP predictor built without a KV slot";
 
-    TM_LOG_INFO("[MTP] predictor ready: hidden=%d attn_index=%d tp=%d", hidden_units_, attn_index_, tp_size_);
+    // fmt placeholders, not printf: TM_LOG_INFO forwards to fmt::format, so a
+    // %d would be printed literally and the value would never appear.
+    TM_LOG_INFO("[MTP] predictor ready: hidden={} attn_index={} tp={}", hidden_units_, attn_index_, tp_size_);
 }
 
 MTPPredictor::~MTPPredictor() = default;
