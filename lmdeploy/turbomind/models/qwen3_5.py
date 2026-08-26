@@ -184,6 +184,17 @@ class Qwen3_5TextModel(TextModel):
             logger.info('[MTP] speculation unavailable: the config declares '
                         'mtp_num_hidden_layers=%s', n_mtp)
             return None
+        if n_mtp > 1:
+            # Only layers.0 is loaded below, and the C++ draft loop reuses that
+            # one layer for every step. A checkpoint with more MTP layers would
+            # have the rest silently ignored and would draft from the wrong
+            # weights past step 0, which shows up as poor acceptance rather
+            # than as an error.
+            logger.warning('[MTP] speculation DISABLED: the config declares %s '
+                           'MTP layers but only one is loaded and reused; '
+                           'refusing rather than drafting from the wrong '
+                           'weights', n_mtp)
+            return None
         if not pfx.has('fc.weight'):
             # The config declares an MTP layer but the checkpoint does not
             # carry one. Loading a partial layer would leave every draft

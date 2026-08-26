@@ -619,6 +619,19 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         const int bsz = b.bsz;
         if (mtp_predictor_ && engine_param_.num_draft_tokens > 0 && d.n_generating == bsz && d.all_decode) {
             const int n_draft = engine_param_.num_draft_tokens;
+            //
+            // NOTE: the MTP KV slot is never populated. UnifiedDecoder::Forward
+            // iterates weights_.layers_list(), which returns only the target's
+            // `layers` child, so the draft layer never writes the accepted
+            // prompt or decode history into its own slot. The first draft
+            // attention therefore reads uninitialised entries, and the loop
+            // reuses one set of q/k offsets for every step, so each step writes
+            // the same cache position.
+            //
+            // The drafts are discarded, so this cannot corrupt output today.
+            // Seeding and advancing that state is part of the verification
+            // work, not a detail: without it accept length is meaningless
+            // because the draft is attending to nothing.
             // Slice to bsz: output_ids is `output_ids_buf_`, allocated once at
             // max_batch_size (128) and reused, so its extent is the capacity
             // and not this step's batch. Passing it whole made the draft embed
@@ -633,6 +646,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                                                 hidden_states,
                                                 ids,
                                                 n_draft,
+                                                phase,
                                                 env);
 
             if (!mtp_logged_) {

@@ -80,10 +80,14 @@ public:
     ///
     /// `hidden_states` is the target's final hidden state, [batch, hidden].
     /// `last_tokens` is the last accepted token per sequence, [batch].
+    /// `phase` must be the caller's phase: with async_=1 two batches are in
+    /// flight and the attention layer keeps per-phase state, so a hard-coded
+    /// phase reads another batch's offsets and block pointers.
     DraftResult Draft(int                 batch_size,
                       const Tensor&       hidden_states,
                       const Buffer_<int>& last_tokens,
                       int                 num_draft_tokens,
+                      int                 phase,
                       TensorMap&          env);
 
 private:

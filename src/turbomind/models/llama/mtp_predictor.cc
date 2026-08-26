@@ -42,6 +42,15 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
     TM_CHECK_GT(hidden_units_, 0) << "MTP fc weight missing or malformed";
     TM_CHECK_GE(attn_index_, 0) << "MTP predictor built without a KV slot";
 
+    // A MoE MTP layer carries both `moe_ffn` and `feed_forward` (qwen3_5.py
+    // assigns the pair). DecodeStep runs only LlamaFfnLayer, which skips the
+    // router, the routed experts and the combine. That does not fail -- it
+    // produces drafts from the wrong computation, so acceptance would simply
+    // be poor and look like a bad draft model. Refuse instead of guessing.
+    TM_CHECK(!weights_.decoder_layer->moe_ffn)
+        << "MTP: this checkpoint has a MoE draft layer; the predictor runs only the dense FFN, "
+           "which would silently draft from the wrong computation";
+
     // fmt placeholders, not printf: TM_LOG_INFO forwards to fmt::format, so a
     // %d would be printed literally and the value would never appear.
     // The MTP layer in this checkpoint carries a dense mlp.{gate,up,down}_proj
@@ -57,7 +66,13 @@ MTPPredictor::~MTPPredictor() = default;
 
 Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_states, int batch_size)
 {
-    const auto stream = ctx_.stream;
+    // The ACTIVE stream, not ctx_.stream. ctx_.stream is created once when the
+    // model is constructed; each inference batch runs on the stream that
+    // ModelExecutor installs. CUDA imposes no ordering between the two, so
+    // launching predictor work on the construction stream can read inputs the
+    // executor has not finished writing, and can free a temporary while a
+    // kernel on the other stream is still using it.
+    const auto stream = core::Context::stream().handle();
 
     // Report the real shapes before asserting on them. Guessing which operand
     // disagreed cost a full build-and-run cycle; the kernel's check names
@@ -129,8 +144,8 @@ Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_state
 
 Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
 {
-    // Context::stream is already a cudaStream_t; core_stream is the wrapper.
-    const auto  stream = ctx_.stream;
+    // The executor's active stream; see the note in Project().
+    const auto  stream = core::Context::stream().handle();
     const auto& layer  = *weights_.decoder_layer;
 
     const int batch_size = hidden.shape(0);
@@ -199,6 +214,7 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
                                              const Tensor&       hidden_states,
                                              const Buffer_<int>& last_tokens,
                                              int                 num_draft_tokens,
+                                             int                 phase,
                                              TensorMap&          env)
 {
     TM_CHECK_GT(batch_size, 0);
@@ -209,7 +225,8 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     // surface as a shape error deep inside an RMSNorm.
     TM_CHECK_EQ((int)last_tokens.size(), batch_size) << "MTP Draft: last_tokens must be sliced to the batch";
 
-    const auto stream = ctx_.stream;
+    // The executor's active stream; see the note in Project().
+    const auto stream = core::Context::stream().handle();
 
     DraftResult result;
     // Buffer_ takes a signed ssize_t extent.
@@ -231,7 +248,7 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
         Tensor projected = Project(embedding, cur_hidden, batch_size);
 
         // Decode phase: the draft always extends one token per sequence.
-        Tensor out = DecodeStep(std::move(projected), /*phase=*/0, env);
+        Tensor out = DecodeStep(std::move(projected), phase, env);
 
         Tensor logits = logits_fn_(out);
 
