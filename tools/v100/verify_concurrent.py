@@ -163,8 +163,21 @@ def main() -> int:
     )
     lp_out = pipe([long_prompt], gen_config=cfg)[0]
     lp_text = lp_out.text or ""
+    # Distinguish a real defect from simply exceeding session_len.
+    #
+    # 400 filler items plus a chat template can approach the 2048 limit if the
+    # tokenizer splits itemNNN into three or four pieces. Hitting that ceiling
+    # produces empty or truncated output, which looks exactly like a KV defect
+    # and would send the next reader hunting one. Report the measured length so
+    # the log distinguishes the two without a rerun.
+    lp_in = getattr(lp_out, "input_token_len", None)
+    lp_gen = getattr(lp_out, "generate_token_len", None)
+    print(f"    prompt tokens={lp_in}, generated={lp_gen}, finish={getattr(lp_out,'finish_reason',None)}")
     if not lp_text.strip():
-        failures.append("multi-block prompt produced no text")
+        failures.append(
+            f"multi-block prompt produced no text (prompt_tokens={lp_in}; "
+            "if this is near session_len 2048 the prompt is too long, not the engine broken)"
+        )
     elif not re.search(r"(?i)\btokyo\b", final_answer(lp_text)):
         failures.append(f"multi-block prompt gave wrong answer: {final_answer(lp_text).strip()[:90]!r}")
     else:
