@@ -208,6 +208,36 @@ puts unverified KV into the prefix cache, where another request reuses it. The
 MTP slot lives in that same registered prefix object, so this is not
 hypothetical.
 
+**A K+1 forward is a prefill, not a decode.** This changes the cost side of the
+trade and is worth knowing before implementing, not after measuring a
+disappointing speedup:
+
+```cpp
+// unified_attention_layer.cc:310 -- rows split by input_len
+d.decode.n = find_if(rc, [](auto r) { return r->input_len > 1; }) - rc.begin();
+
+// context_token_resource.h:50 -- temp memory
+return (input_len > 1 || !s.is_active) ? ContextLen(s) : 0;
+```
+
+A speculative row has `input_len == K+1 > 1`, so it is counted in `prefill`,
+dispatched through `invokeProcessKV_v2_` + `dispatchAttention` rather than
+`dispatchDecoding`, and charged full `ContextLen` temp memory instead of zero.
+
+So the comparison is not "K+1 decode steps for the price of one". It is one
+prefill-shaped forward of K+1 tokens against K+1 decode forwards. On V100 that
+is usually still favourable, because decode is memory-bound on weight traffic
+and a K+1 prefill re-reads those weights once instead of K+1 times -- but it is
+a different claim, and the 1.87 ceiling does not account for it. The realised
+speedup must be measured end to end, not inferred from accept length.
+
+It also means the pure-decode guard on the draft path (`d.all_decode`) will
+exclude the verifying batch itself once verification lands: a batch containing
+a K+1 row is not pure decode. Drafting for the next step has to happen on that
+same forward, so that guard needs revisiting at the same time, and this is
+exactly the kind of interaction that would otherwise surface as a Check failure
+deep in attention.
+
 **Smallest honest increment:** `bsz==1`, greedy, prefix caching off, K=1.
 Under those constraints steps 1-3 are local and step 4 is satisfied by
 construction, since publication is disabled. That is enough to produce a
