@@ -738,9 +738,12 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                 mtp_prev_valid_ = true;
             }
 
-            // Report periodically. A rate over a handful of tokens is noise, so
-            // the first report waits for a sample worth quoting.
-            if (mtp_scored_ >= 64 && mtp_scored_ % 64 == 0) {
+            // Report periodically. A rate over a handful of tokens is noise,
+            // so the first report waits for a sample worth quoting. 32 rather
+            // than 64: a 64-token generation scores only 63 pairs (the first
+            // step has no prior draft), so a 64 threshold would print nothing
+            // at all for the standard run and look like the meter was broken.
+            if (mtp_scored_ >= 32 && mtp_scored_ % 32 == 0) {
                 TM_LOG_INFO("[MTP] step-1 draft acceptance: {}/{} = {:.1f}%",
                             mtp_matched_,
                             mtp_scored_,

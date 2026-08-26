@@ -137,6 +137,18 @@ fi
 echo "  ${DRAFTS} draft record(s)"
 
 echo
+echo "=== 3b. step-1 draft acceptance ==="
+# The number this whole exercise exists to produce. Near-zero is the EXPECTED
+# result right now: the MTP KV slot is registered but never written, so the
+# draft attends to uninitialised memory. Recording it before the seeding fix is
+# the point -- afterwards, a fix that changes nothing is indistinguishable from
+# a fix that works.
+if grep -aq "step-1 draft acceptance" "${SPEC_LOG}"; then
+    grep -a "step-1 draft acceptance" "${SPEC_LOG}" | tail -3
+else
+    echo "  no acceptance report: fewer than 32 scored draft/token pairs"
+fi
+
 echo "=== 4. is the output unchanged? ==="
 # Drafts are discarded today, so speculation must be invisible in the text.
 # A difference here means the draft is corrupting the target's KV or
