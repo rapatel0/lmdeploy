@@ -41,6 +41,8 @@ from ..builders import (
     ModuleListBuilder,
     ModuleListConfig,
     MoeBuilder,
+    MTPLayerBuilder,
+    MTPLayerConfig,
     SplitSide,
     TextModelBuilder,
     VisionModelBuilder,
@@ -143,7 +145,84 @@ class Qwen3_5TextModel(TextModel):
                   else pfx + 'lm_head')
         builder.add_lm_head(self._linear(lm_pfx))
         builder.layers = self.layers(pfx + 'model.language_model.layers')
+        mtp = self.mtp(pfx + 'mtp')
+        if mtp is not None:
+            builder.mtp = mtp
         builder.build()
+
+    # ------------------------------------------------------------------
+    # Multi-Token Prediction
+    # ------------------------------------------------------------------
+
+    def mtp(self, pfx):
+        """Build the MTP layer, or return None when the checkpoint has none.
+
+        Qwen3.5 and Qwen3.8 ship this module inside the target checkpoint under
+        the ``mtp.`` prefix, so it is not a separate draft model. It predicts
+        token t+1 from the target's final hidden state, and the target then
+        verifies the prediction.
+
+        The decoder layer is always full attention, never linear attention.
+        Both reference implementations force this, and the projection shapes are
+        identical to a main full-attention layer, so ``attn`` and ``ffn`` are
+        reused unchanged.
+
+        ``embed_tokens`` and ``lm_head`` are deliberately not built here. The
+        checkpoint sets ``mtp_use_dedicated_embeddings`` to false, so the layer
+        shares the target's embedding and output projection.
+        """
+        if getattr(self.cfg, 'mtp_num_hidden_layers', 0) < 1:
+            return None
+        if not pfx.has('fc.weight'):
+            # The config declares an MTP layer but the checkpoint does not
+            # carry one. Loading a partial layer would leave every draft
+            # rejected, which looks like a slowdown rather than a fault, so
+            # skip it and let speculative decoding stay disabled.
+            return None
+
+        m = MTPLayerBuilder(MTPLayerConfig(), self._ctx)
+
+        # Both norms are applied before the fc projection: one to the token
+        # embedding branch, one to the hidden-state branch.
+        m.pre_fc_norm_embedding = self.norm(
+            pfx + 'pre_fc_norm_embedding',
+            zero_centered=True,
+        )
+        m.pre_fc_norm_hidden = self.norm(
+            pfx + 'pre_fc_norm_hidden',
+            zero_centered=True,
+        )
+
+        # fc projects the concatenation of both branches, hidden*2 -> hidden.
+        # It is BF16 and unquantized in this checkpoint even though the seven
+        # projections inside the decoder layer are FP8; upstream lists it under
+        # modules_to_not_convert. FP8Format.accepts dispatches per tensor group
+        # on the presence of a scale, so the mixed module resolves correctly
+        # with no special handling here.
+        m.fc = self._linear(pfx + 'fc')
+
+        d = DecoderLayerBuilder(DecoderLayerConfig(), self._ctx)
+        layer_pfx = pfx + 'layers.0'
+        d.attention = self.attn(layer_pfx + 'self_attn')
+        if self._n_experts > 0:
+            d.moe_ffn, d.feed_forward = self.moe(layer_pfx + 'mlp')
+        else:
+            d.feed_forward = self.ffn(layer_pfx + 'mlp', self.cfg.intermediate_size)
+        d.attention_norm = self.norm(
+            layer_pfx + 'input_layernorm',
+            zero_centered=True,
+        )
+        d.ffn_norm = self.norm(
+            layer_pfx + 'post_attention_layernorm',
+            zero_centered=True,
+        )
+        m.decoder_layer = d.build()
+
+        m.final_norm = self.norm(
+            pfx + 'norm',
+            zero_centered=True,
+        )
+        return m.build()
 
     # ------------------------------------------------------------------
     # Attention / linear-attention factories

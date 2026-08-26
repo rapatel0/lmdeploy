@@ -10,6 +10,7 @@ from .ffn import FfnBuilder, fuse_w1w3
 from .mla import MLABuilder
 from .module_list import ModuleListBuilder, ModuleListConfig
 from .moe import MoeBuilder
+from .mtp_layer import MTPLayerBuilder, MTPLayerConfig
 from .norm import LayerNormBuilder, NormBuilder, make_layer_norm_config, make_norm_config
 from .text_model import TextModelBuilder
 from .vision_model import VisionModelBuilder
@@ -21,12 +22,12 @@ __all__ = [
     # Builders
     'AttentionBuilder', 'FfnBuilder', 'MoeBuilder',
     'DeltaNetBuilder', 'MLABuilder',
-    'DecoderLayerBuilder', 'ModuleListBuilder',
+    'DecoderLayerBuilder', 'ModuleListBuilder', 'MTPLayerBuilder',
     'NormBuilder', 'LayerNormBuilder',
     # Primitive config wrappers
     'make_norm_config', 'make_layer_norm_config',
     # C++ config re-exports
-    'DecoderLayerConfig', 'ModuleListConfig',
+    'DecoderLayerConfig', 'ModuleListConfig', 'MTPLayerConfig',
     # Helper functions
     'fuse_w1w3',
 ]
