@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cstdlib>
 
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/kernels/argmax.h"
@@ -265,6 +266,30 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     Buffer_<int> k_offsets = env.at("k_offsets").buffer().view<int>();
     int          advanced  = 0;
 
+    // Diagnostic probe: shift the base of every drafted position by a constant.
+    //
+    // This answers a question the acceptance rate cannot. Giving the sampled
+    // token its own position (a uniform +1) left steps 1-3 bit-identical over
+    // 64 greedy samples, which is only possible if the entries BELOW the base
+    // contribute something exactly invariant to the shift. Zeros do that;
+    // arbitrary leftover bytes do not.
+    //
+    // So shifting the base by a large constant discriminates directly:
+    //   zeros   -> still bit-identical, the count of them cannot matter
+    //   garbage -> lands on different bytes, output moves
+    //
+    // Off unless TM_MTP_PROBE_SHIFT is set, and it deliberately does not
+    // respect block slack, so it must never be set on a run whose output is
+    // trusted. It exists to be run once and read.
+    static const int probe_shift = [] {
+        const char* s = std::getenv("TM_MTP_PROBE_SHIFT");
+        return s ? std::atoi(s) : 0;
+    }();
+    if (probe_shift) {
+        AdvanceCuSeqLens(k_offsets.data(), batch_size, probe_shift, stream);
+        advanced += probe_shift;
+    }
+
     // How far the drafted positions may safely walk.
     //
     // The scheduler allocates KV blocks for `seq_len`, not `seq_len + K`. The
@@ -287,10 +312,13 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     //
     // With q_len=1 attention derives history_len = cu_k_len - q_len = L-1 and
     // writes there, on top of the target's own last token, and every later
-    // step inherits the shift. Step 1 still scored 64.1% because it attends to
-    // a history that is correct up to L-1 and merely misplaces one entry; the
-    // damage concentrates at depth, which is where the measured rates fell off
-    // fastest.
+    // step inherits the shift.
+    //
+    // Correcting this changed nothing: steps 1-3 stayed bit-identical over 64
+    // greedy samples. That is measured, not predicted, and it means the
+    // absolute base does not currently matter -- see the probe below. The fix
+    // is kept because it is correct and must precede any seeding of real
+    // history, which would otherwise be written to shifted positions.
     const int block_len  = block_seq_len_;
     int       max_extend = num_draft_tokens;
     if (block_len > 0) {
