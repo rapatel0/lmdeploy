@@ -88,7 +88,8 @@ struct LanguageModel::Impl {
         Buffer_<bool> autoregres;
         Buffer_<bool> generating;
 
-        int n_generating;
+        int  n_generating;
+        bool all_decode;
     };
 
     vector<Data> data_;
@@ -372,12 +373,16 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     Buffer_<Sequence*> rc = env.at("requests").buffer();
 
     d.n_generating = 0;
+    // Pure-decode means every row advances by exactly one token. Recorded here,
+    // in Setup, because `requests` is gone from the map by Forward.
+    d.all_decode = rc.size() > 0;
 
     for (int i = 0; i < rc.size(); ++i) {
         auto& c         = *rc[i];
         d.autoregres[i] = c.autoregres;
         d.generating[i] = c.generating;
         d.n_generating += c.generating;
+        d.all_decode &= c.input_len == 1;
         if (TM_UNLIKELY(!c.autoregres)) {
             sequence_length_buf_[i] = c.history_len + c.inflight_input_len + c.input_len;
         }
@@ -584,16 +589,35 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         // handing over the full tensor made the two disagree, and the first
         // RMSNorm aborted on `out.shape() == x.shape()`.
         //
-        // Draft only when every row is generating. Then batch and row count
-        // coincide and no row selection is needed. A mixed batch would require
-        // gathering the generating rows first, which is real work that belongs
-        // with verification rather than here, where the drafts are discarded.
+        // Draft only when every row is generating AND every row is a real
+        // decode step.
+        //
+        // `generating` does NOT mean "decode". engine.cc:538 sets it to
+        //
+        //   resume_len + inflight_input_len + input_len == seq_len + inflight_new_tokens
+        //
+        // i.e. "this forward reaches the end of the sequence", which is also
+        // true for the LAST PREFILL CHUNK, because that is the step on which
+        // the first token is sampled. So a prefill row with input_len == 8 is
+        // `generating`, and n_generating == bsz held while the batch was still
+        // a prefill. The draft then ran against attention statistics that had
+        // been prepared for an 8-token prefill:
+        //
+        //   Check failed: d.prefill.q_sum + d.decode.n == q_count (8 vs. 1)
+        //
+        // The draft submits one row per sequence, so it is only consistent with
+        // the cached stats when the batch is pure decode, i.e. every row has
+        // input_len == 1. Anything else reuses another step's shape.
+        //
+        // A mixed batch would require gathering the decode rows first, which is
+        // real work that belongs with verification rather than here, where the
+        // drafts are discarded.
         // `b.bsz` and not env.at("requests"): `requests` is placed in the map
         // by Setup and is gone by Forward, so reading it here aborted the run
         // even with speculation disabled, because the lookup ran before the
         // num_draft_tokens guard could short-circuit it.
         const int bsz = b.bsz;
-        if (mtp_predictor_ && engine_param_.num_draft_tokens > 0 && d.n_generating == bsz) {
+        if (mtp_predictor_ && engine_param_.num_draft_tokens > 0 && d.n_generating == bsz && d.all_decode) {
             const int n_draft = engine_param_.num_draft_tokens;
             // Slice to bsz: output_ids is `output_ids_buf_`, allocated once at
             // max_batch_size (128) and reused, so its extent is the capacity
