@@ -8,7 +8,10 @@ cat /src/SOURCE_STAMP 2>/dev/null || echo "  no stamp"
 echo
 echo "=== build ==="
 cd /src
-bash /src/tools/v100/build_v100.sh || { echo "FAIL: build" >&2; exit 2; }
+bash /src/tools/v100/build_v100.sh || {
+    echo "FAIL: build" >&2
+    exit 2
+}
 
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' 2>/dev/null |
     sort -rn | head -1 | cut -d' ' -f2-)"

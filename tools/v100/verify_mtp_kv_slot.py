@@ -47,6 +47,21 @@ def read_config(model_dir: str) -> dict:
         raise SystemExit(f"FAIL: cannot read {path}: {exc}") from None
 
 
+def text_section(cfg: dict) -> dict:
+    """Return the sub-config that describes the language model.
+
+    This checkpoint is ``Qwen3_5ForConditionalGeneration``, a multimodal
+    config whose top level holds only vision and routing keys. Every layer
+    field lives under ``text_config``. Reading the top level returns ``None``
+    for all of them, which looks exactly like a checkpoint with no MTP layer,
+    so resolve the section explicitly rather than defaulting to the root.
+    """
+    section = cfg.get("text_config")
+    if isinstance(section, dict) and "num_hidden_layers" in section:
+        return section
+    return cfg
+
+
 def count_full_attention_layers(cfg: dict) -> int:
     """Return how many layers use full attention.
 
@@ -74,10 +89,13 @@ def main() -> int:
     ap.add_argument("--tp", type=int, default=4)
     args = ap.parse_args()
 
-    cfg = read_config(args.model_dir)
+    raw = read_config(args.model_dir)
+    cfg = text_section(raw)
 
     print("=== 1. what the config declares ===")
     n_full = count_full_attention_layers(cfg)
+    if cfg is not raw:
+        print("  (reading text_config, this is a multimodal checkpoint)")
     print(f"  num_hidden_layers      : {cfg.get('num_hidden_layers')}")
     print(f"  full-attention layers  : {n_full}")
     print(f"  mtp_num_hidden_layers  : {cfg.get('mtp_num_hidden_layers')}")
