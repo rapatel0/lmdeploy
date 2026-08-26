@@ -163,7 +163,29 @@ def main() -> int:
         tp=args.tp,
         cache_max_entry_count=args.cache_max_entry_count,
     )
-    pipe = pipeline(args.model, backend_config=engine_config, log_level="ERROR")
+
+    # Capture the loader's own log records rather than reading them out of the
+    # console. pipeline() calls logger.setLevel(log_level) on the shared
+    # 'lmdeploy' logger, so a level of ERROR silences the [MTP] INFO lines this
+    # driver exists to observe. Attaching a handler and forcing INFO makes the
+    # evidence a value this process can assert on, instead of text a human has
+    # to spot in several thousand scheduler lines.
+    import logging
+
+    mtp_records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            msg = record.getMessage()
+            if "[MTP]" in msg:
+                mtp_records.append(f"{record.levelname} {msg}")
+
+    lm_logger = logging.getLogger("lmdeploy")
+    handler = _Capture()
+    handler.setLevel(logging.INFO)
+    lm_logger.addHandler(handler)
+
+    pipe = pipeline(args.model, backend_config=engine_config, log_level="INFO")
     try:
         gen = GenerationConfig(max_new_tokens=48, temperature=0.0, do_sample=False)
         out = pipe(["Explain in one sentence why the sky appears blue."], gen_config=gen)
@@ -179,6 +201,30 @@ def main() -> int:
             return 5
     finally:
         pipe.close()
+        lm_logger.removeHandler(handler)
+
+    print()
+    print("=== 5. the loader reported what it did ===")
+    for line in mtp_records:
+        print(f"  {line}")
+    if not mtp_records:
+        print(
+            "FAIL: no [MTP] log record was emitted, so the loader never ran",
+            file=sys.stderr,
+        )
+        return 6
+
+    # Distinguish the three outcomes by their message, not by their presence.
+    # A DISABLED record is still a record, and treating any record as success
+    # would report a skipped layer as a loaded one.
+    enabled = any("speculation ENABLED" in r for r in mtp_records)
+    disabled = any("DISABLED" in r or "unavailable" in r for r in mtp_records)
+    if disabled and not enabled:
+        print("FAIL: the loader ran but skipped the MTP layer", file=sys.stderr)
+        return 7
+    if not enabled:
+        print("FAIL: no ENABLED record, the layer did not finish loading", file=sys.stderr)
+        return 8
 
     print()
     print("VERIFY_MTP_LOAD_PASS")
