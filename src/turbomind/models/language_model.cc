@@ -24,6 +24,7 @@
 #include "src/turbomind/models/llama/mtp_predictor.h"
 #include "src/turbomind/models/llama/unified_decoder.h"
 #include "src/turbomind/models/model_weight.h"
+#include "src/turbomind/models/mtp_weight.h"
 #include "src/turbomind/models/output_processor.h"
 #include "src/turbomind/utils/anomaly_handler.h"
 #include "src/turbomind/utils/cuda_utils.h"
