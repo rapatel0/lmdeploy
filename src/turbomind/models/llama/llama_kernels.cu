@@ -572,6 +572,28 @@ void AppendTokenIds(
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
+__global__ void AdvanceCuSeqLensKernel(int* cu_k_len, int n, int delta)
+{
+    const int i = threadIdx.x + blockIdx.x * blockDim.x;
+    // n + 1 entries in a prefix sum of n rows. Entry i is preceded by i rows,
+    // each of which gains `delta`, so the shift grows along the array. Entry 0
+    // is preceded by nothing and correctly stays put.
+    if (i <= n) {
+        cu_k_len[i] += i * delta;
+    }
+}
+
+void AdvanceCuSeqLens(int* cu_k_len, int n, int delta, cudaStream_t stream)
+{
+    if (n <= 0 || delta == 0) {
+        return;
+    }
+    constexpr int block = 128;
+    const int     grid  = cdiv(n + 1, block);
+    AdvanceCuSeqLensKernel<<<grid, block, 0, stream>>>(cu_k_len, n, delta);
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
 template<typename T>
 __global__ void SigmoidGateMultiplyKernel(T* attn, const T* gate_base, int dim, int gate_stride, int num_tokens)
 {

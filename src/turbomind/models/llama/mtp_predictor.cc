@@ -4,12 +4,15 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
+
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/kernels/argmax.h"
 #include "src/turbomind/kernels/norm/rms_norm.h"
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/llama/LlamaFfnLayer.h"
 #include "src/turbomind/models/llama/LlamaLinear.h"
+#include "src/turbomind/models/llama/llama_kernels.h"
 #include "src/turbomind/models/llama/llama_utils.h"
 #include "src/turbomind/models/mtp_weight.h"
 
@@ -27,6 +30,7 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
     attn_index_{attn_index},
     hidden_units_{weights.fc ? weights.fc->input_dim / 2 : 0},
     tp_size_{engine.attn_tp_size},
+    block_seq_len_{engine.cache_block_seq_len},
     tp_rank_{engine.attn_dp_rank},
     dtype_{engine.data_type},
     linear_{*ctx.linear},
@@ -215,6 +219,7 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
                                              const Buffer_<int>& last_tokens,
                                              int                 num_draft_tokens,
                                              int                 phase,
+                                             const int*          seq_lens,
                                              TensorMap&          env)
 {
     TM_CHECK_GT(batch_size, 0);
@@ -241,7 +246,66 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     Buffer_<int> cur_tokens = last_tokens;
     Tensor       cur_hidden = hidden_states;
 
+    // The KV positions the draft attends to and writes.
+    //
+    // `k_offsets` is the target's cumulative key-length array, produced fresh
+    // each Forward and consumed by attention as `cu_k_len`. The attention layer
+    // BORROWS it, so mutating this buffer changes what the draft attends to.
+    //
+    // Without advancing it, every draft step wrote its K/V to the same position
+    // and read a history ending at the target's last real token: step 2
+    // attended as though step 1 had never happened. Measured, that produced
+    // 56.2% / 16.1% / 3.3% / 0.0% across four steps -- step 1 correct by
+    // accident, everything after it blind.
+    //
+    // Safe to mutate in place because this runs at the END of Forward and the
+    // buffer is rebuilt by PrefixSum at the start of the next one. It is
+    // restored below regardless, so nothing downstream inherits drafted
+    // positions.
+    Buffer_<int> k_offsets = env.at("k_offsets").buffer().view<int>();
+    int          advanced  = 0;
+
+    // How far the drafted positions may safely walk.
+    //
+    // The scheduler allocates KV blocks for `seq_len`, not `seq_len + K`. The
+    // block iterator indexes `block_ptrs_[block_id_]` with no bounds check, so
+    // advancing past the last allocated block reads a pointer belonging to the
+    // next sequence -- or past the end of the array for the final row. That is
+    // silent cross-sequence corruption, not a crash.
+    //
+    // Only the slack inside each row's last block is safe, and only the
+    // smallest such slack across the batch, since one array bounds all rows.
+    // A sequence sitting exactly on a boundary has zero slack, and then no
+    // advance is permitted at all.
+    const int block_len  = block_seq_len_;
+    int       max_extend = num_draft_tokens - 1;
+    if (block_len > 0) {
+        for (int i = 0; i < batch_size; ++i) {
+            const int len   = seq_lens[i];
+            const int slack = (len % block_len == 0) ? 0 : block_len - (len % block_len);
+            max_extend      = std::min(max_extend, slack);
+        }
+    }
+    else {
+        max_extend = 0;
+    }
+    if (max_extend < num_draft_tokens - 1 && !extend_warned_) {
+        extend_warned_ = true;
+        TM_LOG_WARNING(
+            "[MTP] drafted positions limited to {} of {} extra steps by KV block capacity; "
+            "steps beyond that reuse the last valid position and will draft poorly",
+            max_extend,
+            num_draft_tokens - 1);
+    }
+
     for (int step = 0; step < num_draft_tokens; ++step) {
+        if (step > 0 && advanced < max_extend) {
+            // Steps 1.. attend to the tokens the previous steps produced, so
+            // each row's key length grows by one per step.
+            AdvanceCuSeqLens(k_offsets.data(), batch_size, 1, stream);
+            ++advanced;
+        }
+
         // Embedding of the previous token, through the target's shared table.
         Tensor embedding = embed_fn_(cur_tokens);
 
@@ -268,6 +332,14 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
         // Feed forward for the next iteration.
         cur_tokens = step_out;
         cur_hidden = std::move(out);
+    }
+
+    // Restore the target's offsets. The next Forward recomputes them anyway,
+    // but leaving a mutated buffer behind would make any future reader of
+    // k_offsets after this point silently wrong, and that reader would have no
+    // reason to suspect the draft.
+    if (advanced) {
+        AdvanceCuSeqLens(k_offsets.data(), batch_size, -advanced, stream);
     }
 
     return result;

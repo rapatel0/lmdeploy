@@ -73,6 +73,17 @@ inline void PrefixSum(const int* src, int n, int* dst, cudaStream_t st)
     return BatchPrefixSum(&src, &n, &dst, 1, st);
 }
 
+// Advance a cumulative KV-length array by `delta` positions per sequence.
+//
+// `cu_k_len` is a prefix sum: cu[i+1] - cu[i] is row i's key length. Adding
+// `delta` to every row means cu[i] += i * delta, NOT a uniform shift -- the
+// increments accumulate along the array. Used to walk the drafted positions
+// forward inside one multi-token MTP draft, where each step must attend to the
+// tokens the previous steps produced.
+//
+// `n` is the batch size; the array has n + 1 entries.
+void AdvanceCuSeqLens(int* cu_k_len, int n, int delta, cudaStream_t stream);
+
 void AppendTokenIds(int**        token_ids_ptrs,  //
                     const int*   output_ids,
                     const int*   positions,

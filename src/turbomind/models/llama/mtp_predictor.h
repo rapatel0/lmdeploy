@@ -88,6 +88,7 @@ public:
                       const Buffer_<int>& last_tokens,
                       int                 num_draft_tokens,
                       int                 phase,
+                      const int*          seq_lens,
                       TensorMap&          env);
 
 private:
@@ -106,6 +107,9 @@ private:
     /// addresses its own KV slot through `attn_index_`.
     UnifiedAttentionLayer& attn_layer_;
 
+    /// Warn once when KV block capacity truncates the drafted positions.
+    bool extend_warned_{false};
+
     /// Position of the draft layer in the attention weight list.
     ///
     /// This is passed to `ForwardParam::layer_id`, which is used for debug
@@ -118,6 +122,9 @@ private:
 
     const int      hidden_units_;
     const int      tp_size_;
+
+    /// KV block length, needed to bound how far drafted positions may walk.
+    const int block_seq_len_;
     const int      tp_rank_;
     const DataType dtype_;
 

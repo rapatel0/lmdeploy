@@ -98,6 +98,9 @@ struct LanguageModel::Impl {
         /// gone from the map by Forward. Used to confirm that a draft is being
         /// scored against the same sequence that produced it.
         std::vector<uint64_t> uids;
+
+        /// Per-row key length for this step, host-side, all rows.
+        std::vector<int> seq_lens;
     };
 
     vector<Data> data_;
@@ -430,6 +433,7 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     d.all_decode = rc.size() > 0;
 
     d.uids.resize(rc.size());
+    d.seq_lens.resize(rc.size());
 
     for (int i = 0; i < rc.size(); ++i) {
         auto& c         = *rc[i];
@@ -438,6 +442,12 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
         d.generating[i] = c.generating;
         d.n_generating += c.generating;
         d.all_decode &= c.input_len == 1;
+        // The row's true key length this step, captured for ALL rows.
+        // sequence_length_buf_ below is written only for non-autoregressive
+        // rows -- decode rows carry their length forward on the device -- so it
+        // cannot be read here as a host-side length. The MTP draft needs these
+        // to know how much slack each row has left in its last KV block.
+        d.seq_lens[i] = c.history_len + c.inflight_input_len + c.input_len;
         if (TM_UNLIKELY(!c.autoregres)) {
             sequence_length_buf_[i] = c.history_len + c.inflight_input_len + c.input_len;
         }
@@ -796,6 +806,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                                                 ids,
                                                 n_draft,
                                                 phase,
+                                                d.seq_lens.data(),
                                                 env);
 
             if (!mtp_logged_) {
