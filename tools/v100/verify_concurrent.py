@@ -172,7 +172,7 @@ def main() -> int:
     # the log distinguishes the two without a rerun.
     lp_in = getattr(lp_out, "input_token_len", None)
     lp_gen = getattr(lp_out, "generate_token_len", None)
-    print(f"    prompt tokens={lp_in}, generated={lp_gen}, finish={getattr(lp_out,'finish_reason',None)}")
+    print(f"    prompt tokens={lp_in}, generated={lp_gen}, finish={getattr(lp_out, 'finish_reason', None)}")
     if not lp_text.strip():
         failures.append(
             f"multi-block prompt produced no text (prompt_tokens={lp_in}; "
