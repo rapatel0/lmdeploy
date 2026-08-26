@@ -21,7 +21,7 @@ exec > >(tee -a "${RESULTS}/console.log") 2>&1
 
 finish() {
     rc=$?
-    echo "$rc" > "${RESULTS}/exit_code"
+    echo "$rc" >"${RESULTS}/exit_code"
     echo "artifacts in ${RESULTS} (exit ${rc})"
 }
 trap finish EXIT
@@ -36,19 +36,41 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 echo
 echo "=== build ==="
 cd /src
-bash /src/tools/v100/build_v100.sh || { echo "FAIL: build" >&2; exit 2; }
+bash /src/tools/v100/build_v100.sh || {
+    echo "FAIL: build" >&2
+    exit 2
+}
 
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' 2>/dev/null |
     sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo "FAIL: no wheel" >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo "FAIL: no wheel" >&2
+    exit 2
+}
 echo "wheel: ${WHEEL}"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 
+# Inherited from the island runner, which sets the campaign defaults. Reading
+# them here rather than repeating literals means the deployment config is the
+# single place these values are decided.
 MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
+TP="${TP:-4}"
+K="${NUM_DRAFT_TOKENS:-4}"
 IN_TOK="${IN_TOK:-1024}"
 OUT_TOK="${OUT_TOK:-256}"
 TRIALS="${TRIALS:-3}"
 cd /
+
+echo
+echo "=== configuration ==="
+echo "  MODEL_DIR         = ${MODEL}"
+echo "  TP                = ${TP}"
+echo "  NUM_DRAFT_TOKENS  = ${K}"
+echo "  input/output tok  = ${IN_TOK}/${OUT_TOK}, trials=${TRIALS}"
+if [ "${TP}" != "4" ]; then
+    echo "FAIL: this island is four V100s; tp=${TP} is not a valid configuration" >&2
+    exit 3
+fi
 
 run_arm() {
     # $1 = label, $2 = num_draft_tokens, $3 = json path
@@ -56,7 +78,7 @@ run_arm() {
     echo "=== bench: tp=4, num_draft_tokens=$2 ($1) ==="
     stdbuf -oL -eL python3 /src/tools/v100/bench_decode.py \
         --model "${MODEL}" \
-        --tp 4 \
+        --tp "${TP}" \
         --num-draft-tokens "$2" \
         --input-tokens "${IN_TOK}" \
         --output-tokens "${OUT_TOK}" \
@@ -68,11 +90,11 @@ run_arm() {
 
 run_arm baseline 0 "${RESULTS}/bench_k0.json"
 BASE_RC=$?
-run_arm "drafting depth 4" 4 "${RESULTS}/bench_k4.json"
+run_arm "drafting depth ${K}" "${K}" "${RESULTS}/bench_k4.json"
 SPEC_RC=$?
 
 echo
-echo "=== did drafting actually run in the K=4 arm? ==="
+echo "=== did drafting actually run in the K=${K} arm? ==="
 # An engine-side acceptance line is the only proof the draft path executed.
 # num_draft_tokens=4 reaching the config is necessary but not sufficient: the
 # guard can still cap max_extend to 0 and skip every draft, which would produce
@@ -140,11 +162,23 @@ PY
 echo
 echo "=== verdict ==="
 FAILED=0
-[ "${BASE_RC}" -ne 0 ] && { echo "FAIL: baseline arm rc=${BASE_RC}" >&2; FAILED=1; }
-[ "${SPEC_RC}" -ne 0 ] && { echo "FAIL: K=4 arm rc=${SPEC_RC}" >&2; FAILED=1; }
-[ "${DRAFT_RAN}" -ne 1 ] && { echo "FAIL: draft path did not run in the K=4 arm" >&2; FAILED=1; }
+[ "${BASE_RC}" -ne 0 ] && {
+    echo "FAIL: baseline arm rc=${BASE_RC}" >&2
+    FAILED=1
+}
+[ "${SPEC_RC}" -ne 0 ] && {
+    echo "FAIL: K=4 arm rc=${SPEC_RC}" >&2
+    FAILED=1
+}
+[ "${DRAFT_RAN}" -ne 1 ] && {
+    echo "FAIL: draft path did not run in the K=4 arm" >&2
+    FAILED=1
+}
 for f in bench_k0.json bench_k4.json; do
-    [ -s "${RESULTS}/${f}" ] || { echo "FAIL: missing or empty ${f}" >&2; FAILED=1; }
+    [ -s "${RESULTS}/${f}" ] || {
+        echo "FAIL: missing or empty ${f}" >&2
+        FAILED=1
+    }
 done
 if [ "${FAILED}" -ne 0 ]; then
     echo "BENCH_FAIL" >&2

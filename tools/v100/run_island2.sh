@@ -22,6 +22,13 @@
 # GPU is visible, if the visible count is not 4, or if island 2 is not idle.
 set -euo pipefail
 
+# Campaign defaults. The island is four V100s, so tp=4 is the only sane value
+# and the MTP work runs at draft depth 4. Exported into the pod below so a job
+# script reads one number rather than repeating a literal.
+TP="${TP:-4}"
+NUM_DRAFT_TOKENS="${NUM_DRAFT_TOKENS:-4}"
+MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
+
 SCRIPT="${1:?usage: run_island2.sh <script.sh> [job-name] [extra-file ...]}"
 JOB="${2:-lmdeploy-v100-island2}"
 shift 2 2>/dev/null || shift $#
@@ -49,9 +56,9 @@ for f in "${EXTRA[@]}"; do
 done
 kubectl -n "$NS" create configmap "${JOB}-script" "${CM_ARGS[@]}" >/dev/null
 
-python3 - "$JOB" "$NS" "$IMAGE" "$ISLAND2" "$ISLAND1" <<'PY' | kubectl apply -f - >/dev/null
+python3 - "$JOB" "$NS" "$IMAGE" "$ISLAND2" "$ISLAND1" "$TP" "$NUM_DRAFT_TOKENS" "$MODEL_DIR" <<'PY' | kubectl apply -f - >/dev/null
 import json, sys
-job, ns, image, island2, island1 = sys.argv[1:6]
+job, ns, image, island2, island1, tp, num_draft, model_dir = sys.argv[1:9]
 
 guard = r'''set -uo pipefail
 for BAD in $ISLAND1_UUIDS; do
@@ -87,6 +94,14 @@ manifest = {
                     {"name": "NVIDIA_VISIBLE_DEVICES", "value": island2},
                     {"name": "NVIDIA_DRIVER_CAPABILITIES", "value": "compute,utility"},
                     {"name": "ISLAND1_UUIDS", "value": island1},
+                    # Campaign defaults, set here so every job on this island
+                    # inherits the same configuration instead of each script
+                    # hardcoding its own. A job may override them, but nothing
+                    # silently runs at a different tp or draft depth because a
+                    # flag was omitted at the call site.
+                    {"name": "TP", "value": tp},
+                    {"name": "NUM_DRAFT_TOKENS", "value": num_draft},
+                    {"name": "MODEL_DIR", "value": model_dir},
                 ],
                 # No nvidia.com/gpu request: the device plugin must not
                 # reassign devices out from under the UUID pin.
