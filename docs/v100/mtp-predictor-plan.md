@@ -152,6 +152,48 @@ So this closes the "does the draft path execute" question and nothing more. The
 first number that means anything is accept length, and that is not measurable
 until the KV seeding below is done.
 
+## Headline: ~1.87 tokens per target forward (256-token run, commit 174e8165)
+
+```
+draft step 1: 41/64 = 64.1%  | given correct prefix: 41/64 = 64.1%
+draft step 2: 15/63 = 23.8%  | given correct prefix: 11/40 = 27.5%
+draft step 3:  9/62 = 14.5%  | given correct prefix:  3/10 = 30.0%
+draft step 4:  1/61 =  1.6%  | given correct prefix:  0/2  =  0.0%
+```
+
+The position advance shows clearly at depth once the sample is large enough:
+**step 3 raw went 3.3% -> 14.5%**, and step 2 went 16.1% -> 23.8%. These are
+greedy runs on a fixed prompt, so the movement is deterministic, not variance.
+
+Chaining the conditional rates gives the acceptance distribution:
+
+```
+P(>=1 accepted) = 0.641
+P(>=2 accepted) = 0.176
+P(>=3 accepted) = 0.053
+P(>=4 accepted) = 0.000   (denominator 2 -- carries no information)
+
+expected accepted drafts per step = 0.87
+tokens per target forward         = 1.87
+```
+
+**This is a ceiling, not a speedup.** It is what speculation would buy if
+verification were free. It is not free: the target must score K+1 positions per
+forward, which costs more than a single-token decode, and none of that
+machinery exists yet. The realised number will be lower and could be below 1.0
+if verification is implemented badly.
+
+An arithmetic check worth keeping, because it looked like an instrument bug at
+first: each conditional denominator is one less than the previous step's hit
+count (40 vs 41, 10 vs 11, 2 vs 3). That is end-of-run truncation, not an
+off-by-one -- the final draft sets never receive all K ground-truth tokens. The
+raw counts taper identically (64, 63, 62, 61), which is what confirms it.
+Computing the chain from conditional rates rather than raw counts gives 1.87
+either way, so the estimate does not depend on that subtlety.
+
+Remaining caveats: one prompt, greedy, bsz=1, step-4 statistics are empty, and
+the KV capacity guard still truncates the drafted range at block boundaries.
+
 ## Position advance: step 2 improves, and the metric is the wrong one
 
 After `84d9631f` (commit 84d9631f, run 20260826_155803):

@@ -92,8 +92,7 @@ def generate(model_dir: str, tp: int, num_draft: int, prompt: str, max_new_token
             log_level="INFO",
         )
         # Greedy, so the two runs are comparable token for token.
-        out = pipe([prompt],
-                   gen_config=GenerationConfig(temperature=0.0, max_new_tokens=max_new_tokens))
+        out = pipe([prompt], gen_config=GenerationConfig(temperature=0.0, max_new_tokens=max_new_tokens))
         text = out[0].text if out else ""
     except Exception as exc:  # noqa: BLE001 - the message is the artifact
         lm_logger.removeHandler(handler)
