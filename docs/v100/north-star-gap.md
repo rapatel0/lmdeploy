@@ -316,6 +316,86 @@ peak at 4K and falls thereafter, so our shape is not where either project's
 prefill is strongest, and a single-point comparison understates the work
 remaining at long context. A prefill sweep is the missing measurement.
 
+### Decision: prefill is close enough for now
+
+Prefill is **deferred, not closed**. At 1.15x behind on a single short shape it
+is near enough that the campaign should not spend a phase on it while the
+speculative multiplier is untouched.
+
+What is parked, and what would restart it:
+
+| Item | State |
+| --- | --- |
+| Measured points | one, at 1,051 input |
+| Missing | a sweep at 4K, 25K, 70K, 128K |
+| Known risk | the gap may widen at long context, where the reference itself falls from 4,136 to 2,356 tok/s |
+| Available technique | 1Cat-vLLM 1.3.0's BM32 phase reuse, all-P scheduling, 8,096-token chunking, one-pass E5M2-to-FP16 KV bridging |
+| Why it is portable in principle | that release preserved softmax, FP16 probability rounding, FP32 accumulation order and exact output, so it is a scheduling and tiling change rather than a precision trade |
+
+Restart this work if a prefill sweep shows the gap widening beyond roughly 1.2x
+at long context, or once speculative decoding lands and prefill becomes the
+dominant remaining cost.
+
+### Is 1Cat's D=256 paged-prefill work worth porting? No.
+
+Assessed rather than assumed. Four findings, any one of which is decisive.
+
+**1. We already have the kernel, and it is not the one they fixed.**
+`src/turbomind/kernels/attention/kernel/attention_sm70_256.cu` exists and is
+registered for SM70 at D=256:
+
+```cpp
+constexpr int kHeadDim = 256;
+constexpr int kCTA_Q   = 64;   // their BM16 -> BM32 change targets this
+constexpr int kCTA_S   = 64;
+constexpr int kWARP_Q  = 16;
+```
+
+Their change raises `BLOCK_M` from 16 to 32 on the D=256 low-SMEM path:
+
+```cpp
+#define BLOCK_M_256           32
+#define BLOCK_M_256_LOW_SMEM  16
+static constexpr int BLOCK_M = ... (LOW_SMEM ? (LOW_SMEM_BM32 ? BLOCK_M_256
+                                             : BLOCK_M_256_LOW_SMEM) : BLOCK_M_256);
+```
+
+Our Q tile is already **64**, twice their improved value. The specific
+inefficiency they removed does not exist in our kernel.
+
+**2. The architectural ceiling is about 2 to 3 percent.** Our model is 64
+layers, of which only **16 are full attention**; the other 48 are linear
+attention and never touch this kernel. Their measured -27.26 percent is on the
+prefill operator alone, not the model:
+
+| If attention were this share of prefill time | Max model speedup |
+| --- | ---: |
+| 50 percent | 1.035x |
+| 30 percent | 1.021x |
+
+At our measured 1K shape, GEMM dominates prefill and attention is a small
+share, so the realistic figure sits at the low end. Closing a 1.15x gap needs
+15 percent, not 2 to 3 percent.
+
+**3. The stacks are not compatible.** Their work lives in a standalone
+`flash-attention-v100` tree of 14 CUDA files with its own traits, paged layout,
+FP8 KV bridge and decode planner. Ours is TurboMind's `attention` kernels built
+around `Impl<MMA_884, ...>`, `AttentionUniversal` and a `Registrar`. This is
+not a patch transplant; it is adopting a second attention stack.
+
+**4. Their headline gains are at 64K, not our shape.** The -31.01 percent
+full-model prefill result is a 64K measurement on Qwen3.6-27B-AWQ, a different
+model and weight route. We have no 64K measurement at all.
+
+**What would change this answer:** a prefill sweep showing our gap widening
+sharply at long context. At 64K and beyond attention's share of prefill grows,
+and the 16 full-attention layers matter more. Until that sweep exists, porting
+this is speculative work against an unmeasured problem.
+
+The transferable idea, if the sweep ever justifies it, is **8,096-token
+chunking** and their scheduling changes, not the BM32 tile fix. Those are
+engine-level and shape-independent.
+
 ### A separate finding from the same run
 
 The staged wheel predates `c9ff318d`:
