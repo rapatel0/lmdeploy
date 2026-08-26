@@ -71,6 +71,12 @@ def main() -> int:
     parser.add_argument("--output-tokens", type=int, default=256)
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--cache-max-entry-count", type=float, default=0.8)
+    parser.add_argument(
+        "--num-draft-tokens",
+        type=int,
+        default=0,
+        help="MTP draft depth K. 0 disables drafting and gives the baseline.",
+    )
     parser.add_argument("--json-out", default="")
     parser.add_argument(
         "--require-mtp",
@@ -96,9 +102,11 @@ def main() -> int:
         tp=args.tp,
         cache_max_entry_count=args.cache_max_entry_count,
         session_len=session_len,
+        num_draft_tokens=args.num_draft_tokens,
     )
     print(
-        f"engine: tp={args.tp} model_format={args.model_format} session_len={session_len}",
+        f"engine: tp={args.tp} model_format={args.model_format} "
+        f"session_len={session_len} num_draft_tokens={args.num_draft_tokens}",
         flush=True,
     )
 
@@ -217,6 +225,12 @@ def main() -> int:
 
     rates = [r["inclusive_tok_s"] for r in good]
 
+    # The acceptance line is emitted by the C++ engine to stderr, not through
+    # the Python logger, so the [MTP] handler above never sees it. Recover it
+    # from the captured records if present; the job script also greps the
+    # console log, which is the authoritative copy.
+    acceptance_lines = [r for r in mtp_records if "acceptance" in r]
+
     # Decode excluding the first generated token, which is what the reference
     # reports. Subtracting the measured TTFT from the full run removes prefill
     # and the first decode step together.
@@ -231,6 +245,10 @@ def main() -> int:
         "model": args.model,
         "model_format": args.model_format,
         "tp": args.tp,
+        # Without this the stored JSON cannot say which configuration produced
+        # the number, and a baseline result is indistinguishable from a drafted
+        # one once the console log is gone.
+        "num_draft_tokens": args.num_draft_tokens,
         "requested_input_tokens": args.input_tokens,
         "encoded_input_tokens": encoded_input,
         "output_tokens": args.output_tokens,
@@ -241,6 +259,10 @@ def main() -> int:
         # result cannot later be attributed to the wrong configuration.
         "mtp_enabled": mtp_enabled,
         "mtp_records": mtp_records,
+        # Acceptance is the only evidence that drafting did work rather than
+        # merely being switched on. A speedup with 0% acceptance would mean the
+        # gain came from somewhere else and the attribution is wrong.
+        "mtp_acceptance": acceptance_lines,
         "mean_inclusive_tok_s": round(statistics.mean(rates), 2),
         "mean_decode_tok_s": (round(statistics.mean(decode_rates), 2) if decode_rates else None),
         "reference_sglang_decode_tok_s": 58.21,
