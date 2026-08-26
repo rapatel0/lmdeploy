@@ -189,11 +189,29 @@ depends least on history -- while steps beyond it stay unreliable. It also
 reframes the seeding work: it should raise step-1 modestly and matter far more
 for K>1, rather than moving the rate off zero.
 
-**Not yet established:** whether 56.2% reflects prediction at all. If the
-predictor tends to echo its conditioning token, it scores free on every
-repeated token in the text. Echo/repeat controls are now recorded alongside the
-rate to settle that; until they report, 56.2% is an unexplained number, not a
-result.
+**Settled by the controls** (commit e03a889d, run 20260826_153744):
+
+```
+step-1 draft acceptance: 18/32 = 56.2% (echo 3.1%, target-repeat 0.0%)
+```
+
+The echo hypothesis is dead. The predictor emitted its conditioning token on
+1 of 32 positions, and the target repeated a token on **none** of them. So not
+a single one of the 18 accepted drafts can be explained by repetition -- the
+maximum repetition could contribute here is zero. The draft model is genuinely
+predicting the target's next token roughly half the time.
+
+Caveats that keep this honest:
+
+- n=32, one prompt, greedy. This is a real signal, not a benchmark.
+- Step 1 only. It says nothing about steps 2..K, which are precisely the steps
+  the broken `cu_k_len` advance would damage.
+- The predictor still has no target history in its slot, so this is a floor
+  rather than the model's capability.
+
+That last point is the useful one: **56.2% is what the draft achieves with only
+its own token in cache.** Seeding the history should raise it, and if seeding
+lands and the number does not move, the seeding did not work.
 
 ## Correction: the KV slot IS byte-isolated, but it is never filled
 
