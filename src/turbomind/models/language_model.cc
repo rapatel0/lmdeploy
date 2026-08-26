@@ -1,8 +1,10 @@
 
 #include "src/turbomind/models/language_model.h"
 
+#include <cstdint>
 #include <memory>
 #include <numeric>
+#include <vector>
 
 #include "src/turbomind/comm/device_comm.h"
 #include "src/turbomind/core/allocator.h"
@@ -90,6 +92,11 @@ struct LanguageModel::Impl {
 
         int  n_generating;
         bool all_decode;
+
+        /// Per-row sequence identity, captured in Setup because `requests` is
+        /// gone from the map by Forward. Used to confirm that a draft is being
+        /// scored against the same sequence that produced it.
+        std::vector<uint64_t> uids;
     };
 
     vector<Data> data_;
@@ -100,6 +107,28 @@ struct LanguageModel::Impl {
     /// Draft-token generator, present only when the checkpoint carries an MTP
     /// layer and the decoder registered a KV slot for it.
     std::unique_ptr<MTPPredictor> mtp_predictor_;
+
+    /// Drafts from the previous decode step, held on the host so the next step
+    /// can score them against the token the target actually sampled.
+    ///
+    /// This measures acceptance without acting on it. Speculation proper needs
+    /// the target to verify K+1 positions in one forward, which is a scheduler
+    /// change. But the ordinary decode loop already produces exactly one
+    /// ground-truth token per step, so drafting at step t and comparing at
+    /// t+1 yields the real step-1 accept rate with no scheduler involvement
+    /// and no risk to output.
+    ///
+    /// It is deliberately step 1 only. Scoring draft k>0 would require the
+    /// target to have produced k tokens along the drafted path, which is
+    /// precisely what non-speculative decoding does not do -- assuming
+    /// otherwise would report an accept length the model never earned.
+    std::vector<int>      mtp_prev_draft_;  ///< step-0 draft per row, batch order
+    std::vector<uint64_t> mtp_prev_uids_;   ///< the sequences those drafts belong to
+    bool                  mtp_prev_valid_{false};
+
+    /// Cumulative step-1 acceptance, reported periodically.
+    size_t mtp_scored_{0};
+    size_t mtp_matched_{0};
 
     /// Engine parameters, retained for the speculation settings.
     const EngineParam engine_param_;
@@ -377,8 +406,11 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     // in Setup, because `requests` is gone from the map by Forward.
     d.all_decode = rc.size() > 0;
 
+    d.uids.resize(rc.size());
+
     for (int i = 0; i < rc.size(); ++i) {
         auto& c         = *rc[i];
+        d.uids[i]       = c.req->unique_id;
         d.autoregres[i] = c.autoregres;
         d.generating[i] = c.generating;
         d.n_generating += c.generating;
@@ -632,6 +664,14 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             // Seeding and advancing that state is part of the verification
             // work, not a detail: without it accept length is meaningless
             // because the draft is attending to nothing.
+            //
+            // Which is exactly why the acceptance meter below exists BEFORE
+            // that fix rather than after it. It turns "the draft attends to
+            // nothing" from an argument into a measurement: with unseeded KV
+            // the step-1 accept rate should be near zero, and once the KV is
+            // seeded correctly it must rise. Without a number recorded first,
+            // a seeding change that does nothing would be indistinguishable
+            // from one that works.
             // Slice to bsz: output_ids is `output_ids_buf_`, allocated once at
             // max_batch_size (128) and reused, so its extent is the capacity
             // and not this step's batch. Passing it whole made the draft embed
@@ -641,6 +681,36 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
             TM_CHECK_EQ((int)hidden_states.shape(0), bsz)
                 << "MTP: hidden_states rows must match the batch";
+
+            // Score the PREVIOUS step's drafts before producing new ones.
+            //
+            // `ids` is the token the target just sampled, i.e. the ground
+            // truth for the draft made one step ago. Comparing them gives the
+            // step-1 accept rate directly, with no verification machinery and
+            // no effect on output.
+            //
+            // Only score when row i is the SAME SEQUENCE that produced the
+            // draft. Matching on batch size alone is not enough: two unrelated
+            // batches can both have bsz==1, and rows are re-permuted as
+            // requests join and leave. Scoring across that boundary compares
+            // sequence A's draft to sequence B's token and books the mismatch
+            // as a rejection -- noise that looks exactly like a weak draft
+            // model, which is the failure this whole measurement exists to
+            // detect. Compare the captured unique_ids instead.
+            if (mtp_prev_valid_ && mtp_prev_uids_ == d.uids) {
+                // Stage to host and synchronise: `ids` is device memory that
+                // the next step overwrites. A pinned buffer plus an event
+                // would avoid the stall and is worth doing if this ever stops
+                // being instrumentation and becomes a hot path.
+                Buffer_<int> actual{bsz, kCPU};
+                core::Copy(ids, bsz, actual);
+                core::Context::stream().Sync();
+                for (int i = 0; i < bsz; ++i) {
+                    ++mtp_scored_;
+                    mtp_matched_ += (actual[i] == mtp_prev_draft_[i]);
+                }
+            }
+            mtp_prev_valid_ = false;
 
             auto drafts = mtp_predictor_->Draft(bsz,  //
                                                 hidden_states,
@@ -654,6 +724,27 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                 TM_LOG_INFO("[MTP] drafted {} token(s) for {} sequence(s); drafts are not yet verified",
                             drafts.num_drafts,
                             bsz);
+            }
+
+            // Retain step 0 of this batch's drafts for the next step to score.
+            // draft_tokens is [step][batch], so step 0 is the first `bsz`
+            // entries -- a contiguous run, not a stride.
+            if (drafts.num_drafts > 0 && (int)drafts.draft_tokens.size() >= bsz) {
+                Buffer_<int> step0{bsz, kCPU};
+                core::Copy(drafts.draft_tokens, bsz, step0);
+                core::Context::stream().Sync();
+                mtp_prev_draft_.assign(step0.begin(), step0.end());
+                mtp_prev_uids_  = d.uids;
+                mtp_prev_valid_ = true;
+            }
+
+            // Report periodically. A rate over a handful of tokens is noise, so
+            // the first report waits for a sample worth quoting.
+            if (mtp_scored_ >= 64 && mtp_scored_ % 64 == 0) {
+                TM_LOG_INFO("[MTP] step-1 draft acceptance: {}/{} = {:.1f}%",
+                            mtp_matched_,
+                            mtp_scored_,
+                            100.0 * (double)mtp_matched_ / (double)mtp_scored_);
             }
         }
     }
