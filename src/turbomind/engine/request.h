@@ -221,8 +221,19 @@ struct Sequence {
     // bound the verification shape; K is validated against this at setup, so a
     // larger num_draft_tokens fails loudly instead of writing out of bounds.
     static constexpr int kMaxDraftTokens = 8;
+    // Published by Engine::Update on the main thread, read by Schedule and
+    // Setup on the same thread. The executor thread must NOT write these
+    // directly: it runs concurrently with the next iteration's Schedule, so a
+    // direct write is a data race, and losing it leaves num_drafts at 0 on the
+    // very step that was supposed to verify.
     int  draft_tokens[kMaxDraftTokens] = {};  // drafts from the previous step
     int  num_drafts                    = 0;   // valid entries; 0 on the first decode
+
+    // Staging written by the executor thread during kDraft and consumed by
+    // Update. Safe because Update runs only after `d->done` is waited on, which
+    // orders it after everything the executor did for that batch.
+    int  pending_draft_tokens[kMaxDraftTokens] = {};
+    int  pending_num_drafts                    = 0;
     bool all_accepted                  = false;  // every draft accepted last step
 
     // Pending growth, consumed by SequenceManager when it sizes the next step.

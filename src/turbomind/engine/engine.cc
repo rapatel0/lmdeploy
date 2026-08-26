@@ -791,6 +791,27 @@ void Engine::Impl::Update(BatchData& b, std::vector<Signal>& signals)
         }
     }
 
+    // Publish the drafts the executor staged for this batch.
+    //
+    // kDraft runs on the executor thread, which is concurrent with the main
+    // thread's next Schedule(). Writing num_drafts there directly is a data
+    // race, and the losing order is the common one: Schedule reads 0, does not
+    // widen the reservation, the forward submits a single token, and kReject
+    // aborts with no per-position logits. That is the abort I chased through
+    // three unrelated fixes.
+    //
+    // Update is the correct place because it runs on the main thread and only
+    // after `d->done` has been waited on, which orders it after everything the
+    // executor did for this batch.
+    if (param_.num_draft_tokens > 0) {
+        for (int i = 0; i < s.size(); ++i) {
+            if (auto* p = s.rc[i]; p && !p->retiring) {
+                p->num_drafts = p->pending_num_drafts;
+                std::copy_n(p->pending_draft_tokens, p->pending_num_drafts, p->draft_tokens);
+            }
+        }
+    }
+
     // b.rc.clear();
 
     if (async_) {

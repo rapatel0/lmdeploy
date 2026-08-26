@@ -193,7 +193,13 @@ struct LanguageModel::Impl {
     {
         const auto& d = data_.at(phase);
         for (size_t i = 0; i < d.rows.size(); ++i) {
-            if (d.rows[i] && d.rows[i]->generating && d.rows[i]->num_drafts > 0) {
+            // The Setup-time snapshot, not the live field. This runs on the
+            // executor thread while the main thread may already be scheduling
+            // the next batch, so reading the sequence directly would race with
+            // Update's publish. The snapshot is exactly the state this batch
+            // was built from, which is also what Forward's own gate uses -- so
+            // the two cannot disagree.
+            if (d.rows[i] && d.rows[i]->generating && d.num_drafts[i] > 0) {
                 return true;
             }
         }
@@ -716,6 +722,15 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         return;
     }
 
+    // The executor decided this was a verification step but Forward did not.
+    // Both gates now read the same Setup snapshot, so this cannot happen for
+    // the reason it used to -- a race on the live field. Assert it here, where
+    // the disagreeing state is still available, rather than in kReject, which
+    // sees only a missing tensor.
+    TM_CHECK(!HasDraftsToVerify(phase))
+        << "executor scheduled a verification step that Forward declined; "
+        << "the drafts snapshot and the autoregres snapshot disagree";
+
     if (d.n_generating) {
         generation_->Run(BatchOp::kForward, phase, env);
         Copy(env.at("output_ids").buffer(), autoreg_ids_);
@@ -767,10 +782,10 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
         core::Copy(drafts.draft_tokens, n * bsz, host);
         core::Context::stream().Sync();
         for (int i = 0; i < bsz; ++i) {
-            auto& c      = *d.rows[i];
-            c.num_drafts = n;
+            auto& c              = *d.rows[i];
+            c.pending_num_drafts = n;
             for (int k = 0; k < n; ++k) {
-                c.draft_tokens[k] = host[k * bsz + i];
+                c.pending_draft_tokens[k] = host[k * bsz + i];
             }
         }
     }
@@ -778,7 +793,7 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
         // No capacity to draft this step. Zeroing matters: a stale count would
         // make the next Setup inject drafts that were never produced.
         for (int i = 0; i < bsz; ++i) {
-            d.rows[i]->num_drafts = 0;
+            d.rows[i]->pending_num_drafts = 0;
         }
     }
 }
