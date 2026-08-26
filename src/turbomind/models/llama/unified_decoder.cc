@@ -13,6 +13,7 @@
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/delta_net_weight.h"
 #include "src/turbomind/models/llama/llama_kernels.h"
+#include "src/turbomind/models/mtp_weight.h"
 #include "src/turbomind/models/llama/llama_utils.h"
 #include "src/turbomind/models/llama/moe_ffn_layer.h"
 #include "src/turbomind/models/llama/unified_attention_layer.h"
@@ -70,6 +71,35 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
         }
         if (layer->feed_forward) {
             ffn_weights.push_back(layer->feed_forward.get());
+        }
+    }
+
+    // Give the Multi-Token Prediction layer its own KV slot.
+    //
+    // UnifiedAttentionLayer assigns each weight in this list a distinct
+    // `cache_block_offset` inside one registered cache block, then registers
+    // the summed size once. Appending the MTP attention weight after the
+    // target's layers therefore reserves KV space for the draft layer without
+    // disturbing any existing offset: the target's layers keep the offsets
+    // they would have had, because the append happens last.
+    //
+    // The draft layer needs its own slot rather than sharing one. It attends
+    // over the same sequence as the target, so writing into a target layer's
+    // slot would overwrite entries the target still needs.
+    //
+    // This is the one piece with no reference to copy. The v0.12.0 fork picks
+    // a KV index arithmetically, `mtp_attn_layer_offset_ + mtp_layer_idx`,
+    // because that version indexes the cache by layer number. Here the
+    // registry owns allocation, so the slot is obtained by participating in
+    // registration instead.
+    if (model_weight.mtp && model_weight.mtp->decoder_layer) {
+        auto* mtp_layer = model_weight.mtp->decoder_layer.get();
+        if (mtp_layer->attention) {
+            attn_weights.push_back(mtp_layer->attention.get());
+            mtp_attn_index_ = static_cast<int>(attn_weights.size()) - 1;
+            TM_LOG_INFO("[MTP] registered a KV slot for the draft layer at attention index %d of %d",
+                        mtp_attn_index_,
+                        (int)attn_weights.size());
         }
     }
 

@@ -28,6 +28,12 @@ public:
 
     void Forward(int phase, TensorMap& env, const std::vector<WeightType*>& weights);
 
+    /// Attention-list index of the MTP draft layer, or -1 when absent.
+    int mtp_attn_index() const noexcept
+    {
+        return mtp_attn_index_;
+    }
+
 private:
     const size_t layer_num_;
     const size_t hidden_units_;
@@ -43,6 +49,14 @@ private:
     comm::DeviceCommImpl* const d_comm_;
 
     const int tune_layer_num_;
+
+    /// Index of the Multi-Token Prediction draft layer inside the attention
+    /// weight list, or -1 when the checkpoint carries no MTP layer.
+    ///
+    /// The draft layer is appended after the target's layers, so it receives
+    /// its own `cache_block_offset` and therefore its own KV space.
+    /// MTPPredictor needs this index to address that slot.
+    int mtp_attn_index_{-1};
 
     int& is_warm_up_;
 
