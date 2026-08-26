@@ -67,6 +67,10 @@ struct Generation::Impl {
     Buffer_<int>      random_state_indices_buf_;
     Buffer_<int*>     token_ids_ptrs_buf_;
 
+    /// Generation row -> batch row. Rebuilt every Setup, because generation
+    /// rows skip non-generating sequences and the two indexings diverge.
+    std::vector<int> gen_row_to_batch_;
+
     /// Speculative rollback scratch; see Rollback.
     Buffer_<int*> token_ids_ptrs_dev_;
     Buffer_<int>  output_pos_;
@@ -121,6 +125,7 @@ struct Generation::Impl {
         // widest row in the batch: pointing their write at it means the kernel
         // runs uniformly while those rows receive no update. It must be at
         // least as long as the furthest slot any row can address.
+        gen_row_to_batch_.resize(max_batch_size_);
         token_ids_ptrs_dev_ = {max_batch_size_, kDEVICE};
         output_pos_         = {max_batch_size_, kDEVICE};
         scratch_row_        = {session_len_ + Sequence::kMaxDraftTokens + 1, kDEVICE};
@@ -184,6 +189,16 @@ struct Generation::Impl {
                 copy(token_ids_buf, c.seq_len, dst);
                 token_ids_buf += c.seq_len;
             }
+
+            // Remember which batch row this generation row came from.
+            //
+            // Generation rows skip non-generating sequences, so gen row j is
+            // NOT batch row j whenever the batch mixes prefill and decode.
+            // Speculative rollback needs to go back the other way -- from a
+            // generation row to the batch-indexed accepted counts and drafts --
+            // and without this map it silently pairs one sequence's pointer
+            // with another's tokens.
+            gen_row_to_batch_[generation_size] = i;
 
             random_state_indices_buf_[generation_size] = c.generation_random_state_row;
             token_ids_ptrs_buf_[generation_size++]     = RowPtr(c.generation_token_ids_row);
@@ -314,8 +329,8 @@ struct Generation::Impl {
         core::Context::stream().Sync();
 
         int max_accepted = 0;
-        for (int i = 0; i < bsz; ++i) {
-            max_accepted = std::max(max_accepted, accepted[i]);
+        for (int j = 0; j < gs; ++j) {
+            max_accepted = std::max(max_accepted, accepted[gen_row_to_batch_[j]]);
         }
 
         Buffer_<int*> ptrs{max_batch_size_, kCPU};
@@ -323,14 +338,19 @@ struct Generation::Impl {
         Buffer_<int>  tok{max_batch_size_, kCPU};
 
         for (int slot = 0; slot <= max_accepted; ++slot) {
-            for (int i = 0; i < gs; ++i) {
-                const bool active = slot <= accepted[i];
-                ptrs[i] = active ? token_ids_ptrs_buf_[i] : scratch_row_.data();
-                pos[i]  = active ? base_len[i] + slot : 0;
+            for (int j = 0; j < gs; ++j) {
+                // j indexes generation rows; b indexes the batch. They differ
+                // as soon as any row is not generating, and every buffer below
+                // belongs to one or the other -- mixing them stays in bounds
+                // and corrupts quietly.
+                const int  b      = gen_row_to_batch_[j];
+                const bool active = slot <= accepted[b];
+                ptrs[j] = active ? token_ids_ptrs_buf_[j] : scratch_row_.data();
+                pos[j]  = active ? base_len[b] + slot : 0;
                 // Accepted drafts first, bonus last -- the same order the
                 // engine-side sequence uses, because the logit at submitted
                 // position p predicts the token after it.
-                tok[i] = slot < accepted[i] ? drafts[i * stride + slot] : bonus[i];
+                tok[j] = slot < accepted[b] ? drafts[b * stride + slot] : bonus[b];
             }
             Copy(ptrs.slice(0, gs), token_ids_ptrs_dev_.slice(0, gs));
             Copy(pos.slice(0, gs), output_pos_.slice(0, gs));
