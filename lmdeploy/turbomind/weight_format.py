@@ -35,7 +35,7 @@ from lmdeploy.utils import get_logger
 
 from .linear import Linear
 
-logger = get_logger('lmdeploy')
+logger = get_logger("lmdeploy")
 
 
 class PackedTensor(NamedTuple):
@@ -376,8 +376,7 @@ class FP8Format(WeightFormat):
     # calculation in ``check_scale_range``.
     _KERNEL_E4M3_DECODE_GAIN = 256.0
 
-    def __init__(self, *, expand_scales: bool | None = None,
-                 scale_dtype: torch.dtype = torch.float16):
+    def __init__(self, *, expand_scales: bool | None = None, scale_dtype: torch.dtype = torch.float16):
         # ``expand_scales`` converts the {128, 128} block scale into the
         # K-grouped {128, 1} form by repeating each scale along N. The
         # expansion is exact: every weight element still receives the scale of
@@ -420,9 +419,7 @@ class FP8Format(WeightFormat):
             return tensor
         self.check_scale_range(tensor)
         # Cast before expanding, so the repeat copies already-converted values.
-        return (tensor.to(self.scale_dtype)
-                .repeat_interleave(128, dim=1)[:, :out_dim]
-                .contiguous())
+        return tensor.to(self.scale_dtype).repeat_interleave(128, dim=1)[:, :out_dim].contiguous()
 
     def check_scale_range(self, scales: Tensor) -> None:
         """Warn when block scales do not survive the cast to ``scale_dtype``.
@@ -451,13 +448,17 @@ class FP8Format(WeightFormat):
             logger.warning(
                 "FP8 block scale %.3e exceeds the fp16 maximum %.3e; the cast "
                 "to fp16 will produce inf and corrupt this layer.",
-                largest, finfo.max)
+                largest,
+                finfo.max,
+            )
         if smallest < finfo.tiny:
             logger.warning(
                 "FP8 block scale %.3e is below the fp16 minimum normal %.3e; "
                 "the cast to fp16 loses precision to a subnormal. Expect a "
                 "reduced speculative acceptance rate rather than bad output.",
-                smallest, finfo.tiny)
+                smallest,
+                finfo.tiny,
+            )
 
     def dequant(self, tensors, data_type):
         from .builders._base import _CPP_TO_TORCH
