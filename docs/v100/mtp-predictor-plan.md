@@ -322,7 +322,36 @@ What must change, minimally:
 That is three touch points, all local, none of them the scheduler rewrite I
 originally described.
 
-**Smallest honest increment:** `bsz==1`, greedy, prefix caching off, K=1.
+### The cross-request hazard has an existing guard
+
+I traced (D) rather than trusting my own worry about it, and the codebase
+already blocks the dangerous case:
+
+```cpp
+// scheduler.cc:963  -- PlanPublication
+if (generation_cache_mode_ == CacheMode::kNone && end > s.prompt_len) {
+    return;   // no checkpoint publication past the prompt
+}
+```
+
+Speculative positions are by definition `> prompt_len`, since they occur during
+generation. So with `cache_generation='none'` no speculative position can ever
+be published, and the "rejected draft poisons another request's prefix" failure
+is impossible by construction rather than by my remembering to prevent it.
+
+That makes the safe first increment concrete: `cache_generation='none'` plus
+`enable_prefix_caching=False`. The verify script currently sets neither, so it
+runs on defaults (`auto`), and this must be set explicitly before the first
+verifying forward -- not left to a default that could change.
+
+Separately, the KV written for rejected positions is not read back: the next
+step's `cu_k_len` is `PrefixSum(sequence_length)`, which stops at the accepted
+end, so attention never reaches those bytes. They are stale but unreachable,
+and the next forward overwrites them. That is only true while they are also
+unpublished, which is what the guard above secures.
+
+**Smallest honest increment:** `bsz==1`, greedy, prefix caching off,
+`cache_generation='none'`, K=1.
 Under those constraints steps 1-3 are local and step 4 is satisfied by
 construction, since publication is disabled. That is enough to produce a
 measured accept length with byte-identical output -- the first result that

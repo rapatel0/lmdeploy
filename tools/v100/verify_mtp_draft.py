@@ -88,6 +88,18 @@ def generate(model_dir: str, tp: int, num_draft: int, prompt: str, max_new_token
                 tp=tp,
                 session_len=2048,
                 num_draft_tokens=num_draft,
+                # Both are required before any verifying forward exists, and
+                # are set explicitly rather than left to a default that could
+                # change under us.
+                #
+                # cache_generation='none' makes PlanPublication return early
+                # for any end > prompt_len (scheduler.cc:963). Speculative
+                # positions are always past the prompt, so no rejected draft
+                # can publish a checkpoint another request would reuse. The MTP
+                # KV slot shares the registered prefix object, so that is a
+                # real cross-request path, not a theoretical one.
+                enable_prefix_caching=False,
+                cache_generation='none',
             ),
             log_level="INFO",
         )
