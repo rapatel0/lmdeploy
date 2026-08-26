@@ -211,3 +211,25 @@ INFER_SPEC_RC="${PIPESTATUS[0]}"
 echo
 echo "=== inference verdict ==="
 echo "  drafting off rc=${INFER_BASE_RC}, drafting on rc=${INFER_SPEC_RC}"
+
+# --- concurrency and long output: the cases bsz==1 never reaches ---
+#
+# The MTP draft path takes the MINIMUM block slack across the batch, so with a
+# single row it is just that row's slack. Mixed lengths in one forward exercise
+# a path no run so far has touched. Long generation crosses many block
+# boundaries in one sequence.
+echo
+echo "=== 7. concurrency + long output (drafting off) ==="
+stdbuf -oL -eL python3 /src/tools/v100/verify_concurrent.py \
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 0 --repeats 2 2>&1
+CONC_BASE_RC="${PIPESTATUS[0]}"
+
+echo
+echo "=== 8. concurrency + long output (drafting on, depth 4) ==="
+stdbuf -oL -eL python3 /src/tools/v100/verify_concurrent.py \
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 4 --repeats 2 2>&1
+CONC_SPEC_RC="${PIPESTATUS[0]}"
+
+echo
+echo "=== concurrency verdict ==="
+echo "  drafting off rc=${CONC_BASE_RC}, drafting on rc=${CONC_SPEC_RC}"
