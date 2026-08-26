@@ -350,6 +350,42 @@ end, so attention never reaches those bytes. They are stale but unreachable,
 and the next forward overwrites them. That is only true while they are also
 unpublished, which is what the guard above secures.
 
+### Full verification passes under an enforced gate (commit a5b347b5)
+
+```
+ALL_VERIFICATION_SECTIONS_PASS          exit 0
+distinct scheduler uids observed: 16    (concurrency genuinely exercised)
+
+section 5/6  correctness   15/15 drafting off, 15/15 drafting on
+section 7/8  concurrency   VERIFY_CONCURRENT_PASS x2, rc=0 both
+long output  241 words, finish=stop, no degeneracy
+byte identity  "identical, as required while drafts are discarded"
+acceptance     41/64 = 64.1%, distinct drafts 39
+EMIT_TEXT_COMPLETE present on all three text runs
+```
+
+Sixteen distinct scheduler uids is the part that makes the concurrency claim an
+observation rather than an inference: rows genuinely shared forwards, so the
+batch-wide `max_extend` minimum executed for the first time.
+
+**The fp16 tolerance earned itself on its first run.** Two rows differed
+textually between solo and batched execution while both answers stayed correct:
+
+```
+rows: r0 row2, r1 row2 -- both the Tokyo prompt, same row index across rounds
+```
+
+Reproducible rather than random, which is precisely what a reduction-order
+change predicts: identical batch shape each round selects the same tiling and
+produces the same argmax flip. Had this stayed a hard failure, the run would
+have reported a KV-shaped defect and sent me looking for an offset bug that
+does not exist.
+
+The decisive detail: **the divergence appears with drafting OFF and not with
+drafting ON**. It is baseline engine numerics, unrelated to the MTP path
+entirely -- which also rules out the draft path as its cause rather than
+assuming so.
+
 ### The batch-wide slack minimum does not scale, and the arithmetic says so
 
 `MTPPredictor::Draft` takes `max_extend` as the minimum block slack across the
