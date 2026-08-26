@@ -124,11 +124,14 @@ struct LanguageModel::Impl {
     /// otherwise would report an accept length the model never earned.
     std::vector<int>      mtp_prev_draft_;  ///< step-0 draft per row, batch order
     std::vector<uint64_t> mtp_prev_uids_;   ///< the sequences those drafts belong to
+    std::vector<int>      mtp_prev_input_;  ///< token each draft was conditioned on
     bool                  mtp_prev_valid_{false};
 
     /// Cumulative step-1 acceptance, reported periodically.
     size_t mtp_scored_{0};
     size_t mtp_matched_{0};
+    size_t mtp_echo_{0};    ///< draft equalled the token it was conditioned on
+    size_t mtp_repeat_{0};  ///< target itself repeated that token
 
     /// Engine parameters, retained for the speculation settings.
     const EngineParam engine_param_;
@@ -697,6 +700,16 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             // as a rejection -- noise that looks exactly like a weak draft
             // model, which is the failure this whole measurement exists to
             // detect. Compare the captured unique_ids instead.
+            // Two control statistics, because a bare accept rate cannot
+            // distinguish prediction from repetition.
+            //
+            //   echo  : draft[t] == input token at t  (the draft copied its
+            //           own input; would score well on repeated tokens)
+            //   repeat: actual[t] == input token at t (the TARGET repeated;
+            //           the share of the accept rate any echo would win free)
+            //
+            // If accept and echo track each other, the predictor is not
+            // predicting -- it is echoing, and the rate is an artefact.
             if (mtp_prev_valid_ && mtp_prev_uids_ == d.uids) {
                 // Stage to host and synchronise: `ids` is device memory that
                 // the next step overwrites. A pinned buffer plus an event
@@ -708,6 +721,10 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                 for (int i = 0; i < bsz; ++i) {
                     ++mtp_scored_;
                     mtp_matched_ += (actual[i] == mtp_prev_draft_[i]);
+                    if (i < (int)mtp_prev_input_.size()) {
+                        mtp_echo_ += (mtp_prev_draft_[i] == mtp_prev_input_[i]);
+                        mtp_repeat_ += (actual[i] == mtp_prev_input_[i]);
+                    }
                 }
             }
             mtp_prev_valid_ = false;
@@ -734,6 +751,12 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                 core::Copy(drafts.draft_tokens, bsz, step0);
                 core::Context::stream().Sync();
                 mtp_prev_draft_.assign(step0.begin(), step0.end());
+                // The token this draft was conditioned on, kept so the next
+                // step can tell prediction apart from echo.
+                Buffer_<int> in0{bsz, kCPU};
+                core::Copy(ids, bsz, in0);
+                core::Context::stream().Sync();
+                mtp_prev_input_.assign(in0.begin(), in0.end());
                 mtp_prev_uids_  = d.uids;
                 mtp_prev_valid_ = true;
             }
@@ -744,10 +767,13 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             // step has no prior draft), so a 64 threshold would print nothing
             // at all for the standard run and look like the meter was broken.
             if (mtp_scored_ >= 32 && mtp_scored_ % 32 == 0) {
-                TM_LOG_INFO("[MTP] step-1 draft acceptance: {}/{} = {:.1f}%",
+                TM_LOG_INFO("[MTP] step-1 draft acceptance: {}/{} = {:.1f}% "
+                            "(echo {:.1f}%, target-repeat {:.1f}%)",
                             mtp_matched_,
                             mtp_scored_,
-                            100.0 * (double)mtp_matched_ / (double)mtp_scored_);
+                            100.0 * (double)mtp_matched_ / (double)mtp_scored_,
+                            100.0 * (double)mtp_echo_ / (double)mtp_scored_,
+                            100.0 * (double)mtp_repeat_ / (double)mtp_scored_);
             }
         }
     }
