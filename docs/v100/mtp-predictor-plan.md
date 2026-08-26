@@ -91,3 +91,39 @@ slow, not wrong.** A build that drafts four tokens and accepts zero looks
 identical in output to one that works, and reports a lower token rate than
 no speculation at all. Any claim that MTP works must cite an accept length
 above zero, measured, not inferred.
+
+## How the fork rolls back GDN state
+
+The fork does solve this, in `gated_delta_net_layer.cc`, and our v0.16.0
+`GatedDeltaNetLayer` has none of it. A search for `snapshot` in our file
+returns zero matches, so this is a port, not a reuse.
+
+The fork keeps a shadow copy of both recurrent buffers and swaps them
+wholesale:
+
+```cpp
+SnapshotState()   // conv_state -> conv_state_snapshot, recurrent -> snapshot
+RestoreState()    // copy back, then mark the snapshot spent
+DiscardSnapshot() // drafts accepted, keep the mutated state
+```
+
+Two details matter for the port. The two buffers have **different element
+types**, `half` for the convolution state and `float` for the recurrent
+state, so a single-dtype copy would silently corrupt one of them. And the
+buffers are allocated **only when speculation is enabled**, which keeps a
+non-speculative run from paying for memory it never reads.
+
+Snapshot cost is one device-to-device copy of both buffers per draft run,
+against 48 linear-attention layers. That is the price of rollback, and it is
+charged whether or not the drafts are accepted, so it counts against the
+speculation win.
+
+## Status
+
+| item | state |
+| --- | --- |
+| 1. KV slot for the draft layer | implemented, compiles for SM70, verification running |
+| 2. `MTPPredictor` class | interface committed, `ForwardStep` outstanding |
+| 3. Draft loop | not started |
+| 4. Verify and roll back | design known, GDN snapshot must be ported |
+| 5. Accept-length measurement | not started |
