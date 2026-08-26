@@ -4,6 +4,7 @@
 #include "src/turbomind/core/registry.h"
 #include "src/turbomind/models/attention_weight.h"
 #include "src/turbomind/models/decoder_layer_weight.h"
+#include "src/turbomind/models/mtp_weight.h"
 
 namespace turbomind {
 
@@ -11,6 +12,10 @@ ModelWeight::ModelWeight(const core::ModelWeightConfig& cfg):
     tp_size(cfg.tp_size), tp_rank(cfg.tp_rank), data_type(cfg.data_type), hidden_units(cfg.hidden_units)
 {
 }
+
+// Defined here, where MTPLayerWeight is complete, because `mtp` is a
+// unique_ptr to a type only forward-declared in the header.
+ModelWeight::~ModelWeight() = default;
 
 void ModelWeight::prepare()
 {

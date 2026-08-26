@@ -31,6 +31,7 @@ struct ModelWeightConfig: ModuleConfig {
 namespace turbomind {
 
 class DecoderLayerWeight;
+class MTPLayerWeight;
 
 /// Root weight module for a model. Owns the full weight tree.
 class ModelWeight: public core::Module {
@@ -44,15 +45,25 @@ public:
 
     explicit ModelWeight(const core::ModelWeightConfig& cfg);
 
+    // Out-of-line: `mtp` is a unique_ptr to a forward-declared MTPLayerWeight,
+    // and unique_ptr's deleter needs the complete type at the point the
+    // destructor is defined.
+    ~ModelWeight() override;
+
     void prepare() override;
     bool verify(std::vector<std::string>& missing) override;
 
     // --- X-macro field lists ---
+    //
+    // `mtp` is optional. It exists only when the checkpoint ships a
+    // Multi-Token Prediction module, so verify() does not require it and a
+    // model without one loads unchanged.
 #define MODEL_WEIGHT_CHILDREN(X)                                                                                       \
     X(LinearWeight, output)                                                                                            \
     X(NormWeight, norm)                                                                                                \
     X(core::ModuleList, layers)                                                                                        \
-    X(core::ModuleList, meta_experts)
+    X(core::ModuleList, meta_experts)                                                                                  \
+    X(MTPLayerWeight, mtp)
 
 #define MODEL_WEIGHT_PARAMS(X) X(tok_embeddings)
 
