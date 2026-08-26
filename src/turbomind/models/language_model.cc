@@ -1,6 +1,7 @@
 
 #include "src/turbomind/models/language_model.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <numeric>
@@ -126,6 +127,25 @@ struct LanguageModel::Impl {
     std::vector<uint64_t> mtp_prev_uids_;   ///< the sequences those drafts belong to
     std::vector<int>      mtp_prev_input_;  ///< token each draft was conditioned on
     bool                  mtp_prev_valid_{false};
+
+    /// One in-flight draft set awaiting its ground truth.
+    ///
+    /// A draft made at step t predicts the tokens the target will sample at
+    /// t+1 .. t+K. Those are only known K steps later, so each set is held and
+    /// scored one position per subsequent step. `age` counts how many steps
+    /// have elapsed, which selects the draft step being scored.
+    struct PendingDraft {
+        std::vector<int>      tokens;  ///< [step][batch], as Draft produces
+        std::vector<uint64_t> uids;
+        int                   bsz{0};
+        int                   num_drafts{0};
+        int                   age{0};
+    };
+    std::vector<PendingDraft> mtp_pending_;
+
+    /// Per-step-index acceptance: matched/scored for draft step k.
+    std::vector<size_t> mtp_step_matched_;
+    std::vector<size_t> mtp_step_scored_;
 
     /// Cumulative step-1 acceptance, reported periodically.
     size_t mtp_scored_{0};
@@ -729,6 +749,48 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             }
             mtp_prev_valid_ = false;
 
+            // Score every in-flight draft set that this step supplies ground
+            // truth for. A set of age k has its step-k prediction resolved by
+            // the token just sampled.
+            //
+            // This is what separates "the predictor works" from "step 1 works".
+            // If per-decode history is sound but the within-Draft position
+            // never advances, step 1 should look like the aggregate rate and
+            // steps 2..K should collapse. Measuring per step turns that from a
+            // claim into evidence.
+            {
+                Buffer_<int> truth{bsz, kCPU};
+                core::Copy(ids, bsz, truth);
+                core::Context::stream().Sync();
+
+                for (auto& p : mtp_pending_) {
+                    if (p.bsz != bsz || p.uids != d.uids) {
+                        continue;  // batch changed; rows no longer comparable
+                    }
+                    const int k = p.age;  // 0-based draft step now resolvable
+                    if (k >= p.num_drafts) {
+                        continue;
+                    }
+                    if ((int)mtp_step_scored_.size() <= k) {
+                        mtp_step_scored_.resize(k + 1, 0);
+                        mtp_step_matched_.resize(k + 1, 0);
+                    }
+                    // [step][batch]: step k starts at k * bsz.
+                    const int base = k * p.bsz;
+                    for (int i = 0; i < bsz; ++i) {
+                        ++mtp_step_scored_[k];
+                        mtp_step_matched_[k] += (truth[i] == p.tokens[base + i]);
+                    }
+                }
+                for (auto& p : mtp_pending_) {
+                    ++p.age;
+                }
+                mtp_pending_.erase(std::remove_if(mtp_pending_.begin(),
+                                                  mtp_pending_.end(),
+                                                  [](const PendingDraft& p) { return p.age >= p.num_drafts; }),
+                                   mtp_pending_.end());
+            }
+
             auto drafts = mtp_predictor_->Draft(bsz,  //
                                                 hidden_states,
                                                 ids,
@@ -759,6 +821,30 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                 mtp_prev_input_.assign(in0.begin(), in0.end());
                 mtp_prev_uids_  = d.uids;
                 mtp_prev_valid_ = true;
+
+                // Retain the whole [step][batch] set so steps beyond the first
+                // can be scored as their ground truth arrives.
+                const int n_tok = drafts.num_drafts * bsz;
+                if ((int)drafts.draft_tokens.size() >= n_tok) {
+                    Buffer_<int> all{n_tok, kCPU};
+                    core::Copy(drafts.draft_tokens, n_tok, all);
+                    core::Context::stream().Sync();
+                    PendingDraft p;
+                    p.tokens.assign(all.begin(), all.end());
+                    p.uids       = d.uids;
+                    p.bsz        = bsz;
+                    p.num_drafts = drafts.num_drafts;
+                    p.age        = 0;
+                    // Bounded by construction: a set is erased once its age
+                    // reaches num_drafts, so at most K are ever live. The
+                    // guard covers the path where rows stop matching and sets
+                    // are skipped rather than scored -- they still age, so
+                    // they still retire, but a cheap ceiling means a future
+                    // change to that logic cannot leak memory silently.
+                    if ((int)mtp_pending_.size() < 4 * n_draft) {
+                        mtp_pending_.push_back(std::move(p));
+                    }
+                }
             }
 
             // Report periodically. A rate over a handful of tokens is noise,
@@ -774,6 +860,17 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             100.0 * (double)mtp_matched_ / (double)mtp_scored_,
                             100.0 * (double)mtp_echo_ / (double)mtp_scored_,
                             100.0 * (double)mtp_repeat_ / (double)mtp_scored_);
+
+                for (size_t k = 0; k < mtp_step_scored_.size(); ++k) {
+                    if (mtp_step_scored_[k] == 0) {
+                        continue;
+                    }
+                    TM_LOG_INFO("[MTP]   draft step {}: {}/{} = {:.1f}%",
+                                k + 1,
+                                mtp_step_matched_[k],
+                                mtp_step_scored_[k],
+                                100.0 * (double)mtp_step_matched_[k] / (double)mtp_step_scored_[k]);
+                }
             }
         }
     }
