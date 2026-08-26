@@ -277,8 +277,22 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     // smallest such slack across the batch, since one array bounds all rows.
     // A sequence sitting exactly on a boundary has zero slack, and then no
     // advance is permitted at all.
+    // K advances, not K-1: the sampled token needs a position too.
+    //
+    // `k_offsets` is a PrefixSum over `sequence_length_` taken at
+    // language_model.cc:615, which runs BEFORE sampling increments
+    // sequence_length (sampling_kernels.cu:64). So on entry it describes a key
+    // length of L covering positions 0..L-1, while the token being drafted
+    // FROM -- the one sampling just produced -- belongs at position L.
+    //
+    // With q_len=1 attention derives history_len = cu_k_len - q_len = L-1 and
+    // writes there, on top of the target's own last token, and every later
+    // step inherits the shift. Step 1 still scored 64.1% because it attends to
+    // a history that is correct up to L-1 and merely misplaces one entry; the
+    // damage concentrates at depth, which is where the measured rates fell off
+    // fastest.
     const int block_len  = block_seq_len_;
-    int       max_extend = num_draft_tokens - 1;
+    int       max_extend = num_draft_tokens;
     if (block_len > 0) {
         for (int i = 0; i < batch_size; ++i) {
             const int len   = seq_lens[i];
@@ -292,14 +306,15 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     if (max_extend < num_draft_tokens - 1 && !extend_warned_) {
         extend_warned_ = true;
         TM_LOG_WARNING(
-            "[MTP] drafted positions limited to {} of {} extra steps by KV block capacity; "
+            "[MTP] drafted positions limited to {} of {} steps by KV block capacity; "
             "steps beyond that reuse the last valid position and will draft poorly",
             max_extend,
-            num_draft_tokens - 1);
+            num_draft_tokens);
     }
 
     for (int step = 0; step < num_draft_tokens; ++step) {
-        if (step > 0 && advanced < max_extend) {
+        // Step 0 advances too, placing the sampled token at L instead of L-1.
+        if (advanced < max_extend) {
             // Steps 1.. attend to the tokens the previous steps produced, so
             // each row's key length grows by one per step.
             AdvanceCuSeqLens(k_offsets.data(), batch_size, 1, stream);
