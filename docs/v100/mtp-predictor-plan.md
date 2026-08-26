@@ -126,6 +126,41 @@ None of this makes the work impossible. It does mean verification is a
 scheduler change, not a model change, and it is larger than the predictor
 itself.
 
+## Correction: the KV slot IS byte-isolated, but it is never filled
+
+I traced the cache path to settle this properly, and both my earlier claim and
+the review's phrasing were partly wrong.
+
+What is true: `UnifiedAttentionLayer::Register` walks its weight list and gives
+each weight its own `cache_block_offset` inside the block, then registers the
+total as one `prefix_cache_offset_`. Attention reads KV through
+`BlockIteratorParams{..., (int)weights.cache_block_offset, ...}`, i.e. the
+offset carried by *that weight*. Because `unified_decoder.cc` pushed the MTP
+attention onto that same weight list, the draft layer received genuinely
+distinct bytes. So a discarded draft cannot scribble on a target layer's KV.
+Item B, as originally posed, is answered: no corruption of the next decode.
+
+What is false is that this makes the slot *usable*. Two things:
+
+1. **Nothing ever writes it.** `UnifiedDecoder::Forward` loops over
+   `weights.at(layer)` for `layer < layer_num_` -- the target's layers only.
+   The MTP weight is in the registration list but not in the execution loop, so
+   no prompt or decode history is ever written into its bytes. The first draft
+   attention reads whatever the allocator last left there.
+
+2. **Every draft step reuses one position.** `params.cu_k_len` comes from
+   `d.k_offsets`, borrowed in `Setup` from the environment and fixed for the
+   whole batch. `Draft` calls `DecodeStep` K times without touching it, so all
+   K steps present the same history length and write the same cache slot.
+
+So the draft attends to uninitialised memory at a position that never advances.
+It cannot crash and cannot corrupt anything, which is precisely why it would
+have survived a smoke test: drafts are discarded, output is unchanged, and any
+accept length measured against it would be noise reported as a result.
+
+Seeding and advancing this state is therefore not a follow-up detail. It is a
+precondition for the first honest acceptance measurement.
+
 ## The MTP KV slot is inside the shared prefix object
 
 This one came from external review and I had missed it entirely.
