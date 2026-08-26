@@ -595,7 +595,12 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         const int bsz = b.bsz;
         if (mtp_predictor_ && engine_param_.num_draft_tokens > 0 && d.n_generating == bsz) {
             const int n_draft = engine_param_.num_draft_tokens;
-            auto      ids     = env.at("output_ids").buffer().view<int>();
+            // Slice to bsz: output_ids is `output_ids_buf_`, allocated once at
+            // max_batch_size (128) and reused, so its extent is the capacity
+            // and not this step's batch. Passing it whole made the draft embed
+            // 128 rows and collide with a bsz-row hidden_states inside the
+            // first RMSNorm.
+            auto ids = env.at("output_ids").buffer().view<int>().slice(0, bsz);
 
             TM_CHECK_EQ((int)hidden_states.shape(0), bsz)
                 << "MTP: hidden_states rows must match the batch";

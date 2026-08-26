@@ -59,6 +59,18 @@ Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_state
 {
     const auto stream = ctx_.stream;
 
+    // Report the real shapes before asserting on them. Guessing which operand
+    // disagreed cost a full build-and-run cycle; the kernel's check names
+    // neither tensor nor its extents.
+    TM_CHECK(embedding.ndim() == 2 && hidden_states.ndim() == 2)
+        << "MTP Project: expected 2D inputs, got embedding.ndim=" << embedding.ndim()
+        << " hidden_states.ndim=" << hidden_states.ndim();
+    TM_CHECK(embedding.shape(0) == batch_size && embedding.shape(1) == hidden_units_
+             && hidden_states.shape(0) == batch_size && hidden_states.shape(1) == hidden_units_)
+        << "MTP Project: shape mismatch. batch=" << batch_size << " hidden=" << hidden_units_
+        << " embedding=[" << embedding.shape(0) << "," << embedding.shape(1) << "]"
+        << " hidden_states=[" << hidden_states.shape(0) << "," << hidden_states.shape(1) << "]";
+
     // Two independent RMSNorms, one per input. They use their own eps and
     // zero_centered flags: Qwen3.5 is zero-centered, and passing the wrong
     // flag shifts every value by one without failing, so read both from the
@@ -191,6 +203,11 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
 {
     TM_CHECK_GT(batch_size, 0);
     TM_CHECK_GT(num_draft_tokens, 0);
+    // `last_tokens` must already be sliced to the batch. Its source buffer is
+    // allocated at max_batch_size and reused, so an unsliced view carries the
+    // capacity instead of this step's batch, and the mismatch would otherwise
+    // surface as a shape error deep inside an RMSNorm.
+    TM_CHECK_EQ((int)last_tokens.size(), batch_size) << "MTP Draft: last_tokens must be sliced to the batch";
 
     const auto stream = ctx_.stream;
 
