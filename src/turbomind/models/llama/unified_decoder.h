@@ -34,6 +34,16 @@ public:
         return mtp_attn_index_;
     }
 
+    /// The attention layer instance, shared with MTPPredictor.
+    ///
+    /// The draft must use this instance rather than its own: the KV slots were
+    /// registered here as one block, and only this object knows the resulting
+    /// offsets. Returns nullptr for a model with no attention layers.
+    UnifiedAttentionLayer* attn_layer() const noexcept
+    {
+        return attn_layer_.get();
+    }
+
 private:
     const size_t layer_num_;
     const size_t hidden_units_;

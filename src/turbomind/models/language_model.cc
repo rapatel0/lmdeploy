@@ -21,6 +21,7 @@
 #include "src/turbomind/models/llama/llama_kernels.h"
 #include "src/turbomind/models/llama/llama_params.h"
 #include "src/turbomind/models/llama/llama_utils.h"
+#include "src/turbomind/models/llama/mtp_predictor.h"
 #include "src/turbomind/models/llama/unified_decoder.h"
 #include "src/turbomind/models/model_weight.h"
 #include "src/turbomind/models/output_processor.h"
@@ -93,6 +94,10 @@ struct LanguageModel::Impl {
 
     std::optional<InputProcessor>   input_processor_;
     std::unique_ptr<UnifiedDecoder> unified_decoder_;
+
+    /// Draft-token generator, present only when the checkpoint carries an MTP
+    /// layer and the decoder registered a KV slot for it.
+    std::unique_ptr<MTPPredictor> mtp_predictor_;
     std::optional<OutputProcessor>  output_processor_;
     std::unique_ptr<Generation>     generation_;  // token generator
 
@@ -172,6 +177,21 @@ LanguageModel::Impl::Impl(
     input_processor_.emplace(engine, weights_.hidden_units, weights_.data_type, phases);
 
     unified_decoder_ = std::make_unique<UnifiedDecoder>(registry, engine, ctx, phases, weights_);
+
+    // Build the draft predictor when the checkpoint supplies an MTP layer and
+    // the decoder gave it a KV slot. Both conditions are required: the weights
+    // alone are inert without somewhere to write keys and values.
+    if (weights_.mtp && weights_.mtp->decoder_layer && unified_decoder_->mtp_attn_index() >= 0
+        && unified_decoder_->attn_layer()) {
+        mtp_predictor_ = std::make_unique<MTPPredictor>(
+            *weights_.mtp,
+            *unified_decoder_->attn_layer(),
+            unified_decoder_->mtp_attn_index(),
+            engine,
+            ctx,
+            [this](const Buffer_<int>& ids) { return LookupEmbedding(ids, symm_buf_); },
+            [this](const Tensor& h) { return PostEmbedding(h, symm_buf_); });
+    }
 
     const int vocab_size = weights_.output->output_dim * tp_size_;
 
