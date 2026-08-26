@@ -1,16 +1,30 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 #pragma once
 
+#include "src/turbomind/core/core.h"  // DataType
 #include "src/turbomind/core/module.h"
 
 namespace turbomind::core {
 
 struct MTPLayerConfig: ModuleConfig {
     MTPLayerConfig(): ModuleConfig{"MTPLayerWeight"} {}
-    template<typename Visitor>
-    static void for_each(Visitor&&)
-    {
-    }
+
+    // `data_type` is required because the builder commits the fc projection
+    // through `_add_linear`, which reads `self.config.data_type` to pick the
+    // compute dtype. Builder.__init__ populates that field only `if hasattr`,
+    // so a config without it is silently left alone and the read fails much
+    // later with an AttributeError during weight loading.
+    //
+    // DecoderLayerConfig is empty and still works because it commits no
+    // linears of its own; every projection is committed by the Attention and
+    // Ffn builders, whose configs declare the field. MTPLayerConfig is the
+    // only container config that owns a linear directly.
+#define MTP_LAYER_FIELDS(X) X(DataType, data_type)
+
+    MTP_LAYER_FIELDS(TM_MEMBER)
+    TM_FOR_EACH(MTPLayerConfig, MTP_LAYER_FIELDS)
+
+#undef MTP_LAYER_FIELDS
 };
 
 }  // namespace turbomind::core
