@@ -32,7 +32,7 @@ finish() {
     for f in /tmp/mtp-base.log /tmp/mtp-spec.log /tmp/base.txt /tmp/spec.txt; do
         [ -e "$f" ] && cp -f "$f" "${RESULTS}/" 2>/dev/null
     done
-    echo "$rc" > "${RESULTS}/exit_code"
+    echo "$rc" >"${RESULTS}/exit_code"
     echo "artifacts saved to ${RESULTS} (exit ${rc})"
 }
 trap finish EXIT
@@ -44,11 +44,17 @@ trap finish EXIT
 # failed. Ninja makes this cheap when no C++ changed.
 echo "=== build ==="
 cd /src
-bash /src/tools/v100/build_v100.sh || { echo "FAIL: build" >&2; exit 2; }
+bash /src/tools/v100/build_v100.sh || {
+    echo "FAIL: build" >&2
+    exit 2
+}
 
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' 2>/dev/null |
     sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo "FAIL: no wheel after build" >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo "FAIL: no wheel after build" >&2
+    exit 2
+}
 echo "=== installing $(basename "${WHEEL}") ==="
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -2
 
@@ -68,7 +74,10 @@ print("  the wheel's mtp_layer.py carries add_fc")
 CHECK
 
 MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
-[ -f "${MODEL}/config.json" ] || { echo "FAIL: no checkpoint at ${MODEL}" >&2; exit 3; }
+[ -f "${MODEL}/config.json" ] || {
+    echo "FAIL: no checkpoint at ${MODEL}" >&2
+    exit 3
+}
 
 echo
 echo "=== run the draft path ==="
@@ -134,8 +143,12 @@ echo "=== 4. is the output unchanged? ==="
 # recurrent state -- which would not raise, only degrade.
 if ! diff -q /tmp/base.txt /tmp/spec.txt >/dev/null; then
     echo "FAIL: drafting altered the output." >&2
-    echo "--- without drafting ---" >&2; head -c 400 /tmp/base.txt >&2; echo >&2
-    echo "--- with drafting ---" >&2;    head -c 400 /tmp/spec.txt >&2; echo >&2
+    echo "--- without drafting ---" >&2
+    head -c 400 /tmp/base.txt >&2
+    echo >&2
+    echo "--- with drafting ---" >&2
+    head -c 400 /tmp/spec.txt >&2
+    echo >&2
     exit 8
 fi
 echo "  identical, as required while drafts are discarded"

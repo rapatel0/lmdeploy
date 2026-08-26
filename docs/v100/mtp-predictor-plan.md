@@ -126,6 +126,32 @@ None of this makes the work impossible. It does mean verification is a
 scheduler change, not a model change, and it is larger than the predictor
 itself.
 
+## Status: the draft loop runs (2026-08-26, commit 8814428e)
+
+`VERIFY_MTP_DRAFT_PASS` on 4x V100, tp=4, Qwen3.8-27B-FP8. Artifacts persisted
+to the node at `/localpool/lmdeploy-v100-next/results/`.
+
+```
+[MTP] drafted 4 token(s) for 1 sequence(s); drafts are not yet verified   (x4 ranks)
+  identical, as required while drafts are discarded
+```
+
+What this proves: the predictor constructs, projects, runs K decode steps
+through attention and FFN, and produces argmax tokens on all four ranks without
+aborting -- and the target's output is byte-identical to the baseline, which is
+the only correctness claim available while drafts are discarded.
+
+What it does NOT prove, and must not be read as: that the drafts are *good*, or
+that any of them would be accepted. Per the section below, the draft attends to
+uninitialised KV at a position that never advances. `drafted 4 token(s)` counts
+tokens *emitted*, not tokens worth emitting. The identical-output check passes
+trivially here precisely because nothing consumes the drafts -- it would pass
+equally well if the predictor emitted four random ids.
+
+So this closes the "does the draft path execute" question and nothing more. The
+first number that means anything is accept length, and that is not measurable
+until the KV seeding below is done.
+
 ## Correction: the KV slot IS byte-isolated, but it is never filled
 
 I traced the cache path to settle this properly, and both my earlier claim and
