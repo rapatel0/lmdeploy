@@ -386,6 +386,36 @@ drafting ON**. It is baseline engine numerics, unrelated to the MTP path
 entirely -- which also rules out the draft path as its cause rather than
 assuming so.
 
+### Multi-block prefill closes the last uncovered path (commit 6d767d44)
+
+```
+ALL_VERIFICATION_SECTIONS_PASS          exit 0
+multi-block prompt: ok, answered correctly over a 419-word prompt   (both configs)
+```
+
+Every prompt in this work had been 63 tokens -- one short of the 64-token block
+size -- so prefill had never allocated more than one block, and the first draft
+always landed exactly on a block boundary. That is the least representative
+position available, and it is what produced the misleading `limited to 0 of 4`
+warning early on. A ~419-word prompt spanning at least six blocks now answers
+correctly with drafting off and on.
+
+Final state, all sections under the enforced gate:
+
+```
+sections present   1-8, all executed
+pass tokens        VERIFY_MTP_DRAFT_PASS, VERIFY_INFERENCE_PASS x2,
+                   VERIFY_CONCURRENT_PASS x2, ALL_VERIFICATION_SECTIONS_PASS
+fail tokens        none
+section rcs        drafting off rc=0, drafting on rc=0 (both pairs)
+```
+
+The gates were re-proven against bad input rather than recalled: section rcs
+(0,6,0,0) and (0,0,0,7) both fail, (0,0,0,0) passes; a log without
+`EMIT_TEXT_COMPLETE` fails while one with it passes; the correctness checker
+rejects Kyoto/5/Blue, and a chain-of-thought containing the right answer beside
+a wrong final answer is rejected even though the raw text matches.
+
 ### The batch-wide slack minimum does not scale, and the arithmetic says so
 
 `MTPPredictor::Draft` takes `max_extend` as the minimum block slack across the
