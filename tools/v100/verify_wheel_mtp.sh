@@ -48,6 +48,11 @@ echo "=== config bindings on the extension ==="
 python3 - <<'PY'
 import sys
 
+# _turbomind lives in lmdeploy/lib, which is not on sys.path until
+# lmdeploy.turbomind.turbomind appends it. A direct import fails even when the
+# extension is installed correctly.
+import lmdeploy.turbomind.turbomind  # noqa: F401
+
 import _turbomind as t
 
 ok = True

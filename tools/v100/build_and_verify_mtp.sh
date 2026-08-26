@@ -57,6 +57,12 @@ cd /
 python3 - <<'PY'
 import sys
 
+# _turbomind lives in lmdeploy/lib, which is not on sys.path until
+# lmdeploy.turbomind.turbomind appends it (see its module-level
+# sys.path.append). Import that first; a direct `import _turbomind` raises
+# ModuleNotFoundError even when the extension is installed correctly.
+import lmdeploy.turbomind.turbomind  # noqa: F401
+
 import _turbomind as t
 
 ok = True
