@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <numeric>
+#include <string>
 #include <vector>
 
 #include "src/turbomind/comm/device_comm.h"
@@ -31,6 +32,7 @@
 #include "src/turbomind/models/output_processor.h"
 #include "src/turbomind/utils/anomaly_handler.h"
 #include "src/turbomind/utils/cuda_utils.h"
+#include "src/turbomind/utils/string_utils.h"
 
 // #include "dbg.h"
 
@@ -140,6 +142,9 @@ struct LanguageModel::Impl {
     struct PendingDraft {
         std::vector<int>      tokens;  ///< [step][batch], as Draft produces
         std::vector<uint64_t> uids;
+        /// Per row: is every draft step scored so far still correct? Gates the
+        /// conditional statistic, and latches false on the first miss.
+        std::vector<char> prefix_ok;
         int                   bsz{0};
         int                   num_drafts{0};
         int                   age{0};
@@ -149,6 +154,11 @@ struct LanguageModel::Impl {
     /// Per-step-index acceptance: matched/scored for draft step k.
     std::vector<size_t> mtp_step_matched_;
     std::vector<size_t> mtp_step_scored_;
+
+    /// Conditional acceptance: step k scored only where prefix 0..k-1 was
+    /// correct. Unlike the raw rate this does not decay with depth.
+    std::vector<size_t> mtp_cond_matched_;
+    std::vector<size_t> mtp_cond_scored_;
 
     /// Cumulative step-1 acceptance, reported periodically.
     size_t mtp_scored_{0};
@@ -784,12 +794,31 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                     if ((int)mtp_step_scored_.size() <= k) {
                         mtp_step_scored_.resize(k + 1, 0);
                         mtp_step_matched_.resize(k + 1, 0);
+                        mtp_cond_scored_.resize(k + 1, 0);
+                        mtp_cond_matched_.resize(k + 1, 0);
                     }
                     // [step][batch]: step k starts at k * bsz.
                     const int base = k * p.bsz;
                     for (int i = 0; i < bsz; ++i) {
+                        const bool hit = (truth[i] == p.tokens[base + i]);
                         ++mtp_step_scored_[k];
-                        mtp_step_matched_[k] += (truth[i] == p.tokens[base + i]);
+                        mtp_step_matched_[k] += hit;
+
+                        // Conditional accuracy: score step k only on rows whose
+                        // ENTIRE prefix 0..k-1 was correct.
+                        //
+                        // The raw rate above has a hard ceiling of the previous
+                        // step's rate, because step k conditions on its own
+                        // predecessors' output. At depth 4 that leaves under
+                        // one expected hit, so a raw 0.0% cannot distinguish a
+                        // broken step from an unreachable one. The conditional
+                        // rate does not shrink with depth, and it is the
+                        // quantity that predicts speculative speedup.
+                        if (p.prefix_ok[i]) {
+                            ++mtp_cond_scored_[k];
+                            mtp_cond_matched_[k] += hit;
+                            p.prefix_ok[i] = hit;  // prefix stays correct only while hits continue
+                        }
                     }
                 }
                 for (auto& p : mtp_pending_) {
@@ -846,6 +875,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                     p.bsz        = bsz;
                     p.num_drafts = drafts.num_drafts;
                     p.age        = 0;
+                    p.prefix_ok.assign(bsz, 1);
                     // Bounded by construction: a set is erased once its age
                     // reaches num_drafts, so at most K are ever live. The
                     // guard covers the path where rows stop matching and sets
@@ -876,11 +906,16 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                     if (mtp_step_scored_[k] == 0) {
                         continue;
                     }
-                    TM_LOG_INFO("[MTP]   draft step {}: {}/{} = {:.1f}%",
+                    const size_t cs = k < mtp_cond_scored_.size() ? mtp_cond_scored_[k] : 0;
+                    const size_t cm = k < mtp_cond_matched_.size() ? mtp_cond_matched_[k] : 0;
+                    TM_LOG_INFO("[MTP]   draft step {}: {}/{} = {:.1f}%  | given correct prefix: {}/{} = {}",
                                 k + 1,
                                 mtp_step_matched_[k],
                                 mtp_step_scored_[k],
-                                100.0 * (double)mtp_step_matched_[k] / (double)mtp_step_scored_[k]);
+                                100.0 * (double)mtp_step_matched_[k] / (double)mtp_step_scored_[k],
+                                cm,
+                                cs,
+                                cs ? fmtstr("%.1f%%", 100.0 * (double)cm / (double)cs) : std::string("n/a"));
                 }
             }
         }

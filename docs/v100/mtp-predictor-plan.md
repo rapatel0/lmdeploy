@@ -152,6 +152,52 @@ So this closes the "does the draft path execute" question and nothing more. The
 first number that means anything is accept length, and that is not measurable
 until the KV seeding below is done.
 
+## Position advance: step 2 improves, and the metric is the wrong one
+
+After `84d9631f` (commit 84d9631f, run 20260826_155803):
+
+```
+            before        after
+step 1     56.2%   ->    56.2%     unchanged, as required
+step 2     16.1%   ->    22.6%     +6.5 points
+step 3      3.3%   ->     3.3%     unchanged
+step 4      0.0%   ->     0.0%     unchanged
+```
+
+Step 1 held exactly, which was the stated guard: a change that moved it would
+have been touching something it should not. Step 2 improved, and with greedy
+decoding on a fixed prompt this is deterministic, not noise.
+
+The capacity warning fired, and reconciling it was necessary rather than
+dismissible. Prompt is 63 tokens with `block=64`, so slack per decode step runs
+1, 0, 63, 62, ... -- the warning is emitted once, at the single step where
+`seq_len == 64` leaves zero slack. Every later step permits the full advance.
+So the guard fired truthfully and the advance is active for nearly all steps;
+the two facts are consistent.
+
+**Why steps 3 and 4 did not move, and why that is not a bug.** Acceptance at
+step k is conditional: step k can only be correct if steps 1..k-1 were all
+correct, because each conditions on its predecessors' output. So the raw
+per-step rate has a hard ceiling of the previous step's rate, and the numbers
+compound:
+
+```
+step 2 = 22.6% of 56.2%  ->  ~40% conditional accuracy
+step 3 expected  30 * 0.562 * 0.40^2 = 2.7 hits   measured 1
+step 4 expected  29 * 0.562 * 0.40^3 = 1.0 hits   measured 0
+```
+
+At this sample size steps 3 and 4 have **fewer than three expected hits
+between them**. Measuring 1 and 0 is entirely consistent with a correctly
+working predictor; those cells carry almost no information either way.
+
+This means the raw per-step rate is the wrong instrument for the tail. The
+right one is **conditional accuracy** -- of the cases where the prefix was
+correct, how often is step k correct -- which does not shrink with depth and is
+what actually predicts speculative speedup. The current numbers cannot
+distinguish "step 4 is broken" from "step 4 was rarely reachable", and I should
+stop reading them as though they can.
+
 ## Per-step acceptance confirms the diagnosis (commit c1e550d6)
 
 ```
