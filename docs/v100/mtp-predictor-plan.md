@@ -350,6 +350,46 @@ end, so attention never reaches those bytes. They are stale but unreachable,
 and the next forward overwrites them. That is only true while they are also
 unpublished, which is what the guard above secures.
 
+### A fix that changed nothing, and why that is informative
+
+Codex's highest-confidence P1 (0.98) was that step 0 writes at `L-1` rather than
+`L`, because `k_offsets` is a `PrefixSum` taken before sampling increments
+`sequence_length`. The ordering is real and the diagnosis is correct.
+
+I fixed it, predicting in the commit message that deep steps would improve.
+**They did not.** Steps 1-3 came back bit-identical (41/64, 15/63, 9/62); step 4
+moved 1/61 -> 2/61, which is noise at that denominator.
+
+Bit-identical under greedy decode means the change was a no-op, and the reason
+is worth keeping:
+
+```
+before: step0 @L-1  step1 @L    step2 @L+1  step3 @L+2
+after : step0 @L    step1 @L+1  step2 @L+2  step3 @L+3
+```
+
+Every position moved by exactly +1 -- uniformly. Step *k* reads `[0, cu_k_len)`
+and writes at `cu_k_len - q_len`, so it still sees exactly the *k* entries that
+steps `0..k-1` wrote. The *relative* geometry is unchanged; only the absolute
+base moved. Shifting the base matters only if the entries below it carry
+meaning -- and per the standing NOTE at language_model.cc:698, **the MTP KV slot
+is never populated with target history at all**. Reading `[0,L)` of
+uninitialised memory is indistinguishable from reading `[0,L-1)` of it.
+
+So Codex's P1 is genuine but currently *masked* by its own other P1
+(uninitialised MTP history, confidence 0.99). The position fix is a
+prerequisite that cannot pay off until the history it indexes into exists. It
+is kept, not reverted: it is correct, and it must be in place before seeding
+history or the seeding would be written to shifted positions.
+
+The cost of keeping it is measured, not assumed: `max_extend` goes from `K-1` to
+`K`, so capacity-limited decode steps rise from 4.7% to 6.2%.
+
+**The prediction failing is the useful part.** Had deep steps improved, I would
+have credited the position fix and moved on with the far larger defect --
+unpopulated draft history -- still in the tree, now hidden behind a number that
+had gone up.
+
 ### My own guard becomes a silent 48% tax
 
 `d.all_decode` (language_model.cc:454, `d.all_decode &= c.input_len == 1`) was
