@@ -159,17 +159,14 @@ def main() -> int:
     print("  multi-block prompt")
     filler = " ".join(f"item{i}" for i in range(400))  # comfortably over 64 tokens
     long_prompt = (
-        f"Here is a list to ignore: {filler}. "
-        "Now answer only this: what is the capital city of Japan? One word."
+        f"Here is a list to ignore: {filler}. Now answer only this: what is the capital city of Japan? One word."
     )
     lp_out = pipe([long_prompt], gen_config=cfg)[0]
     lp_text = lp_out.text or ""
     if not lp_text.strip():
         failures.append("multi-block prompt produced no text")
     elif not re.search(r"(?i)\btokyo\b", final_answer(lp_text)):
-        failures.append(
-            f"multi-block prompt gave wrong answer: {final_answer(lp_text).strip()[:90]!r}"
-        )
+        failures.append(f"multi-block prompt gave wrong answer: {final_answer(lp_text).strip()[:90]!r}")
     else:
         print(f"    ok, answered correctly over a {len(long_prompt.split())}-word prompt")
 
