@@ -167,3 +167,18 @@ echo "  identical, as required while drafts are discarded"
 
 echo
 echo "VERIFY_MTP_DRAFT_PASS"
+
+# --- probe: does the absolute base position matter at all? ---
+#
+# A uniform +1 shift of every drafted position left steps 1-3 bit-identical.
+# That is only possible if the entries below the base contribute something
+# invariant to the shift. Zeros do; leftover bytes do not. Shifting by a large
+# constant discriminates in one run.
+#
+# This deliberately ignores block slack, so its OUTPUT IS NOT TRUSTED -- only
+# the acceptance table is read, and only to compare against the run above.
+echo
+echo "=== 4. probe: base shifted by 32 (output deliberately untrusted) ==="
+TM_MTP_PROBE_SHIFT=32 stdbuf -oL -eL python3 /src/tools/v100/verify_mtp_draft.py \
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 4 --max-new-tokens 64 \
+    --emit-text /tmp/probe.txt 2>&1 | tail -25 || true
