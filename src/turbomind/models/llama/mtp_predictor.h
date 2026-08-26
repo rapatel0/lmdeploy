@@ -72,6 +72,11 @@ private:
     /// to hidden size. Returns [batch, hidden].
     Tensor Project(const Tensor& embedding, const Tensor& hidden_states, int batch_size);
 
+    /// Run the draft decoder block over `hidden`: norm, attention against the
+    /// MTP KV slot, residual, norm, FFN, residual, then the MTP final_norm.
+    /// Returns the value the shared lm_head consumes.
+    Tensor DecodeStep(Tensor hidden, int phase, TensorMap& env);
+
     const MTPLayerWeight& weights_;
 
     /// Owned by UnifiedDecoder. The draft layer shares that instance and
@@ -93,8 +98,14 @@ private:
     const int      tp_rank_;
     const DataType dtype_;
 
-    LlamaLinear& linear_;
+    LlamaLinear&   linear_;
     const Context& ctx_;
+
+    /// The MTP layer in this checkpoint has a dense mlp.{gate,up,down}_proj
+    /// rather than an expert set, so the draft path is a plain FFN. The two
+    /// `mtp.layers.0.mlp.gate` entries in the config's exclude list have no
+    /// tensor on disk, consistent with there being no MoE here.
+    std::unique_ptr<LlamaFfnLayer> ffn_layer_;
 };
 
 }  // namespace turbomind
