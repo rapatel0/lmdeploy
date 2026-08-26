@@ -8,14 +8,29 @@
 # read back from that transcript afterwards.
 set -uo pipefail
 
+# Build, always. The wheel carries the Python sources too, so installing a
+# wheel that is older than /src silently reverts any Python fix and the run
+# then tests stale code. That already happened once: the fc fix was in /src
+# and absent from the wheel, and the identical abort looked like the fix had
+# failed. Ninja makes this cheap when no C++ changed.
+echo "=== build ==="
+cd /src
+bash /src/tools/v100/build_v100.sh || { echo "FAIL: build" >&2; exit 2; }
+
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' 2>/dev/null |
     sort -rn | head -1 | cut -d' ' -f2-)"
-if [ -z "${WHEEL}" ]; then
-    echo "FAIL: no wheel in /wheels; run the build job first" >&2
-    exit 2
-fi
+[ -n "${WHEEL}" ] || { echo "FAIL: no wheel after build" >&2; exit 2; }
 echo "=== installing $(basename "${WHEEL}") ==="
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -2
+
+# The wheel must actually contain the fix that is in /src.
+python3 - <<'CHECK' || exit 2
+import pathlib, lmdeploy.turbomind.builders.mtp_layer as m
+src = pathlib.Path(m.__file__).read_text()
+if "add_fc" not in src:
+    raise SystemExit("FAIL: installed wheel predates the fc fix")
+print("  installed mtp_layer.py carries add_fc")
+CHECK
 
 MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
 [ -f "${MODEL}/config.json" ] || { echo "FAIL: no checkpoint at ${MODEL}" >&2; exit 3; }
