@@ -41,37 +41,57 @@ CHECK
 MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
 [ -f "${MODEL}/config.json" ] || { echo "FAIL: no checkpoint at ${MODEL}" >&2; exit 3; }
 
-LOG=/tmp/mtp-run.log
 echo
 echo "=== run the draft path ==="
 cd /
-# stdbuf so the section markers interleave correctly with the C++ records.
+# Two separate processes, one generation each. A 27B model at tp=4 fills most
+# of each 32GB V100, and nothing frees the first pipeline's weights, so doing
+# both in one process OOMs on the second load.
+BASE_LOG=/tmp/mtp-base.log
+SPEC_LOG=/tmp/mtp-spec.log
+
+echo "=== 1. baseline, drafting off ==="
 stdbuf -oL -eL python3 /src/tools/v100/verify_mtp_draft.py \
-    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 4 2>&1 | tee "${LOG}"
-rc=${PIPESTATUS[0]}
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 0 \
+    --emit-text /tmp/base.txt 2>&1 | tee "${BASE_LOG}"
+[ "${PIPESTATUS[0]}" -eq 0 ] || { echo "FAIL: baseline run" >&2; exit 4; }
 
 echo
-echo "=== the C++ draft records, read back from the transcript ==="
-if [ "${rc}" -ne 0 ]; then
-    echo "run failed (rc=${rc}); the abort message is above" >&2
-    exit "${rc}"
-fi
+echo "=== 2. drafting on, depth 4 ==="
+stdbuf -oL -eL python3 /src/tools/v100/verify_mtp_draft.py \
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 4 \
+    --emit-text /tmp/spec.txt 2>&1 | tee "${SPEC_LOG}"
+[ "${PIPESTATUS[0]}" -eq 0 ] || { echo "FAIL: speculative run" >&2; exit 5; }
 
+echo
+echo "=== 3. did a draft actually run? ==="
 # Claim 1: with drafting off, no draft may occur.
-if sed -n '/1. baseline/,/2. drafting on/p' "${LOG}" | grep -q '\[MTP\] drafted'; then
+if grep -q '\[MTP\] drafted' "${BASE_LOG}"; then
     echo "FAIL: a draft ran with num_draft_tokens=0; the guard is not honoured" >&2
-    exit 4
+    exit 6
 fi
-
 # Claim 2: with drafting on, at least one draft must occur.
-DRAFTS="$(sed -n '/2. drafting on/,$p' "${LOG}" | grep -c '\[MTP\] drafted')"
-sed -n '/2. drafting on/,$p' "${LOG}" | grep '\[MTP\] drafted' | head -4
+DRAFTS="$(grep -c '\[MTP\] drafted' "${SPEC_LOG}")"
+grep '\[MTP\] drafted' "${SPEC_LOG}" | head -4
 if [ "${DRAFTS}" -eq 0 ]; then
     echo "FAIL: no draft record. The path is dead code: mtp_predictor_ is null," >&2
     echo "or num_draft_tokens never reached the engine." >&2
-    exit 5
+    exit 7
 fi
 echo "  ${DRAFTS} draft record(s)"
+
+echo
+echo "=== 4. is the output unchanged? ==="
+# Drafts are discarded today, so speculation must be invisible in the text.
+# A difference here means the draft is corrupting the target's KV or
+# recurrent state -- which would not raise, only degrade.
+if ! diff -q /tmp/base.txt /tmp/spec.txt >/dev/null; then
+    echo "FAIL: drafting altered the output." >&2
+    echo "--- without drafting ---" >&2; head -c 400 /tmp/base.txt >&2; echo >&2
+    echo "--- with drafting ---" >&2;    head -c 400 /tmp/spec.txt >&2; echo >&2
+    exit 8
+fi
+echo "  identical, as required while drafts are discarded"
 
 echo
 echo "VERIFY_MTP_DRAFT_PASS"

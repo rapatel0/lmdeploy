@@ -102,11 +102,19 @@ def generate(model_dir: str, tp: int, num_draft: int, prompt: str) -> tuple[str,
     return text, buf.getvalue()
 
 
+PROMPT = "List the first five prime numbers, separated by commas."
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-dir", required=True)
     ap.add_argument("--tp", type=int, default=4)
     ap.add_argument("--num-draft-tokens", type=int, default=4)
+    # One generation per process. The caller runs this twice and diffs the
+    # two texts. Loading both models in a single process OOMs: a 27B model at
+    # tp=4 fills most of each 32GB V100, and the first pipeline's weights are
+    # still resident when the second loads, because nothing frees them.
+    ap.add_argument("--emit-text", metavar="PATH", help="write the generated text here and exit")
     args = ap.parse_args()
 
     cfg = text_section(read_config(args.model_dir))
@@ -114,7 +122,14 @@ def main() -> int:
         print("FAIL: this checkpoint declares no MTP layer", file=sys.stderr)
         return 2
 
-    prompt = "List the first five prime numbers, separated by commas."
+    if args.emit_text:
+        text, _ = generate(args.model_dir, args.tp, args.num_draft_tokens, PROMPT)
+        with open(args.emit_text, "w", encoding="utf-8") as f:
+            f.write(text.strip())
+        print(f"  text: {text.strip()[:160]!r}", flush=True)
+        return 0
+
+    prompt = PROMPT
 
     print("=== 1. baseline, drafting off ===", flush=True)
     base_text, _ = generate(args.model_dir, args.tp, 0, prompt)
