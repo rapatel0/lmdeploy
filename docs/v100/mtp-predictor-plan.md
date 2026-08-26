@@ -92,6 +92,40 @@ identical in output to one that works, and reports a lower token rate than
 no speculation at all. Any claim that MTP works must cite an accept length
 above zero, measured, not inferred.
 
+## Verification: what the scheduler makes hard
+
+Verifying K drafts needs the target to score K+1 positions in one forward, so
+the scheduler must admit K+1 tokens for a generating sequence instead of one.
+That length is not a constant to change. It is derived:
+
+```cpp
+// scheduler.cc
+const int begin   = s.resume_len + s.inflight_input_len;
+const int ctx_end = s.seq_len + s.inflight_new_tokens;
+const int end     = ClampForwardEnd(s, begin, begin + admitted, ctx_end);
+s.input_len       = end - begin;
+```
+
+So `input_len` falls out of `admitted`, the block-size alignment inside
+`ClampForwardEnd`, and the checkpoint interval. Three consequences worth
+stating before writing any code:
+
+1. **The drafted tokens have no sequence positions yet.** They are candidates,
+   not history. Admitting K+1 means reserving KV for positions that may be
+   rejected, so the block accounting has to tolerate a forward whose accepted
+   length is shorter than its admitted length.
+2. **`ClampForwardEnd` aligns down to a block boundary** when `desired <
+   ctx_end`. A K+1 decode step can therefore be clipped back to a shorter
+   length, silently, which would look like drafts being rejected.
+3. **Checkpoint publication is position-driven.** Publishing a checkpoint at a
+   position that later gets rolled back would poison the prefix cache for
+   every other request that reuses it. This is the failure with the widest
+   blast radius, because it escapes the speculating request.
+
+None of this makes the work impossible. It does mean verification is a
+scheduler change, not a model change, and it is larger than the predictor
+itself.
+
 ## Rollback: v0.16.0 already has the primitive
 
 The fork's approach, a pair of shadow buffers with explicit Snapshot and
