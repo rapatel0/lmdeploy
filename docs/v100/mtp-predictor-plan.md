@@ -126,6 +126,31 @@ None of this makes the work impossible. It does mean verification is a
 scheduler change, not a model change, and it is larger than the predictor
 itself.
 
+## The MTP KV slot is inside the shared prefix object
+
+This one came from external review and I had missed it entirely.
+
+`unified_decoder.cc` obtains the draft layer's KV slot by pushing its attention
+weight onto the same `attn_weights` vector the target layers register with.
+That is what makes the registry allocate a slot at all -- but it also means the
+draft layer's bytes live inside the *same registered prefix object* the prefix
+cache publishes and other requests reuse.
+
+So speculative KV is not automatically private. It is a region of a block that
+prefix caching can hand to a different request. Two consequences:
+
+1. Bytes written by a *rejected* draft are unproven. They must never be part of
+   a published prefix. Publication intent has to stay empty for any speculative
+   pass, not merely be corrected afterwards.
+2. Even for an *accepted* draft, the MTP scratch bytes were produced by the
+   draft layer rather than by a verified target forward. Before any future
+   publication they must be rebuilt, or the MTP scratch must be moved to a
+   cache category that is never reused.
+
+This is the same hazard as checkpoint publication, one level lower: it escapes
+the speculating request. The earlier note below reasoned about checkpoints and
+assumed the KV slot was separate. It is not.
+
 ## Rollback: v0.16.0 already has the primitive
 
 The fork's approach, a pair of shadow buffers with explicit Snapshot and
