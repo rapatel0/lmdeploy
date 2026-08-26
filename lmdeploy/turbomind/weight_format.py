@@ -31,7 +31,11 @@ import _turbomind as _tm
 import torch
 from torch import Tensor
 
+from lmdeploy.utils import get_logger
+
 from .linear import Linear
+
+logger = get_logger('lmdeploy')
 
 
 class PackedTensor(NamedTuple):
@@ -362,6 +366,16 @@ class FP8Format(WeightFormat):
     weight_dtype = _tm.DataType.TYPE_FP8_E4M3
     has_zero_point = False
 
+    # SM70 decodes E4M3 to FP16 by bit manipulation in ``cvt_f16x4_e4m3``
+    # (kernels/attention/quantization.h), which leaves every value low by
+    # 2**8. That kernel already corrects it with a fixed ``mul.rn.f16x2`` by
+    # ``(15 - 7 + 15) << 10`` == 256, so the host must NOT pre-multiply the
+    # scales. SGLang folds this same constant into its host-side scales in
+    # ``sm70_turbomind_fp8.py`` because its decode kernel omits the
+    # correction; ours does not. Recorded here only to document the headroom
+    # calculation in ``check_scale_range``.
+    _KERNEL_E4M3_DECODE_GAIN = 256.0
+
     def __init__(self, *, expand_scales: bool | None = None,
                  scale_dtype: torch.dtype = torch.float16):
         # ``expand_scales`` converts the {128, 128} block scale into the
@@ -404,10 +418,46 @@ class FP8Format(WeightFormat):
         """
         if kind != "scales" or not self.expand_scales or tensor.dim() < 2:
             return tensor
+        self.check_scale_range(tensor)
         # Cast before expanding, so the repeat copies already-converted values.
         return (tensor.to(self.scale_dtype)
                 .repeat_interleave(128, dim=1)[:, :out_dim]
                 .contiguous())
+
+    def check_scale_range(self, scales: Tensor) -> None:
+        """Warn when block scales do not survive the cast to ``scale_dtype``.
+
+        The checkpoint ships ``weight_scale_inv`` as BF16, which has the same
+        exponent range as FP32. FP16 has a much smaller one, so a scale below
+        FP16's minimum normal (6.10e-05) loses precision to a subnormal, and
+        one below 5.96e-08 flushes to zero. Either silently corrupts the
+        weights it applies to.
+
+        A wrong scale on a speculative-decoding draft layer does not produce
+        visibly bad output, because the target model verifies every token. It
+        shows up as a low acceptance rate, so this check exists to catch the
+        condition at load time rather than as unexplained slow generation.
+        """
+        if self.scale_dtype != torch.float16 or scales.numel() == 0:
+            return
+        finfo = torch.finfo(torch.float16)
+        magnitude = scales.detach().to(torch.float32).abs()
+        nonzero = magnitude[magnitude > 0]
+        if nonzero.numel() == 0:
+            return
+        smallest = nonzero.min().item()
+        largest = magnitude.max().item()
+        if largest > finfo.max:
+            logger.warning(
+                "FP8 block scale %.3e exceeds the fp16 maximum %.3e; the cast "
+                "to fp16 will produce inf and corrupt this layer.",
+                largest, finfo.max)
+        if smallest < finfo.tiny:
+            logger.warning(
+                "FP8 block scale %.3e is below the fp16 minimum normal %.3e; "
+                "the cast to fp16 loses precision to a subnormal. Expect a "
+                "reduced speculative acceptance rate rather than bad output.",
+                smallest, finfo.tiny)
 
     def dequant(self, tensors, data_type):
         from .builders._base import _CPP_TO_TORCH
