@@ -88,8 +88,7 @@ def main() -> int:
         session_len=session_len,
     )
     print(
-        f"engine: tp={args.tp} model_format={args.model_format} "
-        f"session_len={session_len}",
+        f"engine: tp={args.tp} model_format={args.model_format} session_len={session_len}",
         flush=True,
     )
 
@@ -139,8 +138,7 @@ def main() -> int:
             }
         )
         print(
-            f"  trial {trial}: {produced} tok in {elapsed:.3f}s "
-            f"= {inclusive:.2f} tok/s  degenerate={degenerate}",
+            f"  trial {trial}: {produced} tok in {elapsed:.3f}s = {inclusive:.2f} tok/s  degenerate={degenerate}",
             flush=True,
         )
 
