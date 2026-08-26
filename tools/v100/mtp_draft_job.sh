@@ -8,6 +8,28 @@
 # read back from that transcript afterwards.
 set -uo pipefail
 
+# Persist everything to the /results hostPath, not just pod-local /tmp. The
+# pod is reclaimed when the job finishes and its logs go with it, so anything
+# only in /tmp cannot be read afterwards.
+# Stamp the directory with the source commit actually under test, read from
+# /src rather than passed in, so the name cannot claim a commit the build did
+# not use.
+SRC_COMMIT="$(git -C /src rev-parse --short HEAD 2>/dev/null || echo unknown)"
+RESULTS=/results/$(date +%Y%m%d_%H%M%S)-${SRC_COMMIT}
+mkdir -p "${RESULTS}"
+exec > >(tee -a "${RESULTS}/console.log") 2>&1
+echo "results dir: ${RESULTS}"
+
+finish() {
+    rc=$?
+    for f in /tmp/mtp-base.log /tmp/mtp-spec.log /tmp/base.txt /tmp/spec.txt; do
+        [ -e "$f" ] && cp -f "$f" "${RESULTS}/" 2>/dev/null
+    done
+    echo "$rc" > "${RESULTS}/exit_code"
+    echo "artifacts saved to ${RESULTS} (exit ${rc})"
+}
+trap finish EXIT
+
 # Build, always. The wheel carries the Python sources too, so installing a
 # wheel that is older than /src silently reverts any Python fix and the run
 # then tests stale code. That already happened once: the fc fix was in /src

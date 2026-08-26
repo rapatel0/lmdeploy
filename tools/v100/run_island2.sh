@@ -98,6 +98,7 @@ manifest = {
                     {"name": "wheels", "mountPath": "/wheels"},
                     {"name": "models", "mountPath": "/models", "readOnly": True},
                     {"name": "shm", "mountPath": "/dev/shm"},
+                    {"name": "results", "mountPath": "/results"},
                 ]}],
             "volumes": [
                 {"name": "job", "configMap": {"name": f"{job}-script"}},
@@ -105,6 +106,11 @@ manifest = {
                 {"name": "wheels", "hostPath": {"path": "/localpool/lmdeploy-v100-next/wheels", "type": "Directory"}},
                 {"name": "models", "hostPath": {"path": "/srv/models", "type": "Directory"}},
                 {"name": "shm", "emptyDir": {"medium": "Memory", "sizeLimit": "32Gi"}},
+                # Results must outlive the pod. kubectl logs is not storage:
+                # once the pod is reclaimed the log is gone, and a bare
+                # "SUCCEEDED" with no readable output is not evidence of
+                # anything. Jobs copy their artifacts here.
+                {"name": "results", "hostPath": {"path": "/localpool/lmdeploy-v100-next/results", "type": "DirectoryOrCreate"}},
             ]}}}}
 print(json.dumps(manifest))
 PY
