@@ -81,6 +81,11 @@ void MTPPredictor::SetupAttention(int phase, TensorMap& env)
     //
     // That is why the acceptance figure measured before this existed could not
     // be trusted as a predictor: it described a draft attending to nothing.
+    // Requires `requests` in env, so this must be called from the engine's
+    // Setup, not from the executor's forward-time env, which carries only
+    // `batch` and `copy`.
+    TM_CHECK(env.try_("requests")) << "SetupAttention needs the setup-time env";
+
     attn_layer_.Run(BatchOp::kSetup, phase, env);
     attn_layer_.Run(BatchOp::kPrepare, phase, env);
 }

@@ -68,10 +68,11 @@ struct ModelExecutor::Impl {
                 RunWithDrafts(*d);
             }
             else {
-                Run(*d);
-                if (d->spec_decode && model_.CanDraft(d->phase)) {
-                    RunDraftOnly(*d);
-                }
+                // Priming the first drafts happens inside Run, immediately
+                // after the forward, because drafting needs the `hidden_states`
+                // that forward produced. A separate pass with a fresh env has
+                // no access to it.
+                Run(*d, /*draft_after_forward=*/d->spec_decode && model_.CanDraft(d->phase));
             }
 
             d->done.Record(core::Context::stream());
@@ -111,12 +112,18 @@ struct ModelExecutor::Impl {
 
         model_.Run(BatchOp::kForward, d.phase, env);
 
-        model_.Run(BatchOp::kUnprep, d.phase, env);
-        copy.Run();
-
+        // Reject, rollback and draft run BEFORE Unprep, not after.
+        //
+        // All three read tensors that the forward produced into this env --
+        // `hidden_states` for drafting, `sequence_length` for rollback -- and
+        // Unprep is what tears that state down. Running them afterwards left
+        // them reading an env holding only `batch` and `copy`.
         model_.Run(BatchOp::kReject, d.phase, env);
         model_.Run(BatchOp::kRollback, d.phase, env);
         model_.Run(BatchOp::kDraft, d.phase, env);
+
+        model_.Run(BatchOp::kUnprep, d.phase, env);
+        copy.Run();
 
         RunCopies(d.publish_copies);
 
@@ -124,19 +131,11 @@ struct ModelExecutor::Impl {
         AnomalyHandler::instance().Reset();
     }
 
-    // First decode after prefill: prime the drafts so the next step has
-    // something to verify.
-    void RunDraftOnly(BatchData& d)
-    {
-        TM_FUNCTION_SCOPE();
 
-        BatchCopy copy;
-        TensorMap env{{"batch", d.buf()}, {"copy", copy.buf()}};
-        model_.Run(BatchOp::kDraft, d.phase, env);
-        copy.Run();
-    }
-
-    void Run(BatchData& d)
+    /// Ordinary forward. When `draft_after_forward` is set, the first drafts
+    /// are proposed at the end of this same env, which is the only place the
+    /// `hidden_states` they consume is still alive.
+    void Run(BatchData& d, bool draft_after_forward = false)
     {
         TM_FUNCTION_SCOPE();
 
@@ -159,6 +158,11 @@ struct ModelExecutor::Impl {
             vision_model_->Run(BatchOp::kForward, d.phase, env);
         }
         model_.Run(BatchOp::kForward, d.phase, env);
+
+        // Before Unprep, which tears down the forward's env state.
+        if (draft_after_forward) {
+            model_.Run(BatchOp::kDraft, d.phase, env);
+        }
 
         model_.Run(BatchOp::kUnprep, d.phase, env);
         copy.Run();

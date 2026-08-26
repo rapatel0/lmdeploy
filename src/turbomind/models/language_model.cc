@@ -547,6 +547,20 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     unified_decoder_->Run(BatchOp::kSetup, phase, env);
     generation_->Run(BatchOp::kSetup, phase, env);
     output_processor_->Run(BatchOp::kSetup, phase, env);
+
+    // Seed the draft layer's KV slot.
+    //
+    // This must happen here rather than at draft time. The MTP attention layer
+    // needs `requests` to set up its block table, and only the engine's Setup
+    // env carries that; the executor's forward-time env holds just `batch` and
+    // `copy`. Calling it from DraftTokens aborted on the missing key.
+    //
+    // The target's UnifiedDecoder walks only its own layers, so nothing else
+    // populates this slot. Without it the draft attends to uninitialised cache
+    // entries, which is what made the earlier acceptance measurement worthless.
+    if (mtp_predictor_) {
+        mtp_predictor_->SetupAttention(phase, env);
+    }
 }
 
 void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
@@ -1041,12 +1055,8 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
         return;
     }
 
-    // Seed the MTP attention state before drafting.
-    //
-    // Without this the draft attends to an uninitialised KV slot, because the
-    // target's UnifiedDecoder only walks its own layers. That is what made the
-    // previously measured acceptance rate meaningless.
-    mtp_predictor_->SetupAttention(phase, env);
+    // The MTP KV slot was already seeded in Setup, which is the only place the
+    // `requests` tensor it needs is available.
 
     // Draft from the accepted tip.
     auto hidden = env.at("hidden_states");
@@ -1191,13 +1201,22 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         mtp_steps_ += 1;
     }
 
-    Copy(seq_lens, d.sequence_length.slice(0, bsz));
+    // Order matters here, and getting it backwards fails silently.
+    //
+    // Generation::Rollback appends its accepted tokens at base_len + slot, so
+    // it needs the length from BEFORE this step's acceptance. Publishing the
+    // advanced lengths first would make it write each token one full accepted
+    // run too far into its copy of the sequence.
+    //
+    // d.sequence_length still holds the base lengths at this point, so hand
+    // those to Generation first and let it advance its own copy.
     env.produce("sequence_length", d.sequence_length.slice(0, bsz));
-
-    // Generation keeps its own copy of each sequence for repetition penalties
-    // and stop criteria. It must advance by the same accepted run, or those
-    // two subsystems silently operate on a stale sequence.
     generation_->Run(BatchOp::kRollback, phase, env);
+
+    // Only now overwrite it with the advanced lengths, for Engine::Update.
+    // Generation has already consumed the base values, and the sync inside its
+    // Rollback means this write cannot race the read.
+    Copy(seq_lens, d.sequence_length.slice(0, bsz));
 
     // Accept length is the quantity that decides whether this is worth doing:
     // 1 + mean accepted drafts is the tokens produced per forward.
