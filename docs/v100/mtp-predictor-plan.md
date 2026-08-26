@@ -152,6 +152,68 @@ So this closes the "does the draft path execute" question and nothing more. The
 first number that means anything is accept length, and that is not measurable
 until the KV seeding below is done.
 
+## Verification: where it attaches in this codebase
+
+Traced against the real code rather than restated from the review. The
+mechanism is narrower than "a scheduler change", and upstream left the hook.
+
+**Admission is driven by `seq_len`, and one field already carries "tokens I
+submitted that are not in `seq_len` yet".**
+
+```cpp
+// request.h:415  -- ForwardTokenResource::InputLen
+return s.seq_len + s.inflight_new_tokens - s.inflight_input_len - s.resume_len;
+
+// engine.cc:455
+context_length.push_back(c.seq_len + c.inflight_new_tokens /* plus draft tokens */);
+
+// engine.cc:748
+c.inflight_new_tokens = c.generating;   // exactly 1 for a decode row
+```
+
+That `/* plus draft tokens */` comment is upstream's, on the line that computes
+context length. `inflight_new_tokens` is defined as "submitted generated tokens
+not yet reflected into `seq_len`" (request.h:211), which is precisely what a
+drafted token is. Setting it to `1 + accepted_draft_count` makes `InputLen`
+return K+1, `ClampForwardEnd` admit K+1, and `s.input_len` become K+1 -- with no
+change to the derivation I previously called a blocker.
+
+**Acceptance is applied in `Engine::Update()`**, which today advances one token
+per row:
+
+```cpp
+// engine.cc:718
+c.token_ids[c.seq_len] = output_ids[j];
+c.seq_len              = sequence_length[j];
+```
+
+`seq_len` is taken from the device-side `sequence_length[j]`, not incremented
+locally. So the accepted count has to reach that buffer; the append loop then
+follows automatically, since it already copies `c.seq_len - c.tokens.size()`
+tokens rather than assuming one.
+
+**The ordering that must hold**, and the reason it cannot be bolted on later:
+
+1. Target forward scores K+1 positions.
+2. Compare drafts against the argmax at each position; accept the longest
+   matching prefix.
+3. Set `sequence_length[j]` to the accepted end. Only now may `Update()` run.
+4. Publication and checkpointing must not have happened for positions beyond
+   the accepted end.
+
+Step 4 is the one that escapes the request. `ClampForwardEnd` can return an
+earlier `aligned` position for checkpoint publication (scheduler.cc:1008-1011),
+and a checkpoint published at a speculative position that is later rejected
+puts unverified KV into the prefix cache, where another request reuses it. The
+MTP slot lives in that same registered prefix object, so this is not
+hypothetical.
+
+**Smallest honest increment:** `bsz==1`, greedy, prefix caching off, K=1.
+Under those constraints steps 1-3 are local and step 4 is satisfied by
+construction, since publication is disabled. That is enough to produce a
+measured accept length with byte-identical output -- the first result that
+would mean speculation actually works rather than that it could.
+
 ## Headline: ~1.87 tokens per target forward (256-token run, commit 174e8165)
 
 ```
