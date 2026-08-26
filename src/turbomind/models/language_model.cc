@@ -588,7 +588,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         // coincide and no row selection is needed. A mixed batch would require
         // gathering the generating rows first, which is real work that belongs
         // with verification rather than here, where the drafts are discarded.
-        const int bsz = (int)env.at("requests").buffer().size();
+        // `b.bsz` and not env.at("requests"): `requests` is placed in the map
+        // by Setup and is gone by Forward, so reading it here aborted the run
+        // even with speculation disabled, because the lookup ran before the
+        // num_draft_tokens guard could short-circuit it.
+        const int bsz = b.bsz;
         if (mtp_predictor_ && engine_param_.num_draft_tokens > 0 && d.n_generating == bsz) {
             const int n_draft = engine_param_.num_draft_tokens;
             auto      ids     = env.at("output_ids").buffer().view<int>();
