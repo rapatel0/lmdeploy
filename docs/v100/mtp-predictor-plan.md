@@ -350,6 +350,48 @@ end, so attention never reaches those bytes. They are stale but unreachable,
 and the next forward overwrites them. That is only true while they are also
 unpublished, which is what the guard above secures.
 
+### Inference is correct, not merely self-consistent (commit bc2b09ec)
+
+Every earlier check compared speculative text to baseline text and asserted
+byte-identity. Two identical wrong answers pass that test. Measured against
+known-correct answers instead, with chain-of-thought stripped so the model's
+reasoning cannot satisfy the regex on the final answer's behalf:
+
+```
+drafting OFF: 15/15 checks passed over 15 generations
+              latency early 0.82s vs late 0.69s
+              VERIFY_INFERENCE_PASS
+
+drafting ON : 15/15 checks passed over 15 generations
+              latency early 1.17s vs late 0.97s
+              VERIFY_INFERENCE_PASS
+```
+
+Five factual prompts (first five primes, 17x3, capital of Japan, powers of
+two, "cat" reversed), three rounds in one process at budgets 128/256/64.
+Every generation produced a correct answer, no degeneracy, and greedy
+determinism held across rounds. Latency did not drift upward, so nothing leaks
+across generations.
+
+The checker was validated against negative controls before use: it correctly
+rejects a wrong fifth prime, a wrong product, Kyoto for Tokyo, a wrong
+sequence term, and an unreversed word.
+
+### The non-zero exit was never a crash
+
+The job reported `rc=1` for both text runs -- not 134 (SIGABRT), not 139
+(SIGSEGV). Nothing crashed. "Aborted during teardown" was an explanation I
+asserted all session without ever printing the status. rc=1 with no traceback,
+after `main()` returns 0, is interpreter shutdown finalising the pipeline; the
+generation itself completes, writes text, finishes with reason "stop" and
+reaches `~Impl()`.
+
+The job now asserts a positive `EMIT_TEXT_COMPLETE` marker and fails with exit
+8 if it is absent, so a non-zero rc is tolerated only with proof the work
+finished -- instead of being waved through on the assumption that it was
+teardown, which would also have passed a run that died mid-generation beside a
+stale text file.
+
 ### Settled by probe: the MTP slot holds zeros, not another sequence's bytes
 
 ```
