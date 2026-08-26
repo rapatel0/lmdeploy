@@ -152,6 +152,33 @@ So this closes the "does the draft path execute" question and nothing more. The
 first number that means anything is accept length, and that is not measurable
 until the KV seeding below is done.
 
+## Per-step acceptance confirms the diagnosis (commit c1e550d6)
+
+```
+draft step 1: 18/32 = 56.2%
+draft step 2:  5/31 = 16.1%
+draft step 3:  1/30 =  3.3%
+draft step 4:  0/29 =  0.0%
+```
+
+This is the predicted shape. Step 1 is the only draft step whose attention sees
+a correct history, and it is the only one that performs.
+
+Some decay is expected even from a correct implementation, because errors
+compound: step k conditions on k-1 of its own guesses. A healthy MTP layer
+typically decays gently -- roughly 55/35/25/18. Falling to **zero** by step 4 is
+not compounding error, it is the drafted positions being wrong.
+
+Mechanism, now supported by measurement rather than assertion: `cu_k_len` is
+fixed for the whole `Draft` call, so every step writes its K/V to the same
+position and reads a history that stops at the target's last real token. Step 1
+is correct by accident -- at that point the fixed offsets *are* the right ones.
+Step 2 attends as though step 1 never happened, and so on.
+
+The fix is therefore narrow and its success criterion is already defined: steps
+2..4 must rise, while step 1 stays near 56%. A change that moves step 1 is
+touching something it should not.
+
 ## Correction 3: the MTP slot does accumulate decode history
 
 Tracing the seeding work turned up a third error in my own account.
