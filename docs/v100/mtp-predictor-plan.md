@@ -118,12 +118,30 @@ against 48 linear-attention layers. That is the price of rollback, and it is
 charged whether or not the drafts are accepted, so it counts against the
 speculation win.
 
+## The layer split, settled
+
+The checkpoint has 64 layers at `full_attention_interval: 4`. HuggingFace's
+`Qwen3_5TextConfig.__post_init__` derives the pattern:
+
+```python
+"linear_attention" if bool((i + 1) % interval_pattern) else "full_attention"
+```
+
+That gives **16 full-attention layers and 48 linear**. An earlier note in
+`SPECULATION.md` said 17 full, which sums to 65 for a 64-layer model and is
+wrong. It is corrected there.
+
+This is load-bearing rather than trivia: the KV slot verifier asserts the
+draft layer lands at attention index 16, one past the target's last. Had the
+17 been right, the assertion would have been off by one and would have failed
+against correct code.
+
 ## Status
 
 | item | state |
 | --- | --- |
 | 1. KV slot for the draft layer | implemented, compiles for SM70, verification running |
-| 2. `MTPPredictor` class | interface committed, `ForwardStep` outstanding |
+| 2. `MTPPredictor` class | interface and fc projection committed; attention, FFN and argmax outstanding |
 | 3. Draft loop | not started |
 | 4. Verify and roll back | design known, GDN snapshot must be ported |
 | 5. Accept-length measurement | not started |
