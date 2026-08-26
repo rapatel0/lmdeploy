@@ -416,6 +416,45 @@ The gates were re-proven against bad input rather than recalled: section rcs
 rejects Kyoto/5/Blue, and a chain-of-thought containing the right answer beside
 a wrong final answer is rejected even though the raw text matches.
 
+### Benchmark: tp=4, MTP depth 4 vs its own baseline (commit 753ac5be)
+
+Qwen3.8-27B-FP8, four V100s, 1051-token prompt, 256 output tokens, 3 trials per
+arm, both arms in one job on the same GPUs and wheel.
+
+```
+metric                     K=0        K=4      change
+decode tok/s             55.26      38.35      0.694x
+inclusive tok/s          51.00      36.24      0.711x
+TTFT ms                 404.55     414.19      0.977x
+prefill tok/s          2598.00    2537.50      0.977x
+
+acceptance (K=4 arm)   398/992 = 40.1%, distinct drafts 133
+```
+
+**Drafting costs 31% of decode throughput and returns nothing, because drafts
+are computed and discarded in this build.** That is the expected result, not a
+regression: the draft forward runs, the acceptance rate is measured, and the
+accepted tokens are then thrown away rather than skipping target steps. The
+number quantifies the work being wasted, which is the input needed to decide
+whether wiring acceptance through is worth it.
+
+The gap is not noise. Within-arm spread is at most 0.069s while the worst K=4
+trial is 2.02s slower than the best K=0 trial -- 29x the largest spread. Both
+arms produced 256 non-degenerate tokens from an identical 1051-token prompt.
+
+Cost per drafted token: 2.044s of extra wall time across 992 drafts = **2.06 ms
+per drafted token**.
+
+Attribution was checked rather than assumed. The console log has zero
+acceptance lines before the K=4 arm begins (line 6971) and 127 after it, so the
+40.1% belongs to the drafted arm alone. Both arms loaded MTP weights
+(`mtp_enabled=True` in both), so the only difference between them is
+`num_draft_tokens`.
+
+**What this does not measure.** Batch size 1, where the batch-wide `max_extend`
+minimum is at its most favourable -- see the scaling section below. A 40.1%
+acceptance rate at bsz=1 is a ceiling, not a serving estimate.
+
 ### The batch-wide slack minimum does not scale, and the arithmetic says so
 
 `MTPPredictor::Draft` takes `max_extend` as the minimum block slack across the
