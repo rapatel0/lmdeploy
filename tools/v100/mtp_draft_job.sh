@@ -102,8 +102,11 @@ if [ ! -s /tmp/base.txt ]; then
     echo "FAIL: baseline produced no text" >&2
     exit 4
 fi
-if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-    echo "  NOTE: baseline generated text, then aborted during teardown (ignored)"
+BASE_RC="${PIPESTATUS[0]}"
+if [ "${BASE_RC}" -ne 0 ]; then
+    # Report the actual status. 134 is SIGABRT, 139 SIGSEGV, 1 an ordinary
+    # non-zero return; calling all of them "teardown" hid which one this is.
+    echo "  NOTE: baseline generated text, then exited rc=${BASE_RC} after the text was written"
 fi
 
 echo
@@ -115,8 +118,9 @@ if [ ! -s /tmp/spec.txt ]; then
     echo "FAIL: speculative run produced no text" >&2
     exit 5
 fi
-if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-    echo "  NOTE: speculative run generated text, then aborted during teardown (ignored)"
+SPEC_RC="${PIPESTATUS[0]}"
+if [ "${SPEC_RC}" -ne 0 ]; then
+    echo "  NOTE: speculative run generated text, then exited rc=${SPEC_RC} after the text was written"
 fi
 
 echo
@@ -185,3 +189,25 @@ echo "=== 4. probe: base shifted by -8 (output deliberately untrusted) ==="
 TM_MTP_PROBE_SHIFT=-8 stdbuf -oL -eL python3 /src/tools/v100/verify_mtp_draft.py \
     --model-dir "${MODEL}" --tp 4 --num-draft-tokens 4 --max-new-tokens 64 \
     --emit-text /tmp/probe.txt 2>&1 | tail -25 || true
+
+# --- the goal's actual question: is inference working, stable, appropriate? ---
+#
+# Everything above compares speculative text against baseline text. Two
+# identical WRONG answers pass that test. This checks correctness against known
+# answers, across several prompts and lengths, many generations in one process,
+# and asserts determinism under greedy decoding.
+echo
+echo "=== 5. inference correctness and stability (drafting off) ==="
+stdbuf -oL -eL python3 /src/tools/v100/verify_inference.py \
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 0 --rounds 3 2>&1
+INFER_BASE_RC="${PIPESTATUS[0]}"
+
+echo
+echo "=== 6. inference correctness and stability (drafting on, depth 4) ==="
+stdbuf -oL -eL python3 /src/tools/v100/verify_inference.py \
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 4 --rounds 3 2>&1
+INFER_SPEC_RC="${PIPESTATUS[0]}"
+
+echo
+echo "=== inference verdict ==="
+echo "  drafting off rc=${INFER_BASE_RC}, drafting on rc=${INFER_SPEC_RC}"
