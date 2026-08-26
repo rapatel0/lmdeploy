@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "This repository builds CUDA for SM70 inside a container. The development",
+    "host is macOS with no CUDA toolkit, and there is no compile_commands.json,",
+    "so clangd cannot resolve <cuda_runtime.h> or any project include. Clang",
+    "stops the translation unit at the first missing header and then reports",
+    "every later type as undeclared, producing roughly 21 findings per file",
+    "for files nobody has edited.",
+    "",
+    "Those cascades are not defects and cannot be fixed here, because the",
+    "toolchain they need does not exist on this machine. Real compilation runs",
+    "in the SM70 container via tools/v100/build_only.sh, which fails the job on",
+    "any compiler error, so C++ correctness is still enforced, just not here.",
+    "",
+    "Ignore the C++ and CUDA sources rather than dismissing the same cascade",
+    "one finding at a time. Python, shell, JSON and markdown are unaffected."
+  ],
+  "ignore": [
+    "src/turbomind/**/*.cc",
+    "src/turbomind/**/*.cu",
+    "src/turbomind/**/*.h",
+    "src/turbomind/**/*.cuh"
+  ]
+}

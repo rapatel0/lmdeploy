@@ -78,8 +78,14 @@ private:
     /// addresses its own KV slot through `attn_index_`.
     UnifiedAttentionLayer& attn_layer_;
 
-    /// Position of the draft layer in the attention weight list, which selects
-    /// its `cache_block_offset` and therefore its KV space.
+    /// Position of the draft layer in the attention weight list.
+    ///
+    /// This is passed to `ForwardParam::layer_id`, which is used for debug
+    /// naming and warm-up bookkeeping. It is deliberately not what routes the
+    /// KV write: the cache offset is read from `weights.cache_block_offset`,
+    /// which registration stamped onto the MTP attention weight itself. So
+    /// handing the attention layer the MTP weight pointer is what sends the
+    /// draft's keys and values to their own slot.
     const int attn_index_;
 
     const int      hidden_units_;
