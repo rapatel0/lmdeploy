@@ -197,6 +197,73 @@ Three things this changes:
 
 Only one lever dominates, but the baseline lever is not yet closed.
 
+## Confirming run against the corrected reference
+
+Re-measured on island 2 with `tools/v100/bench_decode.py`, job `bench-tp4-fp8`,
+after the reference correction above. Island 1 was running SGLang on all four
+of its GPUs and was not touched; the island guard verified no island-1 UUID was
+visible before allocating.
+
+| Field | Value |
+| --- | --- |
+| Wheel | `lmdeploy-0.16.0-cp312-cp312-linux_x86_64.whl` |
+| Image | `lmdeploy-v100-base:v2` |
+| Model | Qwen3.8-27B-FP8, `model_format='fp8'` |
+| tp | 4 |
+| session_len | 16384 |
+| Prompt | 1,051 encoded tokens, against the reference's 1,024 |
+| Output | 256 tokens, greedy, `ignore_eos`, `min_new_tokens == max_new_tokens` |
+
+| Trial | Elapsed s | Output tokens | tok/s | Degenerate |
+| ---: | ---: | ---: | ---: | --- |
+| 1 | 5.167 | 256 | 49.54 | no |
+| 2 | 5.020 | 256 | 50.99 | no |
+| 3 | 5.019 | 256 | 51.01 | no |
+
+Mean **50.51 tok/s**. This reproduces the earlier 51.01 figure independently,
+with a different driver, so the baseline is solid.
+
+| | Decode tok/s | Ratio |
+| --- | ---: | ---: |
+| Ours, TP4 FP8, 1,051 in | 50.51 | |
+| SGLang Qwen3.8 target-only, 1,024 in | 58.21 | **1.15x** |
+
+Two caveats that make this conservative rather than flattering:
+
+1. Our rate includes the first generated token. The reference derives decode
+   from TPOT, which excludes it. Removing it would raise our number slightly.
+2. Our prompt is 1,051 tokens against their 1,024, a 2.6 percent longer
+   prefill.
+
+Neither closes a 15 percent gap, so the deficit is real.
+
+### The unexplained variables
+
+The reference run differs from ours in three ways that are not yet attributed:
+
+| | Reference | Ours |
+| --- | --- | --- |
+| KV cache | E5M2 | FP16 |
+| Attention backend | `tilelang_fa_v100` | TurboMind default |
+| GDN | TileLang prefill, Triton decode | TurboMind |
+
+Attribution comes before optimization. The gap may be configuration rather
+than engine, and a phase justified by "our engine is slower" would be premature
+until these are matched or ruled out.
+
+### A separate finding from the same run
+
+The staged wheel predates `c9ff318d`:
+
+```text
+scale_dtype present   : True
+check_scale_range     : False
+```
+
+The FP8 cast from `f7b18471` is present, so this measurement is valid. The new
+scale-range guard is not in the wheel, so it did not run and could not have
+affected the number. Any future run that needs the guard requires a rebuild.
+
 ## What this means for the campaign plan
 
 The plan's Phase 5 deliverable is block-scaled INT8 KV: half the KV bytes of
