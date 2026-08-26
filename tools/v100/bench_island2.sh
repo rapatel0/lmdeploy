@@ -8,7 +8,10 @@
 set -euo pipefail
 
 MODEL=/models/Qwen3.8-27B-FP8
-OUT=/job/bench-tp4-fp8.json
+# /job is a read-only ConfigMap mount, so a result written there is discarded
+# with only a warning. Write to /wheels, which is a writable hostPath and
+# therefore outlives the pod.
+OUT=/wheels/bench-tp4-fp8.json
 
 echo "=== visible GPUs ==="
 nvidia-smi --query-gpu=index,uuid,memory.used --format=csv,noheader
@@ -47,6 +50,7 @@ python3 /job/bench_decode.py \
     --input-tokens 1024 \
     --output-tokens 256 \
     --trials 3 \
+    --require-mtp \
     --json-out "$OUT"
 
 echo

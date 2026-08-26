@@ -72,6 +72,11 @@ def main() -> int:
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--cache-max-entry-count", type=float, default=0.8)
     parser.add_argument("--json-out", default="")
+    parser.add_argument(
+        "--require-mtp",
+        action="store_true",
+        help="fail unless the loader reports MTP speculation enabled",
+    )
     args = parser.parse_args()
 
     # Import the factory from lmdeploy.api directly. The package re-exports it
@@ -97,7 +102,43 @@ def main() -> int:
         flush=True,
     )
 
-    pipe = pipeline(args.model, backend_config=engine_config, log_level="ERROR")
+    # Capture the loader's [MTP] records so the run can state what it measured.
+    # A benchmark that cannot say whether the speculation weights were loaded
+    # invites attributing a number to the wrong configuration.
+    import logging
+
+    mtp_records: list[str] = []
+
+    class _CaptureMTP(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            msg = record.getMessage()
+            if "[MTP]" in msg:
+                mtp_records.append(f"{record.levelname} {msg}")
+
+    _lm_logger = logging.getLogger("lmdeploy")
+    _mtp_handler = _CaptureMTP()
+    _mtp_handler.setLevel(logging.INFO)
+    _lm_logger.addHandler(_mtp_handler)
+
+    # INFO rather than ERROR. pipeline() applies this level to the shared
+    # 'lmdeploy' logger, and at ERROR the [MTP] records are suppressed before
+    # the handler above can see them.
+    pipe = pipeline(args.model, backend_config=engine_config, log_level="INFO")
+
+    mtp_enabled = any("speculation ENABLED" in r for r in mtp_records)
+    print("=== MTP status for this run ===", flush=True)
+    for r in mtp_records:
+        print(f"  {r}", flush=True)
+    if not mtp_records:
+        print("  no [MTP] record: the loader did not run", flush=True)
+    print(f"  mtp_enabled={mtp_enabled}", flush=True)
+    if args.require_mtp and not mtp_enabled:
+        print(
+            "FAIL: --require-mtp was given but the loader did not enable MTP",
+            file=sys.stderr,
+        )
+        pipe.close()
+        return 2
 
     # Pipeline delegates to async_engine, which owns the tokenizer.
     tokenizer = pipe.async_engine.tokenizer
@@ -196,6 +237,10 @@ def main() -> int:
         "ttft_ms": round(ttft_s * 1000, 2),
         "prefill_tok_s": round(prefill_tok_s, 1),
         "trials": rows,
+        # Record what was loaded alongside what was measured, so a stored
+        # result cannot later be attributed to the wrong configuration.
+        "mtp_enabled": mtp_enabled,
+        "mtp_records": mtp_records,
         "mean_inclusive_tok_s": round(statistics.mean(rates), 2),
         "mean_decode_tok_s": (round(statistics.mean(decode_rates), 2) if decode_rates else None),
         "reference_sglang_decode_tok_s": 58.21,
