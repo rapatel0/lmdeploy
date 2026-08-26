@@ -64,6 +64,24 @@ def generate(pipe, prompt: str, max_new: int):
     return out.text or "", getattr(out, "finish_reason", None), time.perf_counter() - t0
 
 
+def final_answer(text: str) -> str:
+    """The answer proper, with any chain-of-thought removed.
+
+    This model reasons before answering and restates candidate answers while
+    doing so. Observed output contains "Need final only: 2, 3, 5, 7, 11" INSIDE
+    the reasoning block. Matching against the whole string would therefore pass
+    a response whose reasoning mentions the right answer and whose final answer
+    is wrong -- verified against negative controls, where
+    "Is it Tokyo or Kyoto? The capital is Kyoto." matched /tokyo/ and passed.
+
+    Scoring only what follows the last </think> closes that hole. When the tag
+    is absent the whole text is returned, so a non-reasoning reply still works.
+    """
+    marker = "</think>"
+    idx = text.rfind(marker)
+    return text[idx + len(marker):] if idx >= 0 else text
+
+
 def degenerate(text: str) -> bool:
     """True when one token fills most of the output -- a classic broken-KV tell."""
     words = text.split()
@@ -100,8 +118,11 @@ def main() -> int:
             if not text.strip():
                 failures.append(f"{tag}: EMPTY output")
                 continue
-            if not re.search(pattern, text):
-                failures.append(f"{tag}: no match for /{pattern}/ in {text.strip()[:120]!r}")
+            answer = final_answer(text)
+            if not re.search(pattern, answer):
+                failures.append(
+                    f"{tag}: no match for /{pattern}/ in final answer {answer.strip()[:120]!r}"
+                )
             if degenerate(text):
                 failures.append(f"{tag}: degenerate repetition in {text.strip()[:120]!r}")
             if reason not in (None, "stop", "length"):
