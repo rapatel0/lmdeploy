@@ -576,11 +576,27 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         // rollback are not implemented, so accepting them would change output.
         // Running the draft here measures its cost and proves the path
         // executes, without altering a single generated token.
-        if (mtp_predictor_ && engine_param_.num_draft_tokens > 0) {
+        //
+        // `hidden_states` carries one row per batch sequence, not one per
+        // generating sequence: unified_decoder produces it as
+        // {selected_token_pos.size(), hidden_units}, and selected_token_pos is
+        // filled for all `bsz` rows. Passing d.n_generating as the batch while
+        // handing over the full tensor made the two disagree, and the first
+        // RMSNorm aborted on `out.shape() == x.shape()`.
+        //
+        // Draft only when every row is generating. Then batch and row count
+        // coincide and no row selection is needed. A mixed batch would require
+        // gathering the generating rows first, which is real work that belongs
+        // with verification rather than here, where the drafts are discarded.
+        const int bsz = (int)env.at("requests").buffer().size();
+        if (mtp_predictor_ && engine_param_.num_draft_tokens > 0 && d.n_generating == bsz) {
             const int n_draft = engine_param_.num_draft_tokens;
             auto      ids     = env.at("output_ids").buffer().view<int>();
 
-            auto drafts = mtp_predictor_->Draft(d.n_generating,  //
+            TM_CHECK_EQ((int)hidden_states.shape(0), bsz)
+                << "MTP: hidden_states rows must match the batch";
+
+            auto drafts = mtp_predictor_->Draft(bsz,  //
                                                 hidden_states,
                                                 ids,
                                                 n_draft,
@@ -590,7 +606,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                 mtp_logged_ = true;
                 TM_LOG_INFO("[MTP] drafted {} token(s) for {} sequence(s); drafts are not yet verified",
                             drafts.num_drafts,
-                            d.n_generating);
+                            bsz);
             }
         }
     }
