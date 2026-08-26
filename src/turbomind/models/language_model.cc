@@ -140,6 +140,10 @@ struct LanguageModel::Impl {
     size_t mtp_accepted_ = 0;
     size_t mtp_steps_    = 0;
 
+    /// Per row, how many drafts the last verification accepted. Selects which
+    /// row of a [bsz*(K+1), hidden] block carries the accepted tip.
+    std::vector<int> last_accepted_;
+
     /// Engine parameters, retained for the speculation settings.
     const EngineParam engine_param_;
 
@@ -479,6 +483,11 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     d.rows.resize(rc.size());
     d.num_drafts.resize(rc.size());
 
+    // Reset every step. A stale accepted-count would make the next draft read
+    // the wrong row of the hidden block, and on a non-verification step the
+    // block is one row per sequence so the offset must be 0.
+    last_accepted_.assign(rc.size(), 0);
+
     for (int i = 0; i < rc.size(); ++i) {
         auto& c         = *rc[i];
         d.rows[i]       = &c;
@@ -762,8 +771,34 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
     // `requests` tensor it needs is available.
 
     // Draft from the accepted tip.
+    //
+    // On a verification step hidden_states is [bsz*(K+1), hidden], not
+    // [bsz, hidden], because Setup selected every submitted position so each
+    // draft could be scored against its own logit. The draft layer wants ONE
+    // row per sequence: the state that produced the accepted tip, which for a
+    // row that accepted n tokens is row i*(K+1) + n of that block.
+    //
+    // Handing over the whole tensor with batch=bsz makes the two disagree and
+    // aborts in the first RMSNorm on `out.shape() == x.shape()`.
     auto hidden = env.at("hidden_states");
-    auto ids    = autoreg_ids_.slice(0, bsz);
+
+    if (hidden.shape(0) != bsz) {
+        const int rows_per_seq = (int)hidden.shape(0) / bsz;
+        TM_CHECK_EQ(rows_per_seq * bsz, (int)hidden.shape(0))
+            << "hidden_states rows are not a whole multiple of the batch";
+
+        Tensor gathered = empty_like(hidden.slice(0, bsz));
+        for (int i = 0; i < bsz; ++i) {
+            // last_accepted_[i] is the offset of the accepted tip inside this
+            // row's block, recorded by Rollback.
+            const int off = i * rows_per_seq + last_accepted_[i];
+            TM_CHECK_LT(off, (int)hidden.shape(0));
+            Copy(hidden.slice(off, 1), gathered.slice(i, 1));
+        }
+        hidden = std::move(gathered);
+    }
+
+    auto ids = autoreg_ids_.slice(0, bsz);
 
     // Each row's key length after this step's accepted tokens, which is what
     // the draft needs to know how much slack its last KV block still has.
@@ -923,6 +958,10 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // The KV entries for the rejected tail stay allocated but are logically
         // dead: the next forward starts at this length and overwrites them.
         seq_lens[i] = base + 1 + n;
+
+        // Where this row's accepted tip sits inside its K+1 hidden block, for
+        // the draft that runs next on this same env.
+        last_accepted_[i] = n;
 
         mtp_accepted_ += n;
         mtp_steps_ += 1;
