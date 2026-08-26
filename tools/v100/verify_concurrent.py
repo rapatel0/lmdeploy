@@ -148,6 +148,31 @@ def main() -> int:
                 else:
                     divergences.append(tag)
 
+    # Long PROMPT, not just long output.
+    #
+    # Every prompt used in this work is 63 tokens, one short of the 64-token
+    # block size, so prefill has always fitted in a single block. A prompt
+    # spanning several blocks takes a different path: multiple block
+    # allocations, a longer cu_k_len, and for the draft path a first drafting
+    # step whose seq_len is far from the boundary that shaped every prior
+    # measurement. None of that has ever executed here.
+    print("  multi-block prompt")
+    filler = " ".join(f"item{i}" for i in range(400))  # comfortably over 64 tokens
+    long_prompt = (
+        f"Here is a list to ignore: {filler}. "
+        "Now answer only this: what is the capital city of Japan? One word."
+    )
+    lp_out = pipe([long_prompt], gen_config=cfg)[0]
+    lp_text = lp_out.text or ""
+    if not lp_text.strip():
+        failures.append("multi-block prompt produced no text")
+    elif not re.search(r"(?i)\btokyo\b", final_answer(lp_text)):
+        failures.append(
+            f"multi-block prompt gave wrong answer: {final_answer(lp_text).strip()[:90]!r}"
+        )
+    else:
+        print(f"    ok, answered correctly over a {len(long_prompt.split())}-word prompt")
+
     # Long generation: cross many block boundaries in one sequence.
     print("  long generation, 1024 new tokens")
     long_cfg = GenerationConfig(temperature=0.0, max_new_tokens=1024)
