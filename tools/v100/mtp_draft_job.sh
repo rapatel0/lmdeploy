@@ -90,7 +90,7 @@ SPEC_LOG=/tmp/mtp-spec.log
 
 echo "=== 1. baseline, drafting off ==="
 stdbuf -oL -eL python3 /src/tools/v100/verify_mtp_draft.py \
-    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 0 \
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 0 --max-new-tokens 256 \
     --emit-text /tmp/base.txt 2>&1 | tee "${BASE_LOG}"
 # Judge by the artifact, not the exit code. TurboMind can abort during
 # ~Impl() with "Resource deadlock avoided" AFTER generation has completed and
@@ -109,7 +109,7 @@ fi
 echo
 echo "=== 2. drafting on, depth 4 ==="
 stdbuf -oL -eL python3 /src/tools/v100/verify_mtp_draft.py \
-    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 4 \
+    --model-dir "${MODEL}" --tp 4 --num-draft-tokens 4 --max-new-tokens 256 \
     --emit-text /tmp/spec.txt 2>&1 | tee "${SPEC_LOG}"
 if [ ! -s /tmp/spec.txt ]; then
     echo "FAIL: speculative run produced no text" >&2

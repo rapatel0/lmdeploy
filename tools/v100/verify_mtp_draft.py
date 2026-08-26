@@ -59,7 +59,7 @@ def text_section(cfg: dict) -> dict:
     return cfg
 
 
-def generate(model_dir: str, tp: int, num_draft: int, prompt: str) -> tuple[str, str]:
+def generate(model_dir: str, tp: int, num_draft: int, prompt: str, max_new_tokens: int = 64) -> tuple[str, str]:
     """Load the model with the given draft depth and return (text, log)."""
     from lmdeploy import GenerationConfig, TurbomindEngineConfig, pipeline
 
@@ -92,7 +92,8 @@ def generate(model_dir: str, tp: int, num_draft: int, prompt: str) -> tuple[str,
             log_level="INFO",
         )
         # Greedy, so the two runs are comparable token for token.
-        out = pipe([prompt], gen_config=GenerationConfig(temperature=0.0, max_new_tokens=64))
+        out = pipe([prompt],
+                   gen_config=GenerationConfig(temperature=0.0, max_new_tokens=max_new_tokens))
         text = out[0].text if out else ""
     except Exception as exc:  # noqa: BLE001 - the message is the artifact
         lm_logger.removeHandler(handler)
@@ -114,6 +115,14 @@ def main() -> int:
     # two texts. Loading both models in a single process OOMs: a 27B model at
     # tp=4 fills most of each 32GB V100, and the first pipeline's weights are
     # still resident when the second loads, because nothing frees them.
+    ap.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=64,
+        help="Longer runs give the deeper draft steps a usable sample. Conditional "
+        "acceptance at step 4 is only scored on rows whose first three drafts were "
+        "all correct, so at 64 tokens fewer than one such row is expected.",
+    )
     ap.add_argument("--emit-text", metavar="PATH", help="write the generated text here and exit")
     args = ap.parse_args()
 
@@ -123,7 +132,7 @@ def main() -> int:
         return 2
 
     if args.emit_text:
-        text, _ = generate(args.model_dir, args.tp, args.num_draft_tokens, PROMPT)
+        text, _ = generate(args.model_dir, args.tp, args.num_draft_tokens, PROMPT, args.max_new_tokens)
         with open(args.emit_text, "w", encoding="utf-8") as f:
             f.write(text.strip())
         print(f"  text: {text.strip()[:160]!r}", flush=True)
@@ -132,12 +141,12 @@ def main() -> int:
     prompt = PROMPT
 
     print("=== 1. baseline, drafting off ===", flush=True)
-    base_text, _ = generate(args.model_dir, args.tp, 0, prompt)
+    base_text, _ = generate(args.model_dir, args.tp, 0, prompt, args.max_new_tokens)
     print(f"  text: {base_text.strip()[:160]!r}", flush=True)
 
     print()
     print(f"=== 2. drafting on, depth {args.num_draft_tokens} ===", flush=True)
-    spec_text, _ = generate(args.model_dir, args.tp, args.num_draft_tokens, prompt)
+    spec_text, _ = generate(args.model_dir, args.tp, args.num_draft_tokens, prompt, args.max_new_tokens)
     print(f"  text: {spec_text.strip()[:160]!r}", flush=True)
 
     # The "[MTP] drafted" records come from C++ on the real stderr, which this
