@@ -235,9 +235,13 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
 
         Tensor logits = logits_fn_(out);
 
-        // Write this step's tokens into column `step` of the [batch, K]
-        // result. A per-step view keeps the layout batch-major, which is what
-        // the verifier reads.
+        // Write this step's tokens as the contiguous run for step `step`.
+        //
+        // The layout is [step][batch], not [batch][step]: one argmax per
+        // sequence is produced per iteration, so a step is contiguous and a
+        // sequence is strided by `batch_size`. The header documents this, and
+        // the verifier must apply the stride when reading a single sequence's
+        // drafts in order.
         Buffer_<int> step_out{
             result.draft_tokens.data() + (ssize_t)step * batch_size, (ssize_t)batch_size, kDEVICE};
         invokeArgmax(step_out, logits, stream);

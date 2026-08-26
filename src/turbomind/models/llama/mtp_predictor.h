@@ -44,7 +44,13 @@ class LlamaLinear;
 class MTPPredictor {
 public:
     struct DraftResult {
-        /// Drafted token ids, [batch, num_drafts].
+        /// Drafted token ids, laid out [step][batch]: step `k` occupies the
+        /// contiguous run `draft_tokens[k * batch .. (k + 1) * batch)`.
+        ///
+        /// Step-major, not batch-major. Each iteration writes one argmax per
+        /// sequence, so a step is naturally contiguous and a sequence is
+        /// strided. The verifier walks steps in order for a given sequence and
+        /// must apply that stride.
         Buffer_<int> draft_tokens;
         /// Number actually produced, which can be fewer than requested.
         int num_drafts{0};
