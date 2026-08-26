@@ -259,3 +259,28 @@ echo "  distinct scheduler uids observed: ${UIDS}"
 if [ "${UIDS}" -lt 2 ]; then
     echo "  WARNING: never saw two requests admitted; concurrency was NOT exercised"
 fi
+
+# Make the job's exit code mean something.
+#
+# Sections 5-8 captured four return codes and only PRINTED them. The job would
+# have exited 0 with every correctness and concurrency check failing, and I was
+# about to read that 0 as proof. This is the same defect as the codex wrapper
+# that "succeeded" while running nothing -- a green result produced by a gate
+# that was never wired up.
+FAILED=0
+for pair in "inference/drafting-off:${INFER_BASE_RC}" \
+            "inference/drafting-on:${INFER_SPEC_RC}" \
+            "concurrency/drafting-off:${CONC_BASE_RC}" \
+            "concurrency/drafting-on:${CONC_SPEC_RC}"; do
+    name="${pair%%:*}"
+    rc="${pair##*:}"
+    if [ "${rc}" -ne 0 ]; then
+        echo "FAIL: ${name} returned rc=${rc}" >&2
+        FAILED=1
+    fi
+done
+if [ "${FAILED}" -ne 0 ]; then
+    echo "FAIL: one or more verification sections failed" >&2
+    exit 9
+fi
+echo "ALL_VERIFICATION_SECTIONS_PASS"
