@@ -1168,7 +1168,9 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // `new_tokens` calculation then picks up the whole run, because it appends
     // token_ids[seq_len - new_tokens .. seq_len) rather than a single token.
     Buffer_<int> seq_lens{bsz, kCPU};
+    Buffer_<int> out_ids{bsz, kCPU};
     Copy(d.sequence_length.slice(0, bsz), seq_lens);
+    Copy(autoreg_ids_.slice(0, bsz), out_ids);
     core::Context::stream().Sync();
 
     for (int i = 0; i < bsz; ++i) {
@@ -1186,12 +1188,34 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // Update has not run yet for this step.
         const int base = c.seq_len;
 
-        // token_ids[base] is the bonus token and is written by Update from
-        // output_ids. The accepted drafts follow it; the rejected tail is
-        // simply not counted.
-        for (int k = 0; k < n; ++k) {
-            c.token_ids[base + 1 + k] = c.draft_tokens[k];
+        // The accepted drafts come FIRST, the bonus token LAST.
+        //
+        // This is forced by what each logit predicts. The forward submitted
+        // [last_committed, D0..D_{K-1}] and the logit at submitted position p
+        // predicts the token at the NEXT index, so logits[0] is compared
+        // against D0, logits[k] against D_k, and logits[K] has no draft to
+        // compare against -- it is the bonus. With n drafts accepted the
+        // sequence continues D0..D_{n-1} then bonus:
+        //
+        //   token_ids[base + k] = D_k     for k < n
+        //   token_ids[base + n] = bonus
+        //
+        // I had this backwards, writing the bonus at base and the drafts after
+        // it. That yields a valid-looking sequence of exactly the right length
+        // with the tokens transposed, so it corrupts output without ever
+        // failing a check.
+        //
+        // Engine::Update writes one token at token_ids[base] from output_ids,
+        // so output_ids must carry D0 when anything was accepted, and the
+        // bonus only when nothing was. The drafts past that first slot are
+        // written here.
+        for (int k = 1; k < n; ++k) {
+            c.token_ids[base + k] = c.draft_tokens[k];
         }
+        c.token_ids[base + n] = bonus[i];
+
+        // What Update puts at token_ids[base].
+        out_ids[i] = n > 0 ? c.draft_tokens[0] : bonus[i];
 
         // The KV entries for the rejected tail stay allocated but are logically
         // dead: the next forward starts at this length and overwrites them.
@@ -1217,6 +1241,10 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // Generation has already consumed the base values, and the sync inside its
     // Rollback means this write cannot race the read.
     Copy(seq_lens, d.sequence_length.slice(0, bsz));
+
+    // The token Engine::Update writes at token_ids[base] for each row.
+    Copy(out_ids, autoreg_ids_.slice(0, bsz));
+    env.produce("output_ids", autoreg_ids_.slice(0, bsz));
 
     // Accept length is the quantity that decides whether this is worth doing:
     // 1 + mean accepted drafts is the tokens produced per forward.

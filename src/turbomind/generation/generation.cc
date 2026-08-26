@@ -300,13 +300,6 @@ struct Generation::Impl {
         Copy(env.at("sequence_length").buffer().slice(0, bsz), base_len);
         core::Context::stream().Sync();
 
-        // The bonus token is what Engine::Update writes at token_ids[seq_len].
-        Buffer_<int> host_out{max_batch_size_, kCPU};
-        for (int i = 0; i < bsz; ++i) {
-            host_out[i] = bonus[i];
-        }
-        Copy(host_out.slice(0, bsz), output_ids_.slice(0, bsz));
-        Copy(output_ids_, bsz, d.output_ids);
 
         // Slot 0 is the bonus token, slots 1..n the accepted drafts.
         //
@@ -334,7 +327,10 @@ struct Generation::Impl {
                 const bool active = slot <= accepted[i];
                 ptrs[i] = active ? token_ids_ptrs_buf_[i] : scratch_row_.data();
                 pos[i]  = active ? base_len[i] + slot : 0;
-                tok[i]  = slot == 0 ? bonus[i] : drafts[i * stride + slot - 1];
+                // Accepted drafts first, bonus last -- the same order the
+                // engine-side sequence uses, because the logit at submitted
+                // position p predicts the token after it.
+                tok[i] = slot < accepted[i] ? drafts[i * stride + slot] : bonus[i];
             }
             Copy(ptrs.slice(0, gs), token_ids_ptrs_dev_.slice(0, gs));
             Copy(pos.slice(0, gs), output_pos_.slice(0, gs));
@@ -343,8 +339,13 @@ struct Generation::Impl {
                 token_ids_ptrs_dev_.data(), output_ids_.data(), output_pos_.data(), gs, stream);
         }
 
-        // Restore output_ids to the bonus token: Fetch publishes it, and
-        // Engine::Update writes exactly that one value per row.
+        // Leave output_ids holding the token that goes at token_ids[base]:
+        // the first accepted draft, or the bonus when nothing was accepted.
+        // Fetch publishes this and Engine::Update writes exactly it.
+        Buffer_<int> host_out{max_batch_size_, kCPU};
+        for (int i = 0; i < bsz; ++i) {
+            host_out[i] = accepted[i] > 0 ? drafts[i * stride] : bonus[i];
+        }
         Copy(host_out.slice(0, bsz), output_ids_.slice(0, bsz));
         Copy(output_ids_, bsz, d.output_ids);
     }
