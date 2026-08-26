@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import _turbomind as _tm
 import torch
 
+from lmdeploy.utils import get_logger
 from lmdeploy.vl.constants import Modality
 
 from ..builders import (
@@ -73,6 +74,9 @@ from .vision_utils import (
 if TYPE_CHECKING:
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig
     from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeConfig, Qwen3_5MoeTextConfig
+
+
+logger = get_logger('lmdeploy')
 
 
 def map_packed_qwen35_experts(name: str) -> str:
@@ -171,14 +175,25 @@ class Qwen3_5TextModel(TextModel):
         checkpoint sets ``mtp_use_dedicated_embeddings`` to false, so the layer
         shares the target's embedding and output projection.
         """
-        if getattr(self.cfg, 'mtp_num_hidden_layers', 0) < 1:
+        n_mtp = getattr(self.cfg, 'mtp_num_hidden_layers', 0)
+        if n_mtp < 1:
+            # Say so explicitly. A silent return leaves no way to tell this
+            # case apart from a loader that failed, and both end with
+            # speculative decoding off.
+            logger.info('[MTP] speculation unavailable: the config declares '
+                        'mtp_num_hidden_layers=%s', n_mtp)
             return None
         if not pfx.has('fc.weight'):
             # The config declares an MTP layer but the checkpoint does not
             # carry one. Loading a partial layer would leave every draft
             # rejected, which looks like a slowdown rather than a fault, so
             # skip it and let speculative decoding stay disabled.
+            logger.warning('[MTP] speculation DISABLED: the config declares %s '
+                           'layer(s) but %sfc.weight is absent from the '
+                           'checkpoint', n_mtp, pfx)
             return None
+
+        logger.info('[MTP] building the speculation layer from %s', pfx)
 
         m = MTPLayerBuilder(MTPLayerConfig(), self._ctx)
 
@@ -222,7 +237,10 @@ class Qwen3_5TextModel(TextModel):
             pfx + 'norm',
             zero_centered=True,
         )
-        return m.build()
+        built = m.build()
+        logger.info('[MTP] speculation ENABLED: 1 draft layer, full attention, '
+                    'sharing the target embedding and lm_head')
+        return built
 
     # ------------------------------------------------------------------
     # Attention / linear-attention factories

@@ -5,6 +5,7 @@
 #include "src/turbomind/models/linear_weight.h"
 #include "src/turbomind/models/norm_weight.h"
 
+#include "src/turbomind/core/logger.h"
 #include "src/turbomind/core/registry.h"
 
 namespace turbomind {
@@ -15,6 +16,11 @@ MTPLayerWeight::~MTPLayerWeight() = default;
 
 bool MTPLayerWeight::verify(std::vector<std::string>& missing)
 {
+    // `missing` is a single vector threaded through the whole weight tree, so
+    // it may already hold entries from an unrelated module. Record the length
+    // on entry and judge this layer only by what it appends.
+    const size_t before = missing.size();
+
     Module::verify(missing);
 
     // Every child is required. A partially loaded MTP layer is worse than an
@@ -37,7 +43,33 @@ bool MTPLayerWeight::verify(std::vector<std::string>& missing)
     if (!final_norm) {
         missing.push_back(full_path() + ": missing final_norm");
     }
-    return missing.empty();
+
+    // Announce the layer once, at the only point where its presence is proven.
+    //
+    // MTP is optional at every level: ModelWeight::verify does not require it,
+    // and the Python loader returns None when the checkpoint carries no `mtp.`
+    // tensors. So a model with no MTP layer loads, runs, and prints nothing to
+    // distinguish itself from one that has a layer that silently failed to
+    // load. Both look identical in the log, and the difference shows up only as
+    // an unexplained absence of speedup.
+    //
+    // Log after the checks rather than in the constructor, because the module
+    // is constructed before its children are attached; a message there would
+    // report presence that is not yet established.
+    const bool ok = missing.size() == before;
+    if (ok) {
+        TM_LOG_INFO("[MTP] speculation weights loaded: {} (1 decoder layer, shared embedding and lm_head)",
+                    full_path());
+    }
+    else {
+        // Name the absent children, so the log distinguishes a checkpoint
+        // without MTP from one whose MTP layer failed to load.
+        TM_LOG_WARNING("[MTP] speculation DISABLED: {} is incomplete, {} weight(s) missing",
+                       full_path(),
+                       missing.size() - before);
+    }
+
+    return ok;
 }
 
 TM_MODULE_REGISTER(MTPLayerWeight, core::ModuleConfig);
