@@ -76,17 +76,27 @@ def main() -> int:
 
     from lmdeploy import GenerationConfig, TurbomindEngineConfig, pipeline
 
+    # TurboMind warms up at max_prefill_token_num plus a margin, so a
+    # session_len that is too tight for the warmup shape fails with
+    # 'Warm-up for N tokens failed with status 6' before any request runs.
+    # Keep session_len comfortably above input plus output.
+    session_len = max(16384, (args.input_tokens + args.output_tokens) * 4)
     engine_config = TurbomindEngineConfig(
         model_format=args.model_format,
         tp=args.tp,
         cache_max_entry_count=args.cache_max_entry_count,
-        session_len=8192,
+        session_len=session_len,
     )
-    print(f"engine: tp={args.tp} model_format={args.model_format}", flush=True)
+    print(
+        f"engine: tp={args.tp} model_format={args.model_format} "
+        f"session_len={session_len}",
+        flush=True,
+    )
 
     pipe = pipeline(args.model, backend_config=engine_config, log_level="ERROR")
 
-    tokenizer = pipe.tokenizer
+    # Pipeline delegates to async_engine, which owns the tokenizer.
+    tokenizer = pipe.async_engine.tokenizer
     prompt = build_prompt(tokenizer, args.input_tokens)
     encoded_input = len(tokenizer.encode(prompt))
     print(f"prompt encodes to {encoded_input} tokens", flush=True)
