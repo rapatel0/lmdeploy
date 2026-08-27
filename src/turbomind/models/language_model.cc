@@ -1726,7 +1726,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // already disproved earlier in this same turn. The next forward starts at
     // resume_len + inflight_input_len, which lands on the new tip.
     if (restore_gdn) {
-        unified_decoder_->RestoreGDNState(gdn_restore_.data());
+        unified_decoder_->RestoreGDNState(gdn_restore_.data(), bsz);
     }
 
     // Publish the no-commit mask separately from the accepted count.

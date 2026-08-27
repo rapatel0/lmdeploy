@@ -308,7 +308,7 @@ void GatedDeltaNetLayer::SnapshotState()
     }
 }
 
-void GatedDeltaNetLayer::RestoreState(const char* rows)
+void GatedDeltaNetLayer::RestoreState(const char* rows, int row_count)
 {
     if (!has_snapshot() || snapshot_batch_ == 0) {
         return;
@@ -322,6 +322,10 @@ void GatedDeltaNetLayer::RestoreState(const char* rows)
     // than a fault.
     TM_CHECK_EQ((int)snapshot_blocks_.size(), snapshot_batch_)
         << "GDN snapshot batch changed between save and restore";
+    if (rows) {
+        TM_CHECK_EQ(row_count, snapshot_batch_)
+            << "GDN restore mask length does not match the snapshotted batch";
+    }
 
     for (int i = 0; i < snapshot_batch_; ++i) {
         // Only the rows that rejected something.
@@ -370,6 +374,19 @@ void GatedDeltaNetLayer::Setup(int phase, TensorMap& env)
     data.chunked_plan.reset();
     data.chunked_workspace         = {};
     data.recurrent_state_tma_descs = {};
+
+    // The frontier list is the current batch, not a high-water mark.
+    //
+    // This used to grow but never shrink. When one row retired from a mixed
+    // batch, SnapshotState recorded snapshot_batch_ from the stale vector size
+    // and RestoreState then read rows[i] beyond the current rollback mask. A
+    // non-zero byte there made it restore into the retired sequence's freed
+    // frontier block: host SIGSEGV, only after the first row retired, while
+    // every prompt passed at batch size one. Size the list before filling it so
+    // snapshot_batch_ always equals this phase's real batch.
+    if (snapshot_bytes_ != 0) {
+        snapshot_blocks_.resize(data.batch_size);
+    }
 
     auto make_context = [&] {
         linear_attn::delta_rule::PlanningContext planning{};
@@ -434,9 +451,6 @@ void GatedDeltaNetLayer::Setup(int phase, TensorMap& env)
         // Retained for the speculative snapshot, which runs at Forward time
         // when `requests` is no longer in the env.
         if (snapshot_bytes_ != 0) {
-            if ((int)snapshot_blocks_.size() <= sequence) {
-                snapshot_blocks_.resize(sequence + 1);
-            }
             snapshot_blocks_[sequence] = &block;
         }
 

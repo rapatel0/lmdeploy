@@ -65,7 +65,7 @@ public:
     /// advanced state, and rewinding it strands the state behind a tip that was
     /// already committed -- the next forward begins at that tip and never
     /// re-runs the prefix, so nothing recovers it.
-    void RestoreState(const char* rows = nullptr);
+    void RestoreState(const char* rows = nullptr, int row_count = 0);
 
     /// Whether snapshot buffers exist. False when speculation is disabled, in
     /// which case Snapshot/Restore are no-ops.
