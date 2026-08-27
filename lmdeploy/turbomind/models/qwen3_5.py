@@ -260,8 +260,19 @@ class Qwen3_5TextModel(TextModel):
             zero_centered=True,
         )
         built = m.build()
-        logger.info('[MTP] speculation ENABLED: 1 draft layer, full attention, '
-                    'sharing the target embedding and lm_head')
+        # "weights loaded", not "speculation enabled".
+        #
+        # This runs whenever the checkpoint carries an MTP layer, including a
+        # num_draft_tokens=0 baseline. The engine decides separately whether to
+        # speculate, and at K=0 it builds no predictor and allocates no draft
+        # attention phases.
+        #
+        # The old wording said ENABLED in the baseline's own log, which is
+        # exactly the line someone would grep to confirm the control arm was
+        # clean.
+        logger.info('[MTP] draft layer weights loaded: 1 layer, full attention, '
+                    'sharing the target embedding and lm_head '
+                    '(speculation is enabled separately by num_draft_tokens)')
         return built
 
     # ------------------------------------------------------------------

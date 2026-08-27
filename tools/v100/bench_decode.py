@@ -142,7 +142,13 @@ def main() -> int:
     # the handler above can see them.
     pipe = pipeline(args.model, backend_config=engine_config, log_level="INFO")
 
-    mtp_enabled = any("speculation ENABLED" in r for r in mtp_records)
+    # Match the loader's current wording, which says "draft layer weights
+    # loaded" rather than "speculation ENABLED" -- the old phrasing appeared in
+    # the K=0 baseline's log too, because the loader builds MTP weights whenever
+    # the checkpoint carries them. Accept both so an older wheel still reports.
+    mtp_enabled = any(
+        ("draft layer weights loaded" in r) or ("speculation ENABLED" in r) for r in mtp_records
+    )
     print("=== MTP status for this run ===", flush=True)
     for r in mtp_records:
         print(f"  {r}", flush=True)
