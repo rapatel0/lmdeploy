@@ -164,6 +164,26 @@ FAILED=0
     echo "FAIL: engine never reported accept length" >&2
     FAILED=1
 }
+
+# The line existing is not evidence. Accept length is 1 + accepted/steps, so
+# exactly 1.00 means ZERO drafts were ever accepted -- the meter still prints,
+# the output is still identical (trivially, since nothing was accepted), and a
+# naive reading calls that "MTP working". Require real acceptance.
+if [ "${ACC_SEEN}" -eq 1 ]; then
+    LAST_AL="$(grep -aoE '\[MTP\] accept length [0-9.]+' "${RESULTS}/console.log" |
+        tail -1 | awk '{print $NF}')"
+    awk -v al="${LAST_AL}" -v k="${K}" 'BEGIN {
+        if (al <= 1.0) {
+            printf "FAIL: accept length %.2f means no draft was ever accepted\n", al > "/dev/stderr"
+            exit 1
+        }
+        if (al > k + 1) {
+            printf "FAIL: accept length %.2f exceeds the ceiling of %d\n", al, k + 1 > "/dev/stderr"
+            exit 1
+        }
+        printf "  accept length %.2f of a possible %d\n", al, k + 1
+    }' || FAILED=1
+fi
 for f in bench_k0.json "bench_k${K}.json" identity.json; do
     [ -s "${RESULTS}/${f}" ] || {
         echo "FAIL: missing ${f}" >&2
