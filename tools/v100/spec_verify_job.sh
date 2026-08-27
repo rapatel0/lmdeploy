@@ -116,9 +116,9 @@ TM_MTP_FORCE_REJECT=1 stdbuf -oL -eL python3 /src/tools/v100/verify_spec_identit
     --json-out "${RESULTS}/identity_force_reject.json" 2>&1
 FORCE_RC=$?
 case "${FORCE_RC}" in
-    0) echo "PROBE: identical under forced rejection -> the leak is in the ACCEPT path" ;;
-    6) echo "PROBE: diverges even with zero accepts -> the VERIFICATION FORWARD leaks state" ;;
-    *) echo "PROBE INCONCLUSIVE: identity harness failed with rc=${FORCE_RC}; this is not output divergence" ;;
+0) echo "PROBE: identical under forced rejection -> the leak is in the ACCEPT path" ;;
+6) echo "PROBE: diverges even with zero accepts -> the VERIFICATION FORWARD leaks state" ;;
+*) echo "PROBE INCONCLUSIVE: identity harness failed with rc=${FORCE_RC}; this is not output divergence" ;;
 esac
 
 echo

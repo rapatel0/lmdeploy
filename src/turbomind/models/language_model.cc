@@ -193,7 +193,7 @@ struct LanguageModel::Impl {
     /// Per row, did this verification commit nothing at all? Set when a draft
     /// was rejected on a model with recurrent state: the snapshot is restored
     /// and the tip does not move, so state and tip stay aligned.
-    std::vector<char> no_commit_;
+    std::vector<int> no_commit_;
 
     /// Per row, must this sequence's recurrent state be rewound? Set when the
     /// row rejected a draft; rows that accepted everything must NOT be rewound.

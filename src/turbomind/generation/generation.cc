@@ -350,7 +350,7 @@ struct Generation::Impl {
                 // belongs to one or the other -- mixing them stays in bounds
                 // and corrupts quietly.
                 const int  b      = gen_row_to_batch_[j];
-                const bool active = !no_commit.data<char>()[b] && slot <= accepted[b];
+                const bool active = !no_commit.data<int>()[b] && slot <= accepted[b];
                 ptrs[j] = active ? token_ids_ptrs_buf_[j] : scratch_row_.data();
                 pos[j]  = active ? base_len[b] + slot : 0;
                 // Accepted drafts first, bonus last -- the same order the
