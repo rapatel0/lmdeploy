@@ -70,6 +70,23 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
             // reaches first, so two runs can disagree on tied logits -- and an
             // accepted draft is committed verbatim, so that disagreement
             // becomes an output difference.
+            //
+            // KNOWN DIVERGENCE FROM THE SAMPLER. TurboMind's own top-k uses
+            // reduce_topk_op_2, `a.u > b.u ? a : b`, which on a tie keeps
+            // whichever operand the block reduction placed first -- not the
+            // lower index. So on an exactly tied logit the baseline's sampler
+            // and this kernel can pick different tokens, and identity fails at
+            // that one position.
+            //
+            // Determinism is still the right property here: a kernel that
+            // disagrees with ITSELF between runs is worse than one that
+            // disagrees with the sampler predictably. Exact ties are rare, but
+            // fp16 and bf16 have a coarse value space, so they are not
+            // impossible.
+            //
+            // If an identity check ever fails at a single isolated position
+            // with everything around it matching, look here before suspecting
+            // the verification logic.
             if (other_val > max_val || (other_val == max_val && other_idx < max_idx)) {
                 max_val = other_val;
                 max_idx = other_idx;
