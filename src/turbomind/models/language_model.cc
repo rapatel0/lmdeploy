@@ -807,7 +807,29 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
         seq_lens[i] = d.rows[i]->seq_len;
     }
 
-    auto drafts = mtp_predictor_->Draft(bsz, hidden, ids, K, phase, seq_lens.data(), env);
+    // Never draft past the end of the request's token buffer.
+    //
+    // token_ids is the request's output_ids allocation, session_len + 1 long.
+    // Schedule injects drafts at token_ids[seq_len + k] and Rollback writes
+    // token_ids[base + k], so K drafts need K slots beyond the current tip.
+    //
+    // Ordinary decode is protected by stop_criteria, which finishes a row at
+    // max_seq_len. A verification step skips generation entirely, so that guard
+    // does not run and nothing else bounds the write -- this would be a heap
+    // overflow a few tokens before the session limit, not a clean stop.
+    int budget = K;
+    for (int i = 0; i < bsz; ++i) {
+        const auto& c = *d.rows[i];
+        budget        = std::min(budget, c.max_seq_len - c.seq_len - 1);
+    }
+    if (budget <= 0) {
+        for (int i = 0; i < bsz; ++i) {
+            d.rows[i]->pending_num_drafts = 0;
+        }
+        return;
+    }
+
+    auto drafts = mtp_predictor_->Draft(bsz, hidden, ids, budget, phase, seq_lens.data(), env);
 
     // Store them on the sequences so the next step's Setup can inject them.
     // Layout is [step][batch], so draft k for row i is at k*bsz + i.
@@ -837,12 +859,23 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
 {
     TM_CHECK_NOTNULL(mtp_predictor_.get());
 
-    auto&     d   = data_.at(phase);
-    const int bsz = (int)d.rows.size();
-    const int K   = engine_param_.num_draft_tokens;
-    const auto st = core::Context::stream().handle();
+    auto&      d   = data_.at(phase);
+    const int  bsz = (int)d.rows.size();
+    const auto st  = core::Context::stream().handle();
 
     TM_CHECK(verify_logits_) << "kReject ran without verification logits";
+
+    // The number of drafts THIS forward actually submitted, not the configured
+    // maximum. Drafting is clamped near the session limit so a row can carry
+    // fewer than num_draft_tokens, and the logits then have 1 + K rows for that
+    // smaller K. Using the config value here would read rows that do not exist.
+    //
+    // Every row in a batch is drafted with the same budget, so this is uniform.
+    int K = 0;
+    for (int i = 0; i < bsz; ++i) {
+        K = std::max(K, d.num_drafts[i]);
+    }
+    TM_CHECK_GT(K, 0) << "kReject ran with no drafts";
 
     // Drafts, laid out [bsz, K] to match GreedyReject.
     Buffer_<int> drafts{bsz * K, kDEVICE};
@@ -983,12 +1016,6 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // Where this row's accepted tip sits inside its K+1 hidden block, for
         // the draft that runs next on this same env.
         last_accepted_[i] = n;
-
-        // How many of the K+1 submitted tokens survived. Update carries this
-        // forward as inflight_input_len so the next step's `begin` lands on the
-        // real tip rather than past it. Written here on the executor thread but
-        // only read by Update, which runs after the queue handoff orders it.
-        c.accepted_len = 1 + n;
 
         mtp_accepted_ += n;
         mtp_steps_ += 1;
