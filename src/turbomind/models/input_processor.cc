@@ -17,19 +17,26 @@ public:
     Impl(const EngineParam& engine, int hidden_units, DataType data_type, int phases):
         max_batch_size_{engine.max_batch_size}, max_forward_token_num_{engine.max_forward_token_num}
     {
-        input_ids_buf_         = {max_forward_token_num_, kCPUpinned};
-        input_ids_offsets_buf_ = {max_batch_size_ + 1, kCPUpinned};
-        decode_token_pos_buf_  = {max_batch_size_, kCPUpinned};
-        spec_token_pos_buf_    = {max_forward_token_num_, kCPUpinned};
-
+        // Host staging is PER PHASE. It was shared across phases, and the
+        // batched device copies read the pinned source at stream-execution
+        // time -- so a later phase's Setup could refill it on the host before
+        // an earlier phase's queued copy executed. The same use-after-
+        // overwrite was proven and fixed in UnifiedAttentionLayer and
+        // GatedDeltaNetLayer; this one had a wider window (two engine Setups
+        // apart rather than microseconds) and never demonstrably fired, but it
+        // is the identical pattern and dies with the others.
         data_.reserve(phases);
         for (int i = 0; i < phases; ++i) {
-            auto& d              = data_.emplace_back();
-            d.input_ids          = empty_like(input_ids_buf_, kDEVICE);
-            d.input_ids_offsets  = empty_like(input_ids_offsets_buf_, kDEVICE);
+            auto& d                  = data_.emplace_back();
+            d.input_ids_host         = {max_forward_token_num_, kCPUpinned};
+            d.input_ids_offsets_host = {max_batch_size_ + 1, kCPUpinned};
+            d.decode_token_pos_host  = {max_batch_size_, kCPUpinned};
+            d.spec_token_pos_host    = {max_forward_token_num_, kCPUpinned};
+            d.input_ids          = empty_like(d.input_ids_host, kDEVICE);
+            d.input_ids_offsets  = empty_like(d.input_ids_offsets_host, kDEVICE);
             // Sized from the verification staging buffer, not the batch-sized
             // one: a verification step writes K+1 positions per row here.
-            d.selected_token_pos = empty_like(spec_token_pos_buf_, kDEVICE);
+            d.selected_token_pos = empty_like(d.spec_token_pos_host, kDEVICE);
 
             d.autoreg_ids_pos = {max_batch_size_, kCPU};  // ! CPU buffer
 
@@ -145,29 +152,29 @@ public:
             }
         }
 
-        input_ids_offsets_buf_[0] = 0;
+        d.input_ids_offsets_host[0] = 0;
         for (int i = 0; i < rc.size(); ++i) {
-            input_ids_offsets_buf_[i + 1] = input_ids_offsets_buf_[i];
+            d.input_ids_offsets_host[i + 1] = d.input_ids_offsets_host[i];
             if (const auto& c = *rc[i]; TM_UNLIKELY(!c.autoregres)) {
                 const auto src = c.token_ids + c.history_len + c.inflight_input_len;
-                std::copy_n(src, c.input_len, input_ids_buf_.data() + input_ids_offsets_buf_[i]);
+                std::copy_n(src, c.input_len, d.input_ids_host.data() + d.input_ids_offsets_host[i]);
                 // dbg(std::vector<int>(src, src + c.input_len));
                 d.autoreg_ids_pos[i] = -1;
-                input_ids_offsets_buf_[i + 1] += c.input_len;
+                d.input_ids_offsets_host[i + 1] += c.input_len;
             }
             else {
-                d.autoreg_ids_pos[i] = input_ids_offsets_buf_[i];
-                input_ids_offsets_buf_[i + 1] += 1;
+                d.autoreg_ids_pos[i] = d.input_ids_offsets_host[i];
+                d.input_ids_offsets_host[i + 1] += 1;
             }
-            decode_token_pos_buf_[i] = input_ids_offsets_buf_[i + 1] - 1;
+            d.decode_token_pos_host[i] = d.input_ids_offsets_host[i + 1] - 1;
         }
 
 
-        // dbg(core::to_vector<int>(input_ids_offsets_buf_.slice(0, bsz + 1)));
-        // dbg(core::to_vector<int>(decode_token_pos_buf_.slice(0, bsz)));
+        // dbg(core::to_vector<int>(d.input_ids_offsets_host.slice(0, bsz + 1)));
+        // dbg(core::to_vector<int>(d.decode_token_pos_host.slice(0, bsz)));
 
-        copy(input_ids_buf_, input_ids_offsets_buf_[b.bsz], d.input_ids);
-        copy(decode_token_pos_buf_, b.bsz, d.selected_token_pos);
+        copy(d.input_ids_host, d.input_ids_offsets_host[b.bsz], d.input_ids);
+        copy(d.decode_token_pos_host, b.bsz, d.selected_token_pos);
 
         // Speculative verification needs a logit for EVERY submitted position,
         // not just the last one.
@@ -195,20 +202,20 @@ public:
             for (int i = 0; i < rc.size(); ++i) {
                 const auto& c = *rc[i];
                 for (int k = 0; k < c.input_len; ++k) {
-                    spec_token_pos_buf_[w++] = input_ids_offsets_buf_[i] + k;
+                    d.spec_token_pos_host[w++] = d.input_ids_offsets_host[i] + k;
                 }
             }
-            copy(spec_token_pos_buf_, w, d.selected_token_pos);
+            copy(d.spec_token_pos_host, w, d.selected_token_pos);
             d.spec_selected_num = w;
         }
         else {
             d.spec_selected_num = 0;
         }
-        copy(input_ids_offsets_buf_, b.bsz + 1, d.input_ids_offsets);
+        copy(d.input_ids_offsets_host, b.bsz + 1, d.input_ids_offsets);
 
-        // dbg(decode_token_pos_buf_[0]);
+        // dbg(d.decode_token_pos_host[0]);
 
-        d.input_token_num = input_ids_offsets_buf_[b.bsz];
+        d.input_token_num = d.input_ids_offsets_host[b.bsz];
         // dbg(d.input_token_num);
 
         env.produce("token_num", Buffer{&d.input_token_num, 1, kCPU});
@@ -221,7 +228,7 @@ public:
             if (auto& c = *rc[k]; !c.autoregres) {
                 const auto& embeds  = c.input_embeds;
                 const auto& offsets = c.input_embeds_offsets;
-                Interval    p{input_ids_offsets_buf_[k], input_ids_offsets_buf_[k + 1]};
+                Interval    p{d.input_ids_offsets_host[k], d.input_ids_offsets_host[k + 1]};
                 Interval    s{c.history_len + c.inflight_input_len, p.size()};
                 for (int i = (int)offsets.size() - 1; i >= 0; --i) {
                     Interval r{offsets[i], Interval::Size{(int)embeds[i].shape(0)}};
@@ -318,6 +325,15 @@ private:
 
         Tensor                      input_embeds_buf;
         vector<std::pair<int, int>> input_embeds_coords;  // (size, pos)
+
+        // Host staging for the device buffers above, per phase; see the
+        // constructor comment. spec_token_pos_host is sized by forward tokens
+        // rather than batch size: a verification step selects K+1 positions
+        // per row, so a batch-sized buffer is too small by a factor of K+1.
+        Buffer_<int> input_ids_host;
+        Buffer_<int> input_ids_offsets_host;
+        Buffer_<int> decode_token_pos_host;
+        Buffer_<int> spec_token_pos_host;
     };
 
 private:
@@ -325,16 +341,6 @@ private:
     const int max_forward_token_num_;
 
     vector<Data> data_;
-
-    Buffer_<int> input_ids_buf_;
-    Buffer_<int> input_ids_offsets_buf_;
-
-    Buffer_<int> decode_token_pos_buf_;
-
-    // Staging for verification positions. Sized by forward tokens rather than
-    // batch size: a verification step selects K+1 positions per row, so the
-    // batch-sized buffer beside it is too small by a factor of K+1.
-    Buffer_<int> spec_token_pos_buf_;
 };
 
 InputProcessor::~InputProcessor() = default;

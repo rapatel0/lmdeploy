@@ -82,14 +82,21 @@ struct LanguageModel::Impl {
     // Max chunk size for compute / output full logits
     int max_logits_len_ = 0;
 
+    // Device-to-host FETCH buffers, shared across phases deliberately: Fetch's
+    // copy is consumed by Engine::Update after the batch's done-event, before
+    // the other phase's Fetch can be enqueued. The opposite direction from the
+    // per-phase host STAGING above, and a different lifecycle.
     Buffer_<int>  sequence_length_buf_;
-    Buffer_<int>  readonly_block_num_buf_;  // {max_batch_size}, kCPUpinned
     Buffer_<bool> finished_buf_;
 
     struct Data {
         Buffer_<int>  sequence_length;
         Buffer_<int>  readonly_block_num;
         Buffer_<bool> finished;
+
+        // Host staging for the two uploads above; per phase, see constructor.
+        Buffer_<int> sequence_length_host;
+        Buffer_<int> readonly_block_num_host;
 
         Buffer_<bool> autoregres;
         Buffer_<bool> generating;
@@ -351,20 +358,28 @@ LanguageModel::Impl::Impl(
     false_ = {engine.max_batch_size, kDEVICE};
     Clear(false_);
 
-    finished_buf_ = {engine.max_batch_size, kCPUpinned};
+    sequence_length_buf_ = {engine.max_batch_size, kCPUpinned};
+    finished_buf_        = {engine.max_batch_size, kCPUpinned};
     finished_     = {{engine.max_batch_size}, kBool, kDEVICE};
 
     autoreg_ids_ = {engine.max_batch_size, kDEVICE};
     // autoreg_ids_offsets_ = {engine.max_batch_size + 1, kCPU};
     // std::fill_n(autoreg_ids_offsets_.data(), autoreg_ids_offsets_.size(), 0);
 
-    sequence_length_buf_    = {engine.max_batch_size, kCPUpinned};
-    readonly_block_num_buf_ = {engine.max_batch_size, kCPUpinned};
-    sequence_length_        = {{engine.max_batch_size}, kInt, kDEVICE};
+    sequence_length_ = {{engine.max_batch_size}, kInt, kDEVICE};
+    // Host staging for the per-phase device buffers is itself per phase: the
+    // upload reads the pinned source at stream-execution time, so a shared
+    // buffer lets a later phase's Setup refill it before an earlier phase's
+    // queued copy has run. Proven in UnifiedAttentionLayer, then observed
+    // again in GatedDeltaNetLayer when that fix moved the fault here-adjacent.
+    // (finished_buf_ stays shared: it is a device-to-host fetch consumed
+    // before the next Setup, the opposite direction and lifecycle.)
     for (int i = 0; i < phases; ++i) {
-        auto& d              = data_.emplace_back();
-        d.sequence_length    = empty_like(sequence_length_buf_, kDEVICE);
-        d.readonly_block_num = empty_like(readonly_block_num_buf_, kDEVICE);
+        auto& d                   = data_.emplace_back();
+        d.sequence_length_host    = {engine.max_batch_size, kCPUpinned};
+        d.readonly_block_num_host = {engine.max_batch_size, kCPUpinned};
+        d.sequence_length    = empty_like(d.sequence_length_host, kDEVICE);
+        d.readonly_block_num = empty_like(d.readonly_block_num_host, kDEVICE);
         d.finished           = empty_like(finished_buf_, kDEVICE);
         d.autoregres         = {engine.max_batch_size, kCPU};
         d.generating         = {engine.max_batch_size, kCPU};
@@ -602,19 +617,19 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
         d.n_generating += c.generating;
         d.all_decode &= c.input_len == 1;
         // The row's true key length this step, captured for ALL rows.
-        // sequence_length_buf_ below is written only for non-autoregressive
+        // d.sequence_length_host below is written only for non-autoregressive
         // rows -- decode rows carry their length forward on the device -- so it
         // cannot be read here as a host-side length. The MTP draft needs these
         // to know how much slack each row has left in its last KV block.
         d.seq_lens[i] = c.history_len + c.inflight_input_len + c.input_len;
         if (TM_UNLIKELY(!c.autoregres)) {
-            sequence_length_buf_[i] = c.history_len + c.inflight_input_len + c.input_len;
+            d.sequence_length_host[i] = c.history_len + c.inflight_input_len + c.input_len;
         }
-        readonly_block_num_buf_[i] = c.readonly_block_num;  // all rows, batch order
+        d.readonly_block_num_host[i] = c.readonly_block_num;  // all rows, batch order
     }
 
-    copy(sequence_length_buf_, rc.size(), d.sequence_length);
-    copy(readonly_block_num_buf_, rc.size(), d.readonly_block_num);
+    copy(d.sequence_length_host, rc.size(), d.sequence_length);
+    copy(d.readonly_block_num_host, rc.size(), d.readonly_block_num);
 
     unified_decoder_->Run(BatchOp::kSetup, phase, env);
     generation_->Run(BatchOp::kSetup, phase, env);

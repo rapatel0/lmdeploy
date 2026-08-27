@@ -97,6 +97,12 @@ private:
         Buffer_<bool>                                finished;
         Buffer_<void*>                               conv_state_ptrs;
         Buffer_<void*>                               recurrent_state_ptrs;
+        // Host staging for the two device buffers above. Per phase because the
+        // async upload reads the pinned source at stream-execution time; a
+        // shared buffer lets another phase's Setup refill it first. See the
+        // constructor comment.
+        Buffer_<void*>                               conv_state_ptrs_host;
+        Buffer_<void*>                               recurrent_state_ptrs_host;
         int                                          decode_count{};
         int                                          prefill_count{};
         std::optional<linear_attn::delta_rule::Plan> recurrent_plan;
@@ -130,8 +136,6 @@ private:
     std::unordered_map<const DeltaNetWeight*, int> layer_index_;  // weight ptr -> GDN-local layer index
 
     // staging buffers
-    Buffer_<void*> conv_state_ptrs_buf_;
-    Buffer_<void*> recurrent_state_ptrs_buf_;
 
     DataType                                input_dtype_{kNull};
     int                                     arch_{};

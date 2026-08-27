@@ -192,14 +192,24 @@ GatedDeltaNetLayer::GatedDeltaNetLayer(std::vector<DeltaNetWeight*> weights,
         layer_index_[weights[layer]]        = layer;
     }
 
-    conv_state_ptrs_buf_      = {engine.max_batch_size, kCPUpinned};
-    recurrent_state_ptrs_buf_ = {core::ssize_t(num_layer_groups_) * engine.max_batch_size * num_head_groups_,
-                                 kCPUpinned};
-
+    // Host staging is PER PHASE, matching the device buffers it feeds.
+    //
+    // These were shared across phases. Copy() enqueues cudaMemcpyAsync, and a
+    // pinned-memory source is read when the STREAM reaches the copy, not when
+    // the call returns -- so phase B's Setup could refill the staging on the
+    // host while phase A's queued copy had not yet executed, and A's forward
+    // then walked B's state pointers. That exact mechanism was proven in
+    // UnifiedAttentionLayer (clean under CUDA_LAUNCH_BLOCKING=1, faulting
+    // otherwise); when its staging became per-phase, the fault moved HERE,
+    // gated_delta_net_kernels.cu:218 -- same class, next instance.
     for (int phase = 0; phase < phases; ++phase) {
         data_.emplace_back();
-        data_.at(phase).conv_state_ptrs      = empty_like(conv_state_ptrs_buf_, kDEVICE);
-        data_.at(phase).recurrent_state_ptrs = empty_like(recurrent_state_ptrs_buf_, kDEVICE);
+        auto& d                 = data_.at(phase);
+        d.conv_state_ptrs_host  = {engine.max_batch_size, kCPUpinned};
+        d.recurrent_state_ptrs_host = {
+            core::ssize_t(num_layer_groups_) * engine.max_batch_size * num_head_groups_, kCPUpinned};
+        d.conv_state_ptrs      = empty_like(d.conv_state_ptrs_host, kDEVICE);
+        d.recurrent_state_ptrs = empty_like(d.recurrent_state_ptrs_host, kDEVICE);
     }
 
     work_counter_ = {1, kDEVICE};
@@ -430,12 +440,12 @@ void GatedDeltaNetLayer::Setup(int phase, TensorMap& env)
             snapshot_blocks_[sequence] = &block;
         }
 
-        conv_state_ptrs_buf_[sequence] = block.base(0);
+        data.conv_state_ptrs_host[sequence] = block.base(0);
         for (int layer_group = 0; layer_group < num_layer_groups_; ++layer_group) {
             for (int head_group = 0; head_group < num_head_groups_; ++head_group) {
                 const int part = rec_base_ + layer_group * num_head_groups_ + head_group;
-                recurrent_state_ptrs_buf_[(layer_group * data.batch_size + sequence) * num_head_groups_ + head_group] =
-                    block.base(part);
+                data.recurrent_state_ptrs_host[(layer_group * data.batch_size + sequence) * num_head_groups_
+                                               + head_group] = block.base(part);
             }
         }
 
@@ -448,8 +458,8 @@ void GatedDeltaNetLayer::Setup(int phase, TensorMap& env)
         }
     }
 
-    Copy(conv_state_ptrs_buf_, data.batch_size, data.conv_state_ptrs);
-    Copy(recurrent_state_ptrs_buf_,
+    Copy(data.conv_state_ptrs_host, data.batch_size, data.conv_state_ptrs);
+    Copy(data.recurrent_state_ptrs_host,
          core::ssize_t(num_layer_groups_) * data.batch_size * num_head_groups_,
          data.recurrent_state_ptrs);
 }
