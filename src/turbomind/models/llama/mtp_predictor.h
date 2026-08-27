@@ -94,30 +94,24 @@ public:
                       const int*          block_counts,
                       TensorMap&          env);
 
-    /// Prepare the MTP attention layer's dispatch state for a decode-only batch.
+    /// Build the draft's attention plan for batch phase `phase`.
     ///
-    /// This must run before Draft(). Without it the draft attention reads
-    /// uninitialised KV entries: UnifiedDecoder::Forward iterates
-    /// weights_.layers_list(), which returns only the target's `layers` child,
-    /// so nothing ever populates the MTP layer's own slot. Drafting from an
-    /// empty cache is why the measured acceptance rate could not be trusted --
-    /// the draft was attending to nothing.
+    /// Runs against attn_phase_base_ + phase, never the target's slot: the
+    /// draft submits one token per row while a verification forward submits
+    /// K+1, and AttentionData is per-phase, so sharing a slot means one shape
+    /// overwrites the other.
     ///
-    /// `env` must carry the batch, block pointers, q/k offsets and finished
-    /// flags for the decode shape, one query token per sequence.
-    /// Register the draft layer's KV slot in the draft's OWN phase slot.
+    /// The `phase` argument is not decoration. Two batches are in flight at
+    /// once, so a single draft slot is rewritten by the next batch's Setup
+    /// before the current batch's draft has read it -- observed directly as a
+    /// plan built for five sequences being read by a one-sequence draft.
     ///
     /// Needs the engine's setup-time env, the only one carrying `requests`.
-    /// Runs against attn_phase_, not the target's phase, so the target's
-    /// attention state is untouched.
     void SetupAttention(int phase, TensorMap& env);
 
-    /// Build the draft's decode-shaped attention plan in its own phase slot.
-    ///
-    /// The draft submits one token per row while a verification forward submits
-    /// K+1, and AttentionData is per-phase. Sharing the target's slot means one
-    /// shape overwrites the other, which aborts on
-    /// `d.prefill.q_sum + d.decode.n == q_count`.
+    /// Borrow this step's prepared tensors into the draft's slot for `phase`.
+    /// Separate from SetupAttention because `finished` and the offset buffers
+    /// do not exist yet at setup time.
     void PrepareAttention(int phase, TensorMap& env);
 
 private:
