@@ -2,6 +2,7 @@
 #include "src/turbomind/models/language_model.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -175,6 +176,9 @@ struct LanguageModel::Impl {
     /// state and would silently produce nonsense on one without it.
     size_t mtp_full_accepts_ = 0;
     size_t mtp_steps_        = 0;
+
+    /// Bounded draft-vs-target alignment dumps in RejectDrafts.
+    int reject_dumps_ = 0;
 
     /// Per row, did this verification commit an EOS token? A verification step
     /// skips Generation, so stop_criteria never runs and Rollback must set
@@ -1122,6 +1126,77 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
                                vocab_stride,         // rows are strided by the padded size
                                weights_.data_type,
                                st);
+
+    // Alignment diagnostic for the first few verifications: the drafts against
+    // the argmax the verifier computed at each position. The three failure
+    // shapes it separates:
+    //   T[k] == D[k]   -> aligned and accepted (healthy)
+    //   T[k] == D[k-1] or D[k+1] -> a residual off-by-one inside verification
+    //   T and D unrelated -> the drafts themselves are junk (wrong hidden row
+    //                        or wrong conditioning tip in kDraft)
+    // Each row also prints the ids the forward actually submitted, so the
+    // bonus-vs-draft window placement is visible in the same line.
+    if (TM_UNLIKELY(reject_dumps_ < 6)) {
+        ++reject_dumps_;
+        // The target argmax per position is not returned by GreedyReject, so
+        // recompute it here on the host for the dump. Cost is irrelevant: six
+        // dumps, ever.
+        Buffer_<int> h_acc{bsz, kCPU};
+        Buffer_<int> h_bonus{bsz, kCPU};
+        Copy(result.num_accepted, h_acc);
+        Copy(result.bonus_tokens, h_bonus);
+        // Row 0's K+1 logit rows, to compute the verifier's argmax per
+        // position on the host. fp16, ~2.4 MB for six dumps ever.
+        const ssize_t   row_elems = (ssize_t)(K + 1) * vocab_stride;
+        Buffer_<uint16_t> h_logits{row_elems, kCPU};
+        core::Copy(Buffer_<uint16_t>{(uint16_t*)verify_logits_.raw_data(), row_elems, kDEVICE},
+                   row_elems,
+                   h_logits);
+        core::Context::stream().Sync();
+        std::string ts;
+        for (int p = 0; p <= K; ++p) {
+            const uint16_t* row  = h_logits.data() + (ssize_t)p * vocab_stride;
+            float           best = -1e30f;
+            int             bi   = 0;
+            for (int v = 0; v < weights_.vocab_size; ++v) {
+                // fp16 bits -> float via __half memcpy trick, host-side.
+                uint16_t u = row[v];
+                int  sign = (u >> 15) & 1;
+                int  exp  = (u >> 10) & 0x1f;
+                int  man  = u & 0x3ff;
+                float val;
+                if (exp == 0) {
+                    val = std::ldexp((float)man, -24);
+                }
+                else if (exp == 31) {
+                    val = man ? NAN : INFINITY;
+                }
+                else {
+                    val = std::ldexp((float)(man + 1024), exp - 25);
+                }
+                if (sign) val = -val;
+                if (val > best) {
+                    best = val;
+                    bi   = v;
+                }
+            }
+            ts += std::to_string(bi) + (p < K ? "," : "");
+        }
+        for (int i = 0; i < std::min(bsz, 2); ++i) {
+            std::string ds;
+            for (int k = 0; k < K; ++k) {
+                ds += std::to_string(d.rows[i]->draft_tokens[k]) + (k + 1 < K ? "," : "");
+            }
+            TM_LOG_WARNING("[reject] row {} uid {}: drafts=[{}] targets=[{}] accepted={} bonus={} (seq_len {})",
+                           i,
+                           (long)d.uids[i],
+                           ds,
+                           i == 0 ? ts : std::string("-"),
+                           h_acc[i],
+                           h_bonus[i],
+                           d.seq_lens[i]);
+        }
+    }
 
     env.produce("num_accepted", result.num_accepted);
     env.produce("bonus_tokens", result.bonus_tokens);
