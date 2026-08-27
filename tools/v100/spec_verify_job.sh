@@ -94,10 +94,25 @@ echo
 echo "=== 3. throughput: K=0 vs K=${K} ==="
 for kk in 0 "${K}"; do
     echo "--- num_draft_tokens=${kk}"
+
+    # --require-mtp only for the speculative arm.
+    #
+    # The K=0 baseline no longer constructs the MTP predictor at all: the
+    # construction condition includes num_draft_tokens > 0, so that speculation
+    # being off means none of the speculative code runs. Demanding MTP of the
+    # baseline therefore fails it by definition, and the job would report
+    # "missing bench_k0.json" while the real cause is this flag.
+    #
+    # The speculative arm still requires it, which is what matters: a K=4 run
+    # that quietly fell back to plain decoding would otherwise be benchmarked
+    # against the baseline and reported as a 1.00x result rather than a fault.
+    REQ=""
+    [ "${kk}" -gt 0 ] && REQ="--require-mtp"
+
     stdbuf -oL -eL python3 /src/tools/v100/bench_decode.py \
         --model "${MODEL}" --tp "${TP}" --num-draft-tokens "${kk}" \
         --input-tokens 1024 --output-tokens 256 --trials 3 \
-        --require-mtp --json-out "${RESULTS}/bench_k${kk}.json" 2>&1
+        ${REQ} --json-out "${RESULTS}/bench_k${kk}.json" 2>&1
     eval "BENCH_RC_${kk}=\$?"
 done
 
