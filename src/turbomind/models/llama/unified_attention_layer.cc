@@ -277,6 +277,20 @@ void UnifiedAttentionLayer::Run(BatchOp op, int phase, TensorMap& env)
         Setup(phase, env);
     }
     else if (op == BatchOp::kPrepare) {
+        // Which env buffers the MTP draft may share with the target, and which
+        // it may not, reduces to one question: is the buffer indexed by ROW or
+        // by TOKEN?
+        //
+        // Row-indexed buffers are safe. The draft and the target agree on the
+        // batch, so entry i means row i to both -- `finished`, `k_offsets` and
+        // `readonly_block_num` are all of this kind.
+        //
+        // Token-indexed buffers are not, because a verification step submits
+        // K+1 tokens per row while the draft submits one. `token_mask` is per
+        // token, so row i sits at i*(K+1), and `q_offsets` is per row but holds
+        // token counts. Both are replaced below with draft-owned versions; at
+        // batch size 1 the two layouts coincide, so sharing them survives a
+        // single-sequence test and fails on the second request.
         auto& d               = data_.at(phase);
         d->finished           = env.at("finished").buffer().borrow();
         // The MTP draft submits one query per row, so it cannot borrow the
