@@ -115,11 +115,11 @@ TM_MTP_FORCE_REJECT=1 stdbuf -oL -eL python3 /src/tools/v100/verify_spec_identit
     --model-dir "${MODEL}" --tp "${TP}" --num-draft-tokens "${K}" \
     --json-out "${RESULTS}/identity_force_reject.json" 2>&1
 FORCE_RC=$?
-if [ "${FORCE_RC}" -eq 0 ]; then
-    echo "PROBE: identical under forced rejection -> the leak is in the ACCEPT path"
-else
-    echo "PROBE: diverges even with zero accepts -> the VERIFICATION FORWARD leaks state"
-fi
+case "${FORCE_RC}" in
+    0) echo "PROBE: identical under forced rejection -> the leak is in the ACCEPT path" ;;
+    6) echo "PROBE: diverges even with zero accepts -> the VERIFICATION FORWARD leaks state" ;;
+    *) echo "PROBE INCONCLUSIVE: identity harness failed with rc=${FORCE_RC}; this is not output divergence" ;;
+esac
 
 echo
 echo "=== 2. accept length reported by the engine ==="

@@ -310,6 +310,12 @@ struct Generation::Impl {
         Buffer_<int> bonus{bsz, kCPU};
         Copy(env.at("num_accepted").buffer().slice(0, bsz), accepted);
         Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
+        // accepted=0 normally means "append the bonus". A rejected GDN
+        // verification restores its state and commits nothing, so acceptance
+        // alone cannot encode the append decision. LanguageModel publishes
+        // that decision separately. The buffer is host-resident and valid for
+        // this synchronous call.
+        const auto no_commit = env.at("mtp_no_commit").buffer();
 
         Buffer_<int> base_len{bsz, kCPU};
         Copy(env.at("sequence_length").buffer().slice(0, bsz), base_len);
@@ -344,7 +350,7 @@ struct Generation::Impl {
                 // belongs to one or the other -- mixing them stays in bounds
                 // and corrupts quietly.
                 const int  b      = gen_row_to_batch_[j];
-                const bool active = slot <= accepted[b];
+                const bool active = !no_commit.data<char>()[b] && slot <= accepted[b];
                 ptrs[j] = active ? token_ids_ptrs_buf_[j] : scratch_row_.data();
                 pos[j]  = active ? base_len[b] + slot : 0;
                 // Accepted drafts first, bonus last -- the same order the

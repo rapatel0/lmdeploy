@@ -1593,14 +1593,11 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             // where a no-commit row must republish exactly base.
             seq_lens[i] = base;
 
-            // Tell Generation::Rollback to append NOTHING for this row.
-            //
-            // Its append loop runs slot 0 whenever `slot <= accepted[b]`,
-            // so 0 still appends the bonus into Generation's copy of the
-            // sequence -- at a position this row never committed. -1
-            // deactivates every slot. Published below via `clamped`, which
-            // the gdn branch already set.
-            accepted[i] = -1;
+            // Generation::Rollback also receives no_commit_ below. Keep the
+            // accepted-count contract (0 <= n <= K) intact; using -1 as an
+            // append sentinel made mixed/retiring batches crash after several
+            // hundred steps. The append decision and acceptance count are two
+            // different facts, so represent them separately.
 
             // Count the step BEFORE bailing out.
             //
@@ -1731,6 +1728,14 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     if (restore_gdn) {
         unified_decoder_->RestoreGDNState(gdn_restore_.data());
     }
+
+    // Publish the no-commit mask separately from the accepted count.
+    //
+    // A rejected GDN verification has accepted=0 but must not append the
+    // bonus. Generation::Rollback normally appends its slot 0 for accepted=0,
+    // so it needs the separate state transition fact. This buffer aliases the
+    // member vector and stays valid for the synchronous Rollback call below.
+    env.produce("mtp_no_commit", Buffer{no_commit_.data(), bsz, kCPU});
 
     // Publish the clamped acceptance before Generation reads it.
     //
