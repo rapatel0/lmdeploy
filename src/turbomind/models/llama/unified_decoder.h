@@ -29,6 +29,29 @@ public:
     void Forward(int phase, TensorMap& env, const std::vector<WeightType*>& weights);
 
     /// Attention-list index of the MTP draft layer, or -1 when absent.
+    /// Save every sequence's recurrent state before a speculative forward.
+    /// No-op when the model has no linear-attention layers.
+    void SnapshotGDNState()
+    {
+        if (linear_attn_layer_) {
+            linear_attn_layer_->SnapshotState();
+        }
+    }
+
+    /// Put back the state saved by SnapshotGDNState this step.
+    void RestoreGDNState()
+    {
+        if (linear_attn_layer_) {
+            linear_attn_layer_->RestoreState();
+        }
+    }
+
+    /// Does this model carry recurrent state that speculation must roll back?
+    bool has_recurrent_state() const noexcept
+    {
+        return linear_attn_layer_ && linear_attn_layer_->has_snapshot();
+    }
+
     int mtp_attn_index() const noexcept
     {
         return mtp_attn_index_;

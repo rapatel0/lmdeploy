@@ -16,6 +16,8 @@
 
 namespace turbomind {
 
+struct CacheBlock;
+
 class GatedDeltaNetLayer {
 public:
     struct ForwardParam {
@@ -52,14 +54,14 @@ public:
     ///
     /// 48 of this model's 64 layers are linear attention, so the drift changes
     /// every subsequent token.
-    void SnapshotState(int phase, TensorMap& env);
+    void SnapshotState();
 
     /// Put back the state saved by SnapshotState this step.
     ///
     /// The caller replays the accepted prefix afterwards; restoring alone
     /// rewinds to before the verification forward, which is correct but not yet
     /// advanced.
-    void RestoreState(int phase, TensorMap& env);
+    void RestoreState();
 
     /// Whether snapshot buffers exist. False when speculation is disabled, in
     /// which case Snapshot/Restore are no-ops.
@@ -114,8 +116,12 @@ private:
     // sized for max_batch_size sequences: conv state plus every recurrent
     // block, laid out contiguously per sequence.
     Buffer_<uint8_t> snapshot_;
-    size_t        snapshot_bytes_{};   // per sequence
-    int           snapshot_batch_{0};  // sequences captured by the last snapshot
+    size_t           snapshot_bytes_{};   // per sequence
+    int              snapshot_batch_{0};  // sequences captured by the last snapshot
+
+    /// Frontier block per sequence, captured at Setup because the snapshot runs
+    /// at Forward time, when `requests` is no longer in the env.
+    std::vector<const CacheBlock*> snapshot_blocks_;
 
     std::unordered_map<const DeltaNetWeight*, int> layer_index_;  // weight ptr -> GDN-local layer index
 

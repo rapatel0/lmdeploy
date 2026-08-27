@@ -149,6 +149,11 @@ struct LanguageModel::Impl {
     /// `finished` itself.
     std::vector<char> eos_hit_;
 
+    /// Does this model carry recurrent state that a rejected draft corrupts?
+    /// True whenever the decoder has linear-attention layers, which forces
+    /// all-or-nothing acceptance.
+    bool gdn_rollback_{false};
+
     /// Engine parameters, retained for the speculation settings.
     const EngineParam engine_param_;
 
@@ -337,6 +342,7 @@ LanguageModel::Impl::Impl(
     // Speculation off must mean the speculative code does not run at all.
     if (engine.num_draft_tokens > 0 && weights_.mtp && weights_.mtp->decoder_layer
         && unified_decoder_->mtp_attn_index() >= 0 && unified_decoder_->attn_layer()) {
+        gdn_rollback_  = unified_decoder_->has_recurrent_state();
         mtp_predictor_ = std::make_unique<MTPPredictor>(
             *weights_.mtp,
             *unified_decoder_->attn_layer(),
@@ -742,6 +748,14 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
     env.produce("output_norm_weight", weights_.norm->weight);
 
+    // Save recurrent state before a verification forward, while it still
+    // describes only committed tokens. Rollback restores it if any draft is
+    // rejected; there is no way to recover it afterwards, because the forward
+    // advances it in place.
+    if (gdn_rollback_ && HasDraftsToVerify(phase)) {
+        unified_decoder_->SnapshotGDNState();
+    }
+
     unified_decoder_->Forward(phase, env, weights_.layers_list());
 
     // env.at("batch").data<BatchData*>()[0]->Notify();
@@ -1015,7 +1029,8 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // their own offsets and covered by the advanced sequence_length. Update's
     // `new_tokens` calculation then picks up the whole run, because it appends
     // token_ids[seq_len - new_tokens .. seq_len) rather than a single token.
-    bool clamped = false;
+    bool clamped     = false;
+    bool restore_gdn = false;
     eos_hit_.assign(bsz, false);
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
@@ -1036,6 +1051,36 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         int n = accepted[i];
         TM_CHECK_GE(n, 0);
         TM_CHECK_LE(n, d.num_drafts[i]);
+
+        // All-or-nothing acceptance, forced by the recurrent state.
+        //
+        // 48 of this model's 64 layers are linear attention. Their state is
+        // advanced in place over every token the forward processed, so after a
+        // K+1 verification it reflects ALL the drafts, including rejected ones.
+        // Committing a partial prefix would leave the state describing a
+        // sequence that was never generated, and every later token would be
+        // wrong -- silently, since nothing checks it.
+        //
+        // With every draft accepted, the forward's final state is exactly the
+        // right one and nothing needs undoing. With any rejection we restore
+        // the pre-forward snapshot and keep only the bonus token, which is
+        // argmax(logits[0]) and therefore depends only on the state before any
+        // draft was processed -- precisely what the snapshot holds.
+        //
+        // The alternative, committing n and replaying the accepted prefix,
+        // needs a second forward with per-row input_len decided inside the
+        // step. That is re-scheduling in the executor, and the scheduler owns
+        // that. Per-token snapshots would avoid the replay but cost 12 GB at
+        // batch 64.
+        //
+        // Cost: one forward either way. Value depends on the per-draft accept
+        // rate p as p^K * (K+1) + (1 - p^K), which is never below 1.0.
+        if (gdn_rollback_ && n < d.num_drafts[i]) {
+            n           = 0;
+            accepted[i] = 0;
+            clamped     = true;
+            restore_gdn = true;
+        }
 
         // `seq_len` still points at the tip from before this forward, because
         // Update has not run yet for this step.
@@ -1155,6 +1200,17 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             }
         }
         Copy(host, finished_.front().buffer().slice(0, bsz));
+    }
+
+    // Rewind the recurrent state when anything was rejected.
+    //
+    // Restore is all-or-nothing across the batch, because the snapshot is one
+    // contiguous save of every sequence. A row that accepted everything is
+    // rewound too, but its accepted tokens were the whole submitted run, so the
+    // next forward re-advances the state over exactly those tokens. Rewinding
+    // it is therefore harmless; not rewinding a rejecting row would not be.
+    if (restore_gdn) {
+        unified_decoder_->RestoreGDNState();
     }
 
     // Publish the clamped acceptance before Generation reads it.

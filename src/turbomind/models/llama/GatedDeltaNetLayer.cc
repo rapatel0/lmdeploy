@@ -272,19 +272,23 @@ void ForEachStatePart(const CacheBlock& block, int rec_base, int num_blocks, siz
 
 }  // namespace
 
-void GatedDeltaNetLayer::SnapshotState(int phase, TensorMap& env)
+void GatedDeltaNetLayer::SnapshotState()
 {
     if (!has_snapshot()) {
         return;
     }
 
-    const Buffer_<Sequence*> rc     = env.at("requests").buffer();
-    const auto               stream = core::Context::stream().handle();
+    // The frontier pointers captured at Setup, NOT env.at("requests").
+    //
+    // `requests` is placed in the map by Setup and is gone by Forward, so
+    // reading it here would abort. Setup already walks every sequence's
+    // frontier block to fill the state pointers, so it records them for this.
+    const auto stream = core::Context::stream().handle();
 
-    snapshot_batch_ = (int)rc.size();
+    snapshot_batch_ = (int)snapshot_blocks_.size();
 
     for (int i = 0; i < snapshot_batch_; ++i) {
-        const CacheBlock& block = *TM_CHECK_NOTNULL(rc[i]->frontier.get());
+        const CacheBlock& block = *TM_CHECK_NOTNULL(snapshot_blocks_[i]);
         uint8_t*          dst   = snapshot_.data() + size_t(i) * snapshot_bytes_;
         ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
                          [&](char* src, size_t bytes) {
@@ -294,24 +298,23 @@ void GatedDeltaNetLayer::SnapshotState(int phase, TensorMap& env)
     }
 }
 
-void GatedDeltaNetLayer::RestoreState(int phase, TensorMap& env)
+void GatedDeltaNetLayer::RestoreState()
 {
     if (!has_snapshot() || snapshot_batch_ == 0) {
         return;
     }
 
-    const Buffer_<Sequence*> rc     = env.at("requests").buffer();
-    const auto               stream = core::Context::stream().handle();
+    const auto stream = core::Context::stream().handle();
 
     // The batch must not have changed between snapshot and restore. If it had,
     // sequence i would be a different request and this would write one
     // sequence's state into another -- silent cross-request corruption rather
     // than a fault.
-    TM_CHECK_EQ((int)rc.size(), snapshot_batch_)
+    TM_CHECK_EQ((int)snapshot_blocks_.size(), snapshot_batch_)
         << "GDN snapshot batch changed between save and restore";
 
     for (int i = 0; i < snapshot_batch_; ++i) {
-        const CacheBlock& block = *TM_CHECK_NOTNULL(rc[i]->frontier.get());
+        const CacheBlock& block = *TM_CHECK_NOTNULL(snapshot_blocks_[i]);
         const uint8_t*    src   = snapshot_.data() + size_t(i) * snapshot_bytes_;
         ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
                          [&](char* dst, size_t bytes) {
@@ -406,6 +409,15 @@ void GatedDeltaNetLayer::Setup(int phase, TensorMap& env)
 
         const CacheBlock& block = *TM_CHECK_NOTNULL(request.frontier.get());
         TM_CHECK_NOTNULL(block.allocation.a);
+
+        // Retained for the speculative snapshot, which runs at Forward time
+        // when `requests` is no longer in the env.
+        if (snapshot_bytes_ != 0) {
+            if ((int)snapshot_blocks_.size() <= sequence) {
+                snapshot_blocks_.resize(sequence + 1);
+            }
+            snapshot_blocks_[sequence] = &block;
+        }
 
         conv_state_ptrs_buf_[sequence] = block.base(0);
         for (int layer_group = 0; layer_group < num_layer_groups_; ++layer_group) {
