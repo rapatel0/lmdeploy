@@ -103,14 +103,25 @@ def run_config(model_dir: str, tp: int, k: int, max_new: int, tag: str) -> list[
         text=True,
         timeout=1800,
     )
-    # Surface the engine's own [MTP] lines: accept length is reported there and
-    # the job script greps the console log for it.
+    # Surface the engine's own diagnostics.
+    #
+    # [MTP] carries the accept-length meter, which the job script greps for.
+    # [attn] carries the attention plan's composition on a shape mismatch, and
+    # that one only prints immediately before the process aborts -- so it must
+    # not be filtered out here, or the very message added to explain the abort
+    # is the message the harness discards.
     for line in (proc.stdout + proc.stderr).splitlines():
-        if "[MTP]" in line or "speculation" in line.lower():
+        if "[MTP]" in line or "[attn]" in line or "speculation" in line.lower():
             print(f"    {line.strip()}", flush=True)
 
     if proc.returncode != 0:
         print(f"FAIL: generation at K={k} exited {proc.returncode}", file=sys.stderr)
+        # Tail, not head: the fatal message is at the end. 3000 characters is
+        # only a few lines of a stack trace, so pull the diagnostics out
+        # separately rather than trusting them to fit.
+        for line in proc.stderr.splitlines():
+            if "[attn]" in line or "Check failed" in line:
+                print(f"  {line.strip()}", file=sys.stderr)
         print(proc.stderr[-3000:], file=sys.stderr)
         raise SystemExit(4)
 
