@@ -989,6 +989,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
     auto& hidden_states = env.at("hidden_states");
 
+    // The SAME predicate the executor used to choose this path. Deriving it
+    // from the phase snapshot keeps sampling, parity diagnostics, and reject
+    // handling on one classification.
+    const bool spec_verify = HasDraftsToVerify(phase);
+
     env.produce("logits", PostEmbedding(hidden_states, symm_buf_));
 
     // Compare the rejected verifier's first-position logits with the ordinary
@@ -1060,10 +1065,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     // and the tokens it will keep are decided by kReject and kRollback, from
     // the logits, not by sampling. Letting the sampler run here would append a
     // token on top of the accepted prefix and corrupt the sequence.
-    // The SAME predicate the executor used to choose this path. Deriving it
-    // twice from the same snapshot is what keeps the two from disagreeing --
-    // and a disagreement here is the `verify_logits_` abort.
-    const bool spec_verify = HasDraftsToVerify(phase);
+    // A disagreement here is the `verify_logits_` abort.
     if (spec_verify) {
         // Keep the logits for kReject; it runs after Unprep, by which point the
         // env map has been rebuilt.
