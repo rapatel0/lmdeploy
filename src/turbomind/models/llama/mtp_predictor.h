@@ -89,6 +89,8 @@ public:
                       int                 num_draft_tokens,
                       int                 phase,
                       const int*          seq_lens,
+                      /// Blocks allocated per row; bounds how far drafting may walk.
+                      const int*          block_counts,
                       TensorMap&          env);
 
     /// Prepare the MTP attention layer's dispatch state for a decode-only batch.

@@ -803,8 +803,13 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
     // Each row's key length after this step's accepted tokens, which is what
     // the draft needs to know how much slack its last KV block still has.
     std::vector<int> seq_lens(bsz);
+    std::vector<int> block_counts(bsz);
     for (int i = 0; i < bsz; ++i) {
         seq_lens[i] = d.rows[i]->seq_len;
+        // How many KV blocks this row owns. The draft may walk to the end of
+        // the last one and no further: the block iterator does not bounds-check
+        // block_ptrs_, so overrunning reads the next sequence's pointer.
+        block_counts[i] = (int)d.rows[i]->block_ids.size();
     }
 
     // Never draft past the end of the request's token buffer.
@@ -829,7 +834,8 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
         return;
     }
 
-    auto drafts = mtp_predictor_->Draft(bsz, hidden, ids, budget, phase, seq_lens.data(), env);
+    auto drafts =
+        mtp_predictor_->Draft(bsz, hidden, ids, budget, phase, seq_lens.data(), block_counts.data(), env);
 
     // Store them on the sequences so the next step's Setup can inject them.
     // Layout is [step][batch], so draft k for row i is at k*bsz + i.

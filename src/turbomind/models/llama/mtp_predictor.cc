@@ -256,6 +256,7 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
                                              int                 num_draft_tokens,
                                              int                 phase,
                                              const int*          seq_lens,
+                                             const int*          block_counts,
                                              TensorMap&          env)
 {
     TM_CHECK_GT(batch_size, 0);
@@ -375,9 +376,33 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     // absolute base does not currently matter -- see the probe below. The fix
     // is kept because it is correct and must precede any seeding of real
     // history, which would otherwise be written to shifted positions.
+    // Bound by ALLOCATED capacity, not by slack in the last block.
+    //
+    // The old rule was `block_len - (seq_len % block_len)`, i.e. only the room
+    // left inside the current block, and zero when a row sits exactly on a
+    // boundary. That was right while the scheduler allocated for seq_len alone.
+    //
+    // The reservation now covers seq_len + inflight_new_tokens, so a row that
+    // already carries drafts has whole blocks allocated beyond its tip. Capping
+    // at the block remainder throws that away: roughly one step in sixteen
+    // drafts nothing at all, and three more draft fewer than K, purely because
+    // of where the tip happens to fall.
+    //
+    // The hazard the old rule guarded against is real -- the block iterator
+    // indexes block_ptrs_ with no bounds check, so walking past the last
+    // allocated block reads another sequence's pointer, silently. So the cap
+    // stays; it is now derived from how many blocks the row actually owns.
     const int block_len  = block_seq_len_;
     int       max_extend = num_draft_tokens;
-    if (block_len > 0) {
+    if (block_len > 0 && block_counts) {
+        for (int i = 0; i < batch_size; ++i) {
+            const int capacity = block_counts[i] * block_len;
+            max_extend         = std::min(max_extend, capacity - seq_lens[i]);
+        }
+        max_extend = std::max(max_extend, 0);
+    }
+    else if (block_len > 0) {
+        // No block counts supplied: fall back to the conservative rule.
         for (int i = 0; i < batch_size; ++i) {
             const int len   = seq_lens[i];
             const int slack = (len % block_len == 0) ? 0 : block_len - (len % block_len);
