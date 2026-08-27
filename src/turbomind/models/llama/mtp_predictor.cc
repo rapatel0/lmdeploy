@@ -498,6 +498,28 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
         // Decode phase: the draft always extends one token per sequence.
         Tensor out = DecodeStep(std::move(projected), phase, env);
 
+        // Synchronise after each draft step, so a fault is attributed here.
+        //
+        // CUDA errors are asynchronous: cudaGetLastError reports a fault from
+        // any earlier kernel on the stream. This one surfaced at the
+        // TM_CUDA_CHECK inside invokeFlattenKV_v2 -- the target's prefill path,
+        // which the draft never enters -- and I spent several rounds
+        // investigating that kernel before noticing the draft's own log line
+        // immediately precedes the crash and that no verification forward had
+        // run at all.
+        //
+        // The sync costs a stall per draft step and buys an accurate location.
+        // Remove it once the fault is found.
+        {
+            const auto err = cudaStreamSynchronize(stream);
+            TM_CHECK_EQ(err, cudaSuccess)
+                << "MTP draft step " << step << " of " << effective_drafts << " faulted: "
+                << cudaGetErrorString(err) << " (batch=" << batch_size << " seq_len[0]="
+                << (batch_size > 0 ? seq_lens[0] : -1)
+                << " blocks[0]=" << (block_counts ? block_counts[0] : -1)
+                << " max_extend=" << max_extend << " advanced=" << advanced << ")";
+        }
+
         Tensor logits = logits_fn_(out);
 
         // Write this step's tokens as the contiguous run for step `step`.
