@@ -155,6 +155,43 @@ for f in bench_k0.json "bench_k${K}.json" identity.json; do
         FAILED=1
     }
 done
+
+# The point of the exercise: speculation must be FASTER.
+#
+# Identical output plus a working accept-length meter proves correctness, not
+# value. A build that verifies perfectly and runs slower than the baseline has
+# not delivered anything, and without this check the job would report success
+# for it.
+if [ -s "${RESULTS}/bench_k0.json" ] && [ -s "${RESULTS}/bench_k${K}.json" ]; then
+    python3 - "${RESULTS}/bench_k0.json" "${RESULTS}/bench_k${K}.json" <<'PY' || FAILED=1
+import json, sys
+
+try:
+    with open(sys.argv[1]) as h:
+        base = json.load(h)
+    with open(sys.argv[2]) as h:
+        spec = json.load(h)
+except (OSError, json.JSONDecodeError) as exc:
+    print(f"FAIL: cannot read benchmark results: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+b = base.get("mean_decode_tok_s")
+s = spec.get("mean_decode_tok_s")
+if not b or not s:
+    print("FAIL: benchmark results carry no mean_decode_tok_s", file=sys.stderr)
+    raise SystemExit(1)
+
+ratio = s / b
+print(f"  decode throughput ratio K=4/K=0: {ratio:.3f}x")
+if ratio <= 1.0:
+    print(
+        f"FAIL: speculation is not faster ({ratio:.3f}x); "
+        "drafting costs more than the accepted tokens save",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+fi
 if [ "${FAILED}" -ne 0 ]; then
     echo "SPEC_VERIFY_FAIL" >&2
     exit 9
