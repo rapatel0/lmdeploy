@@ -604,6 +604,17 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     // for exactly this. Running Setup against the target's phase is what
     // corrupted the target's plan; running it against the draft's own does not.
     if (mtp_predictor_) {
+        // Flush first. UnifiedAttentionLayer::Setup stages block pointers in
+        // SHARED host buffers -- block_ptrs_buf_, block_ptrs_offsets_buf_,
+        // rope_base_buf_ -- and hands them to BatchCopy, which records the
+        // source POINTER and defers the read until copy.Run().
+        //
+        // So without this, the draft's Setup refills those buffers before the
+        // target's queued copy has executed, and both phases end up with the
+        // draft's block table. The target would attend through the draft's
+        // pointers, silently.
+        copy.Run();
+
         mtp_predictor_->SetupAttention(env);
     }
 }
