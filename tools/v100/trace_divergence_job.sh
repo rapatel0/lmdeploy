@@ -13,7 +13,12 @@ SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/nul
 RESULTS=/results/$(date +%Y%m%d_%H%M%S)-spectrace-${SRC_COMMIT}
 mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
-finish() { rc=$?; echo "$rc" >"${RESULTS}/exit_code"; [ -f "${RESULTS}/completed" ] || echo KILLED >"${RESULTS}/incomplete"; echo "artifacts in ${RESULTS} (exit ${rc})"; }
+finish() {
+    rc=$?
+    echo "$rc" >"${RESULTS}/exit_code"
+    [ -f "${RESULTS}/completed" ] || echo KILLED >"${RESULTS}/incomplete"
+    echo "artifacts in ${RESULTS} (exit ${rc})"
+}
 trap finish EXIT
 
 cat /src/SOURCE_STAMP
@@ -27,34 +32,42 @@ tail -2 "${RESULTS}/build.log"
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 
-MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
+export TRACE_MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
 
-# ONE prompt. Multi-row batches interleave rows in the trace; a single
-# sequence makes the two traces line-by-line comparable.
-cat > /tmp/one_prompt.py <<'PYEOF'
+# The five-row identity batch, shortened to eight outputs. The remaining
+# force-reject split reproduces only with multiple rows; the same prompt alone
+# is byte-identical for 16 tokens.
+cat >/tmp/one_prompt.py <<'PYEOF'
 import json, os, sys
 from lmdeploy import GenerationConfig, TurbomindEngineConfig
 from lmdeploy.api import pipeline
 k = int(sys.argv[1])
 if len(sys.argv) > 2 and sys.argv[2] == "force":
     os.environ["TM_MTP_FORCE_REJECT"] = "1"
-pipe = pipeline("/models/Qwen3.8-27B-FP8",
+pipe = pipeline(os.environ["TRACE_MODEL"],
     backend_config=TurbomindEngineConfig(tp=4, session_len=4096,
         num_draft_tokens=k, enable_prefix_caching=False, cache_generation="none"),
     log_level="INFO")
-cfg = GenerationConfig(max_new_tokens=16, temperature=0.0, top_k=1, do_sample=False)
-out = pipe(["Write one sentence explaining why the sky appears blue."], gen_config=cfg)[0]
-json.dump({"token_ids": list(out.token_ids or []), "text": out.text or ""},
+cfg = GenerationConfig(max_new_tokens=8, temperature=0.0, top_k=1, do_sample=False)
+prompts = [
+    "What is the capital city of Japan? Answer in one word.",
+    "List the first eight prime numbers, separated by commas.",
+    "Write one sentence explaining why the sky appears blue.",
+    "Count from 1 to 20, separated by spaces.",
+    "Name three primary colours.",
+]
+outs = pipe(prompts, gen_config=cfg)
+json.dump([{"token_ids": list(out.token_ids or []), "text": out.text or ""} for out in outs],
           open(f"/tmp/trace_k{k}.json", "w"))
 pipe.close()
 PYEOF
 
 echo "=== K=0 trace ==="
-TM_SPEC_TRACE=1 python3 /tmp/one_prompt.py 0 2>&1 | grep -aE "\[trace\]|\[reject\]" > "${RESULTS}/trace_k0.log"
+TM_SPEC_TRACE=1 python3 /tmp/one_prompt.py 0 2>&1 | grep -aE "\[trace\]|\[reject\]" >"${RESULTS}/trace_k0.log"
 wc -l "${RESULTS}/trace_k0.log"
 
 echo "=== K=4 trace ==="
-TM_SPEC_TRACE=1 python3 /tmp/one_prompt.py 4 force 2>&1 | grep -aE "\[trace\]|\[reject\]" > "${RESULTS}/trace_k4.log"
+TM_SPEC_TRACE=1 python3 /tmp/one_prompt.py 4 force 2>&1 | grep -aE "\[trace\]|\[reject\]" >"${RESULTS}/trace_k4.log"
 wc -l "${RESULTS}/trace_k4.log"
 
 cp /tmp/trace_k0.json /tmp/trace_k4.json "${RESULTS}/" 2>/dev/null
@@ -63,16 +76,18 @@ echo "=== first divergence ==="
 python3 - "${RESULTS}" <<'PYEOF'
 import json, sys, re
 d = sys.argv[1]
-k0 = json.load(open(f"{d}/trace_k0.json"))["token_ids"]
-k4 = json.load(open(f"{d}/trace_k4.json"))["token_ids"]
-n = min(len(k0), len(k4))
-div = next((i for i in range(n) if k0[i] != k4[i]), None)
-print(f"K=0 tokens ({len(k0)}): {k0[:16]}")
-print(f"K=4 tokens ({len(k4)}): {k4[:16]}")
-if div is None:
-    print(f"IDENTICAL for {n} tokens" + ("" if len(k0)==len(k4) else " but lengths differ"))
-else:
-    print(f"FIRST DIVERGENCE at output position {div}: base={k0[div]} spec={k4[div]}")
+base = json.load(open(f"{d}/trace_k0.json"))
+spec = json.load(open(f"{d}/trace_k4.json"))
+for row, (b, s) in enumerate(zip(base, spec)):
+    k0, k4 = b["token_ids"], s["token_ids"]
+    n = min(len(k0), len(k4))
+    div = next((i for i in range(n) if k0[i] != k4[i]), None)
+    print(f"row {row} K=0: {k0}")
+    print(f"row {row} K=4: {k4}")
+    if div is None:
+        print(f"row {row} IDENTICAL for {n} tokens" + ("" if len(k0)==len(k4) else " but lengths differ"))
+    else:
+        print(f"row {row} FIRST DIVERGENCE at output position {div}: base={k0[div]} spec={k4[div]}")
 # TP=4 prints every line 4x; dedupe consecutive duplicates for readability.
 def dedupe(path):
     seen, out = None, []
@@ -82,7 +97,7 @@ def dedupe(path):
             out.append(m.group(0)); seen = m.group(0)
     return out
 print("--- K=4 trace around the divergence (deduped) ---")
-for line in dedupe(f"{d}/trace_k4.log")[:60]:
+for line in dedupe(f"{d}/trace_k4.log")[-100:]:
     print(" ", line)
 PYEOF
 

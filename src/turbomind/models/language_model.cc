@@ -906,7 +906,9 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             const char* s = std::getenv("TM_SPEC_TRACE");
             return s && s[0] == '1';
         }();
-        if (TM_UNLIKELY(spec_trace) && d.rows.size() <= 8) {
+        // Skip prompt/warm-up slabs: the trace is about cross-step decode
+        // transitions, and dumping thousands of input ids hides those lines.
+        if (TM_UNLIKELY(spec_trace) && d.rows.size() <= 8 && input_ids.size() <= 64) {
             Buffer_<int> h_ids{input_ids.size(), kCPU};
             core::Copy(input_ids, input_ids.size(), h_ids);
             core::Context::stream().Sync();
