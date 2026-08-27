@@ -122,12 +122,26 @@ public:
         // A verification step is one where a generating row carries drafts to
         // check. Detected from the sequences themselves rather than from a
         // flag, so it cannot disagree with what the batch actually contains.
-        bool spec_verify = false;
-        for (int i = 0; i < rc.size(); ++i) {
-            const auto& c = *rc[i];
-            if (c.generating && c.num_drafts > 0 && c.input_len > 1) {
-                spec_verify = true;
-                break;
+        // Uniform across the batch, or not a verification step at all.
+        //
+        // This decides whether to select one position per row or input_len of
+        // them, and the logits shape follows from that choice. If one row were
+        // treated as verifying while another was not, the resulting tensor
+        // would be neither bsz nor bsz*(K+1) rows and the rejection kernel
+        // would read rows belonging to the wrong sequence.
+        //
+        // Same predicate as LanguageModel::HasDraftsToVerify. All three sites
+        // -- executor, Forward, and here -- must agree, so all three ask for
+        // uniformity rather than for "any row has drafts".
+        bool spec_verify = rc.size() > 0;
+        if (spec_verify) {
+            const int n = rc[0]->num_drafts;
+            for (int i = 0; i < rc.size(); ++i) {
+                const auto& c = *rc[i];
+                if (!c.generating || c.num_drafts != n || n <= 0 || c.input_len <= 1) {
+                    spec_verify = false;
+                    break;
+                }
             }
         }
 

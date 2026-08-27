@@ -196,18 +196,40 @@ struct LanguageModel::Impl {
     bool HasDraftsToVerify(int phase) const
     {
         const auto& d = data_.at(phase);
+        if (d.rows.empty()) {
+            return false;
+        }
+
+        // EVERY row must carry the SAME draft count, not merely some row.
+        //
+        // Verification submits 1 + num_drafts tokens per row and reads back
+        // logits for each submitted position, so it only works when the batch
+        // is uniform. A sequence that joins mid-stream has num_drafts == 0
+        // while the others carry K: input_processor then selects a different
+        // number of positions per row, the logits are no longer
+        // bsz*(K+1) rows, and the shape assertion in RejectDrafts aborts the
+        // whole engine.
+        //
+        // Requiring uniformity turns that abort into one skipped step of
+        // speculation: the batch decodes normally, every row drafts again at
+        // the end of it, and the next step is uniform. Correctness is never at
+        // stake -- only one step's worth of speedup.
+        //
+        // The Setup-time snapshot, not the live field: this runs on the
+        // executor thread while the main thread may already be scheduling the
+        // next batch, so reading the sequence directly would race with Update's
+        // publish. The snapshot is what this batch was actually built from, and
+        // is what Forward's gate uses too, so the two cannot disagree.
+        const int n = d.num_drafts[0];
+        if (n <= 0) {
+            return false;
+        }
         for (size_t i = 0; i < d.rows.size(); ++i) {
-            // The Setup-time snapshot, not the live field. This runs on the
-            // executor thread while the main thread may already be scheduling
-            // the next batch, so reading the sequence directly would race with
-            // Update's publish. The snapshot is exactly the state this batch
-            // was built from, which is also what Forward's own gate uses -- so
-            // the two cannot disagree.
-            if (d.rows[i] && d.rows[i]->generating && d.num_drafts[i] > 0) {
-                return true;
+            if (!d.rows[i] || !d.rows[i]->generating || d.num_drafts[i] != n) {
+                return false;
             }
         }
-        return false;
+        return true;
     }
 
     /// Is this a real decode step? `generating` alone is not enough: the last
@@ -717,13 +739,10 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     // and the tokens it will keep are decided by kReject and kRollback, from
     // the logits, not by sampling. Letting the sampler run here would append a
     // token on top of the accepted prefix and corrupt the sequence.
-    bool spec_verify = false;
-    for (int i = 0; i < (int)d.rows.size(); ++i) {
-        if (d.rows[i] && d.rows[i]->generating && d.num_drafts[i] > 0 && !d.autoregres[i]) {
-            spec_verify = true;
-            break;
-        }
-    }
+    // The SAME predicate the executor used to choose this path. Deriving it
+    // twice from the same snapshot is what keeps the two from disagreeing --
+    // and a disagreement here is the `verify_logits_` abort.
+    const bool spec_verify = HasDraftsToVerify(phase);
     if (spec_verify) {
         // Keep the logits for kReject; it runs after Unprep, by which point the
         // env map has been rebuilt.
