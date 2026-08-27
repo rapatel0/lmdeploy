@@ -856,12 +856,30 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
         Copy(host, drafts);
     }
 
-    const int vocab_size = weights_.vocab_size;
+    // The PADDED vocab size, because that is the row stride of the logits.
+    //
+    // PostEmbedding allocates [bsz, output_dim * tp_size], which is
+    // vocab_size_padded, not weights_.vocab_size. Those differ whenever the
+    // vocabulary is not a multiple of the tensor-parallel degree, and Qwen3.5
+    // is such a model. Striding rows by the unpadded size would walk each
+    // successive position a little further off the start of its row -- an
+    // argmax over the wrong window, so drafts get rejected for no reason and
+    // acceptance quietly collapses toward zero instead of failing.
+    const int vocab_stride = weights_.output->output_dim * tp_size_;
 
-    // verify_logits_ is [bsz*(K+1), vocab], because Setup selected every
+    // verify_logits_ is [bsz*(K+1), vocab_stride], because Setup selected every
     // submitted position rather than only the last one.
-    auto result = GreedyReject(
-        verify_logits_.raw_data(), drafts.data(), bsz, K, vocab_size, weights_.data_type, st);
+    TM_CHECK_EQ((int)verify_logits_.shape(1), vocab_stride);
+    TM_CHECK_EQ((int)verify_logits_.shape(0), bsz * (K + 1));
+
+    auto result = GreedyReject(verify_logits_.raw_data(),
+                               drafts.data(),
+                               bsz,
+                               K,
+                               weights_.vocab_size,  // argmax searches only the real vocabulary
+                               vocab_stride,         // rows are strided by the padded size
+                               weights_.data_type,
+                               st);
 
     env.produce("num_accepted", result.num_accepted);
     env.produce("bonus_tokens", result.bonus_tokens);

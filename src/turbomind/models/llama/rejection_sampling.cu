@@ -18,11 +18,13 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
                                    const T*   logits,         // [batch, K+1, vocab_size]
                                    const int* draft_tokens,   // [batch, K]
                                    int        K,
-                                   int        vocab_size)
+                                   int        vocab_size,
+                                   int        vocab_size_padded)
 {
     const int b = blockIdx.x;
 
-    const T*   batch_logits = logits + (size_t)b * (K + 1) * vocab_size;
+    // Stride by the PADDED size: that is how the logits are allocated.
+    const T*   batch_logits = logits + (size_t)b * (K + 1) * vocab_size_padded;
     const int* batch_drafts = draft_tokens + (size_t)b * K;
 
     // Shared memory for block-level argmax reduction
@@ -39,7 +41,7 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
     int bonus    = 0;
 
     for (int pos = 0; pos <= K; ++pos) {
-        const T* pos_logits = batch_logits + (size_t)pos * vocab_size;
+        const T* pos_logits = batch_logits + (size_t)pos * vocab_size_padded;
 
         // Each thread finds local max over its strided elements
         float max_val = -1e30f;
@@ -133,6 +135,7 @@ RejectionResult GreedyReject(const void*  verification_logits,
                               int          batch_size,
                               int          K,
                               int          vocab_size,
+                              int          vocab_size_padded,
                               DataType     dtype,
                               cudaStream_t stream)
 {
@@ -152,18 +155,18 @@ RejectionResult GreedyReject(const void*  verification_logits,
 
     if (dtype == DataType::kFloat16) {
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, (const half*)verification_logits, draft_tokens, K, vocab_size);
+            d_num_accepted, d_bonus_tokens, (const half*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
     }
 #ifdef ENABLE_BF16
     else if (dtype == DataType::kBfloat16) {
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, (const __nv_bfloat16*)verification_logits, draft_tokens, K, vocab_size);
+            d_num_accepted, d_bonus_tokens, (const __nv_bfloat16*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
     }
 #endif
     else {
         // Fallback: treat as float
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, (const float*)verification_logits, draft_tokens, K, vocab_size);
+            d_num_accepted, d_bonus_tokens, (const float*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
     }
 
     return result;
