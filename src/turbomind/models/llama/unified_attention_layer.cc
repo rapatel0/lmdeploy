@@ -435,6 +435,30 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
 
         // One query token per row for the draft; the key length is unchanged,
         // because the draft attends over the same accepted history.
+        // The KV this row will write must fit the blocks it owns.
+        //
+        // invokeProcessKV_v2 writes up to k_len tokens into block_ptrs, which
+        // was uploaded from block_ids above. Overrunning dereferences a pointer
+        // belonging to another sequence, or past the array, and surfaces as
+        //
+        //   kv_cache_utils_v2.cu: CUDA error: an illegal memory access
+        //
+        // naming neither the row nor the amount. Checking it here, where both
+        // numbers are in hand, turns that into a precise failure.
+        {
+            const int bs = engine_param_.cache_block_seq_len;
+            if (bs > 0) {
+                const int k_len_row = c.history_len + c.inflight_input_len + c.input_len
+                                      + (decode_shape ? c.num_drafts : 0);
+                const int need = (k_len_row + bs - 1) / bs;
+                TM_CHECK_LE(need, (int)c.block_ids.size())
+                    << "row " << i << " needs " << need << " KV blocks for " << k_len_row
+                    << " keys but owns " << c.block_ids.size() << " (history=" << c.history_len
+                    << " inflight=" << c.inflight_input_len << " input=" << c.input_len
+                    << " drafts=" << c.num_drafts << " decode_shape=" << (int)decode_shape << ")";
+            }
+        }
+
         const int q_len = decode_shape ? 1 : c.input_len;
 
         // The draft grows its key length by one per draft step via
