@@ -1494,6 +1494,39 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // A no-commit row emits nothing: no bonus token, no length change.
         // Its next step decodes normally and produces one token there.
         if (no_commit_[i]) {
+            // The next step's input must be the last COMMITTED token, not
+            // the bonus.
+            //
+            // RejectDrafts wrote the bonus into autoreg_ids_ (it is the
+            // right conditioning tip for a row that commits), and this
+            // branch used to leave it there. The next step is an ordinary
+            // autoregressive decode -- skip_draft guarantees that -- and its
+            // input token comes from autoreg_ids_, at the position of the
+            // committed tip. Feeding the uncommitted bonus there computes
+            // the successor of a token the sequence does not contain,
+            // overwrites the real tip's KV with the phantom's, and commits
+            // the result. The baseline computes the successor of the real
+            // tip: output diverges at the first rejected verification and
+            // never recovers. This is the position-2 identity divergence
+            // the force-reject probe isolated to the verification path.
+            //
+            // token_ids[base - 1] is the real tip: base = c.seq_len points
+            // one past the last committed token, and base >= 1 always,
+            // because at minimum the prompt is committed. Re-submitting the
+            // tip is exactly correct on both remaining state carriers: its
+            // KV write is idempotent (same token, same position), and the
+            // restored GDN snapshot predates the tip's own advance -- the
+            // snapshot was taken before the verification forward, which is
+            // the forward that would have advanced the tip through GDN --
+            // so the re-submit performs that advance for the first time.
+            //
+            // Update also reads this value and writes it at token_ids[base],
+            // a scratch slot past the tip: sequence_length is unchanged, so
+            // new_tokens is 0, nothing is appended, and the next real
+            // commit overwrites the slot. Harmless on that path, load-
+            // bearing on the input path.
+            out_ids[i] = c.token_ids[base - 1];
+
             // Count the step BEFORE bailing out.
             //
             // A rejected verification is still a forward that produced zero
