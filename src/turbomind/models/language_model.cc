@@ -149,6 +149,11 @@ struct LanguageModel::Impl {
     /// `finished` itself.
     std::vector<char> eos_hit_;
 
+    /// Per row, did this verification commit nothing at all? Set when a draft
+    /// was rejected on a model with recurrent state: the snapshot is restored
+    /// and the tip does not move, so state and tip stay aligned.
+    std::vector<char> no_commit_;
+
     /// Per row, must this sequence's recurrent state be rewound? Set when the
     /// row rejected a draft; rows that accepted everything must NOT be rewound.
     std::vector<char> gdn_restore_;
@@ -1036,6 +1041,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     bool restore_gdn = false;
     eos_hit_.assign(bsz, false);
     gdn_restore_.assign(bsz, 0);
+    no_commit_.assign(bsz, 0);
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
@@ -1079,12 +1085,33 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         //
         // Cost: one forward either way. Value depends on the per-draft accept
         // rate p as p^K * (K+1) + (1 - p^K), which is never below 1.0.
+        // On rejection, commit NOTHING from this step.
+        //
+        // Not even the bonus token, and that is the part that took several
+        // wrong attempts to get right. Restoring the snapshot rewinds the
+        // recurrent state to before this forward. A committed bonus token would
+        // then sit in the sequence with no corresponding state update -- it
+        // never passed through GDN in a way that survived the restore -- and
+        // the next forward begins past it, so nothing ever fixes that. The gap
+        // grows by one token per rejection.
+        //
+        // Committing nothing keeps state and tip exactly aligned: the state is
+        // the pre-forward one, the tip never moved, and the next forward starts
+        // where the state ends. Contiguous by construction rather than by
+        // arithmetic I have already got wrong three times.
+        //
+        // The row then makes no progress this step, so it must not draft again
+        // immediately or it would retry the same failing prediction forever.
+        // num_drafts is cleared, which sends it down the ordinary decode path
+        // next step: one token, state advanced normally, and drafting resumes
+        // after that.
         if (gdn_rollback_ && n < d.num_drafts[i]) {
-            n              = 0;
-            accepted[i]    = 0;
-            clamped        = true;
+            n               = 0;
+            accepted[i]     = 0;
+            clamped         = true;
             gdn_restore_[i] = 1;
-            restore_gdn    = true;
+            restore_gdn     = true;
+            no_commit_[i]   = 1;
         }
 
         // `seq_len` still points at the tip from before this forward, because
@@ -1158,6 +1185,14 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         for (int k = 1; k < n; ++k) {
             c.token_ids[base + k] = c.draft_tokens[k];
         }
+
+        // A no-commit row emits nothing: no bonus token, no length change.
+        // Its next step decodes normally and produces one token there.
+        if (no_commit_[i]) {
+            c.num_drafts = 0;  // decode next step instead of retrying the miss
+            continue;
+        }
+
         c.token_ids[base + n] = bonus[i];
 
         // What Update puts at token_ids[base].
