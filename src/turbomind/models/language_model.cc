@@ -215,6 +215,23 @@ struct LanguageModel::Impl {
         // the end of it, and the next step is uniform. Correctness is never at
         // stake -- only one step's worth of speedup.
         //
+        // KNOWN LIMITATION, and it is not one step in the worst case.
+        //
+        // A row still prefilling is not `generating`, so it blocks speculation
+        // for the WHOLE batch until its prompt is consumed. A 4096-token
+        // prompt at 1024-token chunks suppresses speculation for four steps
+        // across every other sequence, and continuous arrivals can suppress it
+        // for much longer. Single-stream decoding -- what the identity and
+        // throughput checks measure -- is unaffected, because there is only
+        // ever one row.
+        //
+        // Lifting this means verifying only the rows that carry drafts while
+        // the others take their normal path in the same forward, which needs
+        // per-row position selection in input_processor rather than the
+        // batch-wide flag it uses now, and a rejection kernel that tolerates a
+        // ragged [row, positions] layout. That is real work and it belongs
+        // after the base case is proven, not before it.
+        //
         // The Setup-time snapshot, not the live field: this runs on the
         // executor thread while the main thread may already be scheduling the
         // next batch, so reading the sequence directly would race with Update's
