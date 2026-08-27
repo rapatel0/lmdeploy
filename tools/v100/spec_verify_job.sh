@@ -106,6 +106,22 @@ stdbuf -oL -eL python3 /src/tools/v100/verify_spec_identity.py \
 IDENT_RC=$?
 
 echo
+echo "=== 1b. discriminating probe: identity under forced rejection ==="
+# TM_MTP_FORCE_REJECT=1 discards every acceptance while the verification
+# pipeline still runs. Zero tokens commit from any verification, so if this
+# arm ALSO diverges from K=0, the verification forward itself leaks state;
+# if it is identical, the leak is in the accept path. One run, one bit.
+TM_MTP_FORCE_REJECT=1 stdbuf -oL -eL python3 /src/tools/v100/verify_spec_identity.py \
+    --model-dir "${MODEL}" --tp "${TP}" --num-draft-tokens "${K}" \
+    --json-out "${RESULTS}/identity_force_reject.json" 2>&1
+FORCE_RC=$?
+if [ "${FORCE_RC}" -eq 0 ]; then
+    echo "PROBE: identical under forced rejection -> the leak is in the ACCEPT path"
+else
+    echo "PROBE: diverges even with zero accepts -> the VERIFICATION FORWARD leaks state"
+fi
+
+echo
 echo "=== 2. accept length reported by the engine ==="
 ACC="$(grep -aoE '\[MTP\] accept length [0-9.]+ tokens/step over [0-9]+ steps' "${RESULTS}/console.log" | tail -3)"
 if [ -z "${ACC}" ]; then

@@ -1188,6 +1188,35 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
                                weights_.data_type,
                                st);
 
+    // TM_MTP_FORCE_REJECT=1: discard every acceptance, keeping the whole
+    // verification pipeline running. This separates the two remaining
+    // suspects for the position-2 identity divergence, which predates the
+    // prefill fill and survives near-zero acceptance:
+    //
+    //   With zero accepts, every verification is a no-commit step -- GDN
+    //   restored, tip unmoved, next step an ordinary decode. If the output
+    //   STILL diverges from K=0, the verification forward itself leaks
+    //   state (an incomplete GDN restore, or a target KV write the next
+    //   step does not rewrite). If it becomes byte-identical, the leak is
+    //   in the accept-commit path or in chunked-vs-sequential GDN numerics
+    //   on accepted runs -- reachable only through an accept.
+    //
+    // Under gdn_rollback_ (this model: 48 GDN layers), a forced n = 0 puts
+    // every row on the no-commit path in Rollback: nothing is committed,
+    // not even the bonus, the GDN snapshot is restored, and the row takes
+    // an ordinary decode next step. The committed sequence is therefore
+    // produced ENTIRELY by ordinary decode steps -- which is the point.
+    // (The bonus GreedyReject computed for a would-have-accepted row is
+    // target[n], not target[0]; harmless here because no_commit swallows
+    // it before anything reads it.)
+    static const bool force_reject = [] {
+        const char* s = std::getenv("TM_MTP_FORCE_REJECT");
+        return s && s[0] == '1';
+    }();
+    if (TM_UNLIKELY(force_reject)) {
+        Clear(result.num_accepted);
+    }
+
     // Alignment diagnostic for the first few verifications: the drafts against
     // the argmax the verifier computed at each position. The three failure
     // shapes it separates:
