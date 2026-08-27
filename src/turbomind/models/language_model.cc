@@ -144,6 +144,11 @@ struct LanguageModel::Impl {
     /// row of a [bsz*(K+1), hidden] block carries the accepted tip.
     std::vector<int> last_accepted_;
 
+    /// Per row, did this verification commit an EOS token? A verification step
+    /// skips Generation, so stop_criteria never runs and Rollback must set
+    /// `finished` itself.
+    std::vector<char> eos_hit_;
+
     /// Engine parameters, retained for the speculation settings.
     const EngineParam engine_param_;
 
@@ -998,7 +1003,8 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // their own offsets and covered by the advanced sequence_length. Update's
     // `new_tokens` calculation then picks up the whole run, because it appends
     // token_ids[seq_len - new_tokens .. seq_len) rather than a single token.
-    bool         clamped = false;
+    bool clamped = false;
+    eos_hit_.assign(bsz, false);
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
@@ -1041,6 +1047,31 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             clamped     = true;
         }
 
+        // Stop at the first EOS inside the accepted run.
+        //
+        // A verification step skips Generation entirely, so stop_criteria never
+        // runs and nothing else inspects the accepted tokens. If a draft that
+        // happens to be EOS is accepted, the sequence would continue past the
+        // end of its own answer and run to max_new_tokens, while the baseline
+        // stops. That is a user-visible divergence -- the model rambles -- and
+        // the identity check would report it as a length mismatch with no hint
+        // that EOS was the cause.
+        //
+        // Truncating to k + 1 keeps the EOS token itself and drops the rest,
+        // which is what ordinary decode produces.
+        const auto& eos = c.gen_cfg.eos_ids;
+        if (!eos.empty()) {
+            for (int k = 0; k < n; ++k) {
+                if (std::find(eos.begin(), eos.end(), c.draft_tokens[k]) != eos.end()) {
+                    n           = k + 1;
+                    accepted[i] = n;
+                    clamped     = true;
+                    eos_hit_[i] = true;
+                    break;
+                }
+            }
+        }
+
         // The accepted drafts come FIRST, the bonus token LAST.
         //
         // This is forced by what each logit predicts. The forward submitted
@@ -1074,6 +1105,13 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // dead: the next forward starts at this length and overwrites them.
         seq_lens[i] = base + 1 + n;
 
+        // The bonus token is the last one committed, so EOS there ends the
+        // sequence without truncating anything.
+        if (!eos.empty() && !eos_hit_[i]
+            && std::find(eos.begin(), eos.end(), bonus[i]) != eos.end()) {
+            eos_hit_[i] = true;
+        }
+
         // Where this row's accepted tip sits inside its K+1 hidden block, for
         // the draft that runs next on this same env.
         last_accepted_[i] = n;
@@ -1089,6 +1127,24 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // advanced lengths first would make it write each token one full accepted
     // run too far into its copy of the sequence.
     //
+    // Mark EOS-terminated rows finished.
+    //
+    // Engine::Update reads `finished` to retire a sequence, and on a
+    // verification step nothing else sets it: stop_criteria belongs to
+    // Generation, which this path skips. Without this the row keeps generating
+    // after emitting EOS.
+    if (std::find(eos_hit_.begin(), eos_hit_.begin() + bsz, true) != eos_hit_.begin() + bsz) {
+        Buffer_<bool> host{bsz, kCPU};
+        Copy(finished_.front().buffer().slice(0, bsz), host);
+        core::Context::stream().Sync();
+        for (int i = 0; i < bsz; ++i) {
+            if (eos_hit_[i]) {
+                host[i] = true;
+            }
+        }
+        Copy(host, finished_.front().buffer().slice(0, bsz));
+    }
+
     // Publish the clamped acceptance before Generation reads it.
     //
     // Generation::Rollback appends one token per accepted slot into its own
