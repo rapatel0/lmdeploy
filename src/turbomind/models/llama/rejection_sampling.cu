@@ -33,7 +33,9 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
     __shared__ float s_max_val[32];
     __shared__ int   s_max_idx[32];
     // Shared memory for broadcasting argmax result to all threads
-    __shared__ int s_argmax_token;
+    __shared__ int   s_argmax_token;
+    __shared__ float s_argmax_val;
+    __shared__ int   s_tied;
 
     const int warp_id   = threadIdx.x / 32;
     const int lane_id   = threadIdx.x % 32;
@@ -139,16 +141,46 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
             // cause. Falling back to 0 keeps it in range; the draft still gets
             // rejected, because a real draft will not equal 0 by chance.
             s_argmax_token = (max_idx == INT_MAX) ? 0 : max_idx;
+            s_argmax_val   = max_val;
+            s_tied         = 0;
         }
         __syncthreads();
 
-        int target_token = s_argmax_token;
+        // Is the maximum unique?
+        //
+        // This kernel breaks ties toward the lowest index; TurboMind's sampler
+        // uses cub::BlockReduce with `a.u > b.u ? a : b`, which keeps whichever
+        // operand the reduction tree placed first. Neither rule can be derived
+        // from the other, so on an exactly tied logit the two would pick
+        // different tokens -- and an accepted draft is committed verbatim, so
+        // the difference lands in the output and identity fails at that one
+        // position.
+        //
+        // Rather than document that as a residual risk, refuse to speculate on
+        // it: if the winning value occurs more than once, force a rejection.
+        // The step then commits nothing and the next one decodes through the
+        // sampler, which resolves the tie exactly as the K=0 baseline does.
+        // Identity holds by construction instead of by luck.
+        //
+        // Cost is one lost speculation at a tied position, which is rare.
+        for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
+            if (static_cast<float>(pos_logits[i]) == s_argmax_val && i != s_argmax_token) {
+                s_tied = 1;
+                break;
+            }
+        }
+        __syncthreads();
+
+        // The real argmax. Used as the bonus token, which must always be a
+        // valid id, and compared against drafts only when the max is unique.
+        const int target_token = s_argmax_token;
 
         // Compare with draft token (positions 0..K-1)
         // Position K is the "bonus" position — no draft to compare against
         if (pos < K) {
             int draft = batch_drafts[pos];
-            if (draft != target_token && accepted == K) {
+            // A tied maximum forces a mismatch, whatever the draft holds.
+            if ((s_tied || draft != target_token) && accepted == K) {
                 // First mismatch found
                 accepted = pos;
                 bonus    = target_token;
@@ -156,6 +188,25 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
         }
         else {
             // pos == K: this is the bonus token position
+            //
+            // A tie HERE matters too. The bonus is committed on full
+            // acceptance, so a tied argmax at this position would put the
+            // kernel's pick into the sequence where the sampler might have
+            // chosen the other tied token. Treat it as a mismatch at the last
+            // draft, which under all-or-nothing means the step commits nothing
+            // and the next one decodes through the sampler.
+            if (s_tied && accepted == K) {
+                accepted = K > 0 ? K - 1 : 0;
+                // The bonus must still be a real token id. On a model with
+                // recurrent state this row commits nothing, so the value is
+                // unused -- but without that policy the caller commits
+                // `accepted` drafts plus this bonus, and leaving it at its
+                // initial 0 would write token 0 into the sequence.
+                //
+                // The last accepted draft is the correct continuation: it was
+                // verified against a unique maximum at its own position.
+                bonus = (K > 0) ? batch_drafts[K - 1] : target_token;
+            }
             if (accepted == K) {
                 // All K drafts matched; bonus = argmax(logits[K])
                 bonus = target_token;
