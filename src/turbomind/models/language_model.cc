@@ -195,6 +195,10 @@ struct LanguageModel::Impl {
     /// and the tip does not move, so state and tip stay aligned.
     std::vector<int> no_commit_;
 
+    /// Per row, an accepted draft was EOS. Commit the accepted drafts through
+    /// EOS but not the verifier's bonus token after it.
+    std::vector<int> no_bonus_;
+
     /// Per row, must this sequence's recurrent state be rewound? Set when the
     /// row rejected a draft; rows that accepted everything must NOT be rewound.
     std::vector<char> gdn_restore_;
@@ -1383,6 +1387,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     eos_hit_.assign(bsz, false);
     gdn_restore_.assign(bsz, 0);
     no_commit_.assign(bsz, 0);
+    no_bonus_.assign(bsz, 0);
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
@@ -1509,6 +1514,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
                     accepted[i] = n;
                     clamped     = true;
                     eos_hit_[i] = true;
+                    no_bonus_[i] = 1;
                     break;
                 }
             }
@@ -1626,14 +1632,19 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             continue;
         }
 
-        c.token_ids[base + n] = bonus[i];
+        if (!no_bonus_[i]) {
+            c.token_ids[base + n] = bonus[i];
+        }
 
-        // What Update puts at token_ids[base].
+        // What Update puts at token_ids[base]. If an accepted draft was EOS,
+        // n is at least one and the first draft remains the correct first
+        // committed token.
         out_ids[i] = n > 0 ? c.draft_tokens[0] : bonus[i];
 
         // The KV entries for the rejected tail stay allocated but are logically
         // dead: the next forward starts at this length and overwrites them.
-        seq_lens[i] = base + 1 + n;
+        // An EOS draft ends the sequence before the verifier's bonus.
+        seq_lens[i] = base + n + (no_bonus_[i] ? 0 : 1);
 
         // The bonus token is the last one committed, so EOS there ends the
         // sequence without truncating anything.
@@ -1647,7 +1658,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         d.last_accepted[i] = n;
 
         mtp_accepted_ += n;
-        mtp_committed_ += 1 + n;  // the bonus token plus every accepted draft
+        mtp_committed_ += n + (no_bonus_[i] ? 0 : 1);
         mtp_steps_ += 1;
         if (n == d.num_drafts[i]) {
             ++mtp_full_accepts_;
@@ -1736,6 +1747,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // so it needs the separate state transition fact. This buffer aliases the
     // member vector and stays valid for the synchronous Rollback call below.
     env.produce("mtp_no_commit", Buffer{no_commit_.data(), bsz, kCPU});
+    env.produce("mtp_no_bonus", Buffer{no_bonus_.data(), bsz, kCPU});
 
     // Publish the clamped acceptance before Generation reads it.
     //

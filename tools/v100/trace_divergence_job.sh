@@ -32,16 +32,18 @@ MODEL="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
 # ONE prompt. Multi-row batches interleave rows in the trace; a single
 # sequence makes the two traces line-by-line comparable.
 cat > /tmp/one_prompt.py <<'PYEOF'
-import json, sys
+import json, os, sys
 from lmdeploy import GenerationConfig, TurbomindEngineConfig
 from lmdeploy.api import pipeline
 k = int(sys.argv[1])
+if len(sys.argv) > 2 and sys.argv[2] == "force":
+    os.environ["TM_MTP_FORCE_REJECT"] = "1"
 pipe = pipeline("/models/Qwen3.8-27B-FP8",
     backend_config=TurbomindEngineConfig(tp=4, session_len=4096,
         num_draft_tokens=k, enable_prefix_caching=False, cache_generation="none"),
     log_level="INFO")
-cfg = GenerationConfig(max_new_tokens=48, temperature=0.0, top_k=1, do_sample=False)
-out = pipe(["List the first eight prime numbers, separated by commas."], gen_config=cfg)[0]
+cfg = GenerationConfig(max_new_tokens=16, temperature=0.0, top_k=1, do_sample=False)
+out = pipe(["Write one sentence explaining why the sky appears blue."], gen_config=cfg)[0]
 json.dump({"token_ids": list(out.token_ids or []), "text": out.text or ""},
           open(f"/tmp/trace_k{k}.json", "w"))
 pipe.close()
@@ -52,7 +54,7 @@ TM_SPEC_TRACE=1 python3 /tmp/one_prompt.py 0 2>&1 | grep -aE "\[trace\]|\[reject
 wc -l "${RESULTS}/trace_k0.log"
 
 echo "=== K=4 trace ==="
-TM_SPEC_TRACE=1 python3 /tmp/one_prompt.py 4 2>&1 | grep -aE "\[trace\]|\[reject\]" > "${RESULTS}/trace_k4.log"
+TM_SPEC_TRACE=1 python3 /tmp/one_prompt.py 4 force 2>&1 | grep -aE "\[trace\]|\[reject\]" > "${RESULTS}/trace_k4.log"
 wc -l "${RESULTS}/trace_k4.log"
 
 cp /tmp/trace_k0.json /tmp/trace_k4.json "${RESULTS}/" 2>/dev/null
