@@ -843,10 +843,22 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
 
     // Each row's key length after this step's accepted tokens, which is what
     // the draft needs to know how much slack its last KV block still has.
+    // The POST-rollback tip, not c.seq_len.
+    //
+    // Rollback publishes the advanced lengths into the sequence_length buffer;
+    // c.seq_len is only updated later, by Engine::Update. So on a verification
+    // step c.seq_len still points at the tip from BEFORE this step's accepted
+    // run, and drafting from it walks positions the verification already
+    // committed while advancing k_offsets from a base that does not match the
+    // real KV extent. That is the illegal memory access.
+    Buffer_<int> tips{bsz, kCPU};
+    Copy(sequence_length_.front().buffer().slice(0, bsz), tips);
+    core::Context::stream().Sync();
+
     std::vector<int> seq_lens(bsz);
     std::vector<int> block_counts(bsz);
     for (int i = 0; i < bsz; ++i) {
-        seq_lens[i] = d.rows[i]->seq_len;
+        seq_lens[i] = tips[i];
         // How many KV blocks this row owns. The draft may walk to the end of
         // the last one and no further: the block iterator does not bounds-check
         // block_ptrs_, so overrunning reads the next sequence's pointer.
@@ -865,8 +877,8 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
     // overflow a few tokens before the session limit, not a clean stop.
     int budget = K;
     for (int i = 0; i < bsz; ++i) {
-        const auto& c = *d.rows[i];
-        budget        = std::min(budget, c.max_seq_len - c.seq_len - 1);
+        // seq_lens[i], not c.seq_len: same staleness as above.
+        budget = std::min(budget, d.rows[i]->max_seq_len - seq_lens[i] - 1);
     }
     if (budget <= 0) {
         for (int i = 0; i < bsz; ++i) {
