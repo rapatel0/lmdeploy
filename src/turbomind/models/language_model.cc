@@ -998,6 +998,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // their own offsets and covered by the advanced sequence_length. Update's
     // `new_tokens` calculation then picks up the whole run, because it appends
     // token_ids[seq_len - new_tokens .. seq_len) rather than a single token.
+    bool         clamped = false;
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
@@ -1014,13 +1015,31 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             continue;  // not a verification row; its published length stands
         }
 
-        const int n = accepted[i];
+        int n = accepted[i];
         TM_CHECK_GE(n, 0);
         TM_CHECK_LE(n, d.num_drafts[i]);
 
         // `seq_len` still points at the tip from before this forward, because
         // Update has not run yet for this step.
         const int base = c.seq_len;
+
+        // Never commit past max_seq_len.
+        //
+        // A verification step commits 1 + n tokens at once, so it can jump
+        // over the limit that ordinary decode lands on exactly. The length
+        // criterion uses `>=`, so the row still terminates -- but it terminates
+        // having emitted more tokens than max_new_tokens allows, and the
+        // baseline emits exactly that many. So this is both an API violation
+        // and an identity failure, and the identity check would report it as a
+        // token-id divergence with no hint that length was the cause.
+        //
+        // Truncating the accepted run is safe: the dropped tokens are ones the
+        // baseline never emitted either, because it stopped first.
+        if (const int room = c.max_seq_len - base - 1; n > room) {
+            n           = std::max(room, 0);
+            accepted[i] = n;
+            clamped     = true;
+        }
 
         // The accepted drafts come FIRST, the bonus token LAST.
         //
@@ -1070,6 +1089,17 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // advanced lengths first would make it write each token one full accepted
     // run too far into its copy of the sequence.
     //
+    // Publish the clamped acceptance before Generation reads it.
+    //
+    // Generation::Rollback appends one token per accepted slot into its own
+    // copy of each sequence, driven by the `num_accepted` buffer. If the clamp
+    // above only touched the host copy, Generation would append the untruncated
+    // run and its sequence would drift longer than the engine's -- wrong
+    // repetition penalties and stop criteria, with nothing to assert on.
+    if (clamped) {
+        Copy(accepted, env.at("num_accepted").buffer().slice(0, bsz));
+    }
+
     // d.sequence_length still holds the base lengths at this point, so let
     // Generation read them and advance its own copy first.
     //
