@@ -1161,6 +1161,18 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // num_drafts is cleared, which sends it down the ordinary decode path
         // next step: one token, state advanced normally, and drafting resumes
         // after that.
+        // This branch must be taken identically on every TP rank.
+        //
+        // If ranks disagreed, some would rewind their recurrent state and
+        // others would not, and the model would desynchronise across TP with
+        // nothing to assert on -- the shapes stay valid, only the values drift.
+        //
+        // They cannot disagree, because the decision comes from GreedyReject
+        // over full-vocabulary logits: all three PostEmbedding paths return
+        // [bsz, local_vocab * tp_size] after an allgather, so every rank sees
+        // the same numbers and computes the same argmax. Worth stating because
+        // nothing here enforces it -- a future change that left logits
+        // rank-local would break this silently.
         if (gdn_rollback_ && n < d.num_drafts[i]) {
             n               = 0;
             accepted[i]     = 0;
