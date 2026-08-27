@@ -325,8 +325,26 @@ Scheduler::~Scheduler()
 
 void Scheduler::EnsureBlocks(Sequence& s)
 {
-    const int bs     = logical_.block_size();
-    const int length = s.seq_len + s.inflight_new_tokens;
+    const int bs = logical_.block_size();
+
+    // Cover the draft's KV as well as the forward's.
+    //
+    // `inflight_new_tokens` sizes the forward itself -- input_len is derived
+    // from `seq_len + inflight_new_tokens` -- so it cannot also carry the
+    // draft's reservation without making the verification submit K extra
+    // tokens and breaking the [bsz, K+1, vocab] logits layout.
+    //
+    // But kDraft runs after the verification in the same step and writes MTP KV
+    // for up to num_draft_tokens positions beyond the new tip. Allocating only
+    // for the forward leaves the draft short by exactly K every step, and
+    // MTPPredictor's max_extend then clamps it -- to 2 of 4 at one observed
+    // length, and to 0 whenever the tip lands on a block boundary.
+    //
+    // Correctness never depended on this: the clamp holds and short drafts are
+    // still verified. It is acceptance thrown away for block geometry.
+    const int draft_headroom = s.num_drafts > 0 ? s.num_drafts : 0;
+
+    const int length = s.seq_len + s.inflight_new_tokens + draft_headroom;
     const int needed = (length + bs - 1) / bs;
     while (static_cast<int>(s.block_ids.size()) < needed) {
         const int       i = static_cast<int>(s.block_ids.size());
