@@ -163,7 +163,11 @@ GatedDeltaNetLayer::GatedDeltaNetLayer(std::vector<DeltaNetWeight*> weights,
     // A single copy is affordable; keeping one per drafted token would not be,
     // which is why the design restores and replays rather than selecting an
     // intermediate state.
-    if (engine.num_draft_tokens > 0) {
+    const bool trace_state = [] {
+        const char* s = std::getenv("TM_GDN_TRACE_STATE");
+        return s && s[0] == '1';
+    }();
+    if (engine.num_draft_tokens > 0 || trace_state) {
         snapshot_bytes_ = conv_total_bytes_ + size_t(num_blocks_) * block_bytes_;
         snapshot_       = Buffer_<uint8_t>{core::ssize_t(snapshot_bytes_) * engine.max_batch_size, kDEVICE};
         TM_LOG_INFO("[GDN] speculative snapshot enabled: {} bytes/sequence, {} MB total",
@@ -304,6 +308,31 @@ void GatedDeltaNetLayer::SnapshotState(int phase)
                              TM_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
                              dst += bytes;
                          });
+    }
+
+    // Diagnostic only: fingerprint the exact recurrent+conv bytes before each
+    // traced forward. Matching baseline/spec fingerprints localize divergence
+    // outside recurrent state; a first mismatch identifies state drift before
+    // another token is processed. The D2H copy is intentionally expensive and
+    // unreachable without TM_GDN_TRACE_STATE=1.
+    static const bool trace_state = [] {
+        const char* s = std::getenv("TM_GDN_TRACE_STATE");
+        return s && s[0] == '1';
+    }();
+    if (TM_UNLIKELY(trace_state)) {
+        const size_t         bytes = size_t(data.snapshot_batch) * snapshot_bytes_;
+        std::vector<uint8_t> host(bytes);
+        TM_CUDA_CHECK(cudaMemcpyAsync(host.data(), snapshot_.data(), bytes, cudaMemcpyDeviceToHost, stream));
+        TM_CUDA_CHECK(cudaStreamSynchronize(stream));
+        for (int i = 0; i < data.snapshot_batch; ++i) {
+            uint64_t hash = 1469598103934665603ull;
+            const auto* begin = host.data() + size_t(i) * snapshot_bytes_;
+            const auto* end   = begin + snapshot_bytes_;
+            for (const auto* p = begin; p != end; ++p) {
+                hash = (hash ^ *p) * 1099511628211ull;
+            }
+            TM_LOG_WARNING("[gdn-state] phase={} row={} hash={:016x}", phase, i, hash);
+        }
     }
 }
 

@@ -946,7 +946,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     // describes only committed tokens. Rollback restores it if any draft is
     // rejected; there is no way to recover it afterwards, because the forward
     // advances it in place.
-    if (gdn_rollback_ && HasDraftsToVerify(phase)) {
+    static const bool trace_gdn_state = [] {
+        const char* s = std::getenv("TM_GDN_TRACE_STATE");
+        return s && s[0] == '1';
+    }();
+    if (gdn_rollback_ && (HasDraftsToVerify(phase) || TM_UNLIKELY(trace_gdn_state))) {
         unified_decoder_->SnapshotGDNState(phase);
     }
 
