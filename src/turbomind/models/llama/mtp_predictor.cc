@@ -430,9 +430,34 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
                        batch_size > 0 ? seq_lens[0] : -1);
     }
 
-    for (int step = 0; step < num_draft_tokens; ++step) {
+    // Produce only as many drafts as there are distinct positions for.
+    //
+    // The loop used to run num_draft_tokens times regardless, and simply stop
+    // advancing the key length once max_extend was reached. Every step past
+    // that point attended to identical history and wrote the same KV slot, so
+    // it was not a prediction of its position at all -- with max_extend=2 and
+    // K=4 the positions were [1,2,2,2].
+    //
+    // Those drafts are harmless to correctness, since the verifier compares
+    // against the target's own argmax and rejects whatever disagrees. But they
+    // are nearly always rejected, and each one still consumes a slot in the
+    // K+1 verification forward. Emitting fewer, real drafts is strictly better
+    // than padding with duplicates.
+    const int effective_drafts = std::min(num_draft_tokens, max_extend);
+    if (effective_drafts <= 0) {
+        // Restore before leaving. The debug probe above can already have moved
+        // the offsets, and returning early without undoing that would leave a
+        // mutated k_offsets behind for the next reader -- who would have no
+        // reason to suspect the draft path.
+        if (advanced) {
+            AdvanceCuSeqLens(k_offsets.data(), batch_size, -advanced, stream);
+        }
+        return {};
+    }
+
+    for (int step = 0; step < effective_drafts; ++step) {
         // Step 0 advances too, placing the sampled token at L instead of L-1.
-        if (advanced < max_extend) {
+        {
             // Steps 1.. attend to the tokens the previous steps produced, so
             // each row's key length grows by one per step.
             AdvanceCuSeqLens(k_offsets.data(), batch_size, 1, stream);
