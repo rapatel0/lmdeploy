@@ -380,7 +380,7 @@ LanguageModel::Impl::Impl(
             *weights_.mtp,
             *unified_decoder_->attn_layer(),
             unified_decoder_->mtp_attn_index(),
-            unified_decoder_->mtp_phase(),
+            unified_decoder_->mtp_phase(0),  // base; the per-phase offset is added per call
             engine,
             ctx,
             [this](const Buffer_<int>& ids) { return LookupEmbedding(ids, symm_buf_); },
@@ -624,7 +624,7 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
         // pointers, silently.
         copy.Run();
 
-        mtp_predictor_->SetupAttention(env);
+        mtp_predictor_->SetupAttention(phase, env);
     }
 }
 
@@ -710,7 +710,7 @@ void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
     //
     // where 15 is the plan's expected token count and 3 the draft's actual one.
     if (mtp_predictor_) {
-        mtp_predictor_->PrepareAttention(env);
+        mtp_predictor_->PrepareAttention(phase, env);
     }
 }
 

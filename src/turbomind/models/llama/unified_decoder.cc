@@ -127,12 +127,23 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
         // one. Preparing the draft's shape into the target's slot instead would
         // corrupt the target -- that is the failure the previous commit
         // introduced by removing PrepareAttention.
-        mtp_phase_ = engine.num_draft_tokens > 0 ? phases : -1;
-        attn_layer_ = std::make_unique<UnifiedAttentionLayer>(attn_weights,  //
+        // ONE DRAFT SLOT PER PHASE, not one in total.
+        //
+        // The target's phase alternates because two batches are in flight at
+        // once: batch A uses slot 0 while batch B uses slot 1. A single draft
+        // slot shared by both means Setup(B) overwrites the plan that batch A's
+        // kDraft has not read yet -- the executor is still working on A when
+        // the main thread sets up B.
+        //
+        // That is why the draft saw the target's K+1 shape: not a lost marker,
+        // but the NEXT batch's Setup landing in the slot before the current
+        // batch finished with it.
+        mtp_phase_base_ = engine.num_draft_tokens > 0 ? phases : -1;
+        attn_layer_     = std::make_unique<UnifiedAttentionLayer>(attn_weights,  //
                                                               registry,
                                                               engine,
                                                               ctx,
-                                                              mtp_phase_ >= 0 ? phases + 1 : phases);
+                                                              mtp_phase_base_ >= 0 ? 2 * phases : phases);
     }
 
     if (!gdn_weights.empty()) {

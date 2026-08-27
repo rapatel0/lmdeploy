@@ -22,7 +22,7 @@ namespace turbomind {
 MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
                            UnifiedAttentionLayer& attn_layer,
                            int                    attn_index,
-                           int                    attn_phase,
+                           int                    attn_phase_base,
                            const EngineParam&     engine,
                            const Context&         ctx,
                            EmbedFn                embed,
@@ -30,7 +30,7 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
     weights_{weights},
     attn_layer_{attn_layer},
     attn_index_{attn_index},
-    attn_phase_{attn_phase},
+    attn_phase_base_{attn_phase_base},
     hidden_units_{weights.fc ? weights.fc->input_dim / 2 : 0},
     tp_size_{engine.attn_tp_size},
     block_seq_len_{engine.cache_block_seq_len},
@@ -48,7 +48,7 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
     // the weight rather than from config keeps the two from disagreeing.
     TM_CHECK_GT(hidden_units_, 0) << "MTP fc weight missing or malformed";
     TM_CHECK_GE(attn_index_, 0) << "MTP predictor built without a KV slot";
-    TM_CHECK_GE(attn_phase_, 0) << "MTP predictor built without its own attention phase";
+    TM_CHECK_GE(attn_phase_base_, 0) << "MTP predictor built without its own attention phases";
 
     // A MoE MTP layer carries both `moe_ffn` and `feed_forward` (qwen3_5.py
     // assigns the pair). DecodeStep runs only LlamaFfnLayer, which skips the
@@ -72,7 +72,7 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
 
 MTPPredictor::~MTPPredictor() = default;
 
-void MTPPredictor::SetupAttention(TensorMap& env)
+void MTPPredictor::SetupAttention(int phase, TensorMap& env)
 {
     // Needs `requests`, so this runs from the engine's Setup rather than the
     // executor's forward-time env, which carries only `batch` and `copy`.
@@ -86,11 +86,11 @@ void MTPPredictor::SetupAttention(TensorMap& env)
     // the draft from corrupting the target's plan; this keeps the draft's own
     // plan correct.
     env.produce("attn_decode_shape", Buffer_<int>{1, kCPU});
-    attn_layer_.Run(BatchOp::kSetup, attn_phase_, env);
+    attn_layer_.Run(BatchOp::kSetup, attn_phase_base_ + phase, env);
     env.consume("attn_decode_shape");
 }
 
-void MTPPredictor::PrepareAttention(TensorMap& env)
+void MTPPredictor::PrepareAttention(int phase, TensorMap& env)
 {
     // Separate from SetupAttention because the two ops need different things.
     //
@@ -102,7 +102,7 @@ void MTPPredictor::PrepareAttention(TensorMap& env)
     // because Setup runs regardless of whether speculation is active.
     TM_CHECK(env.try_("finished")) << "PrepareAttention needs the prepared env";
 
-    attn_layer_.Run(BatchOp::kPrepare, attn_phase_, env);
+    attn_layer_.Run(BatchOp::kPrepare, attn_phase_base_ + phase, env);
 }
 
 Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_states, int batch_size)
@@ -213,8 +213,8 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
     // values into the MTP KV slot: the cache offset is read from
     // `weights.cache_block_offset`, which registration stamped onto this very
     // weight. `attn_index_` only names the layer for debug output.
-    // attn_phase_, not the caller's phase: the draft owns a separate slot.
-    attn_layer_.Forward({attn_phase_, hidden, hidden, layer.attention.get(), attn_index_});
+    // The draft's slot for THIS batch phase, not the target's slot.
+    attn_layer_.Forward({attn_phase_base_ + phase, hidden, hidden, layer.attention.get(), attn_index_});
     TM_CUDA_CHECK(cudaGetLastError());
 
     // Fused residual-add plus the pre-FFN norm. This writes the post-add value

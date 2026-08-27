@@ -69,7 +69,7 @@ public:
     MTPPredictor(const MTPLayerWeight&  weights,
                  UnifiedAttentionLayer& attn_layer,
                  int                    attn_index,
-                 int                    attn_phase,
+                 int                    attn_phase_base,
                  const EngineParam&     engine,
                  const Context&         ctx,
                  EmbedFn                embed,
@@ -110,7 +110,7 @@ public:
     /// Needs the engine's setup-time env, the only one carrying `requests`.
     /// Runs against attn_phase_, not the target's phase, so the target's
     /// attention state is untouched.
-    void SetupAttention(TensorMap& env);
+    void SetupAttention(int phase, TensorMap& env);
 
     /// Build the draft's decode-shaped attention plan in its own phase slot.
     ///
@@ -118,7 +118,7 @@ public:
     /// K+1, and AttentionData is per-phase. Sharing the target's slot means one
     /// shape overwrites the other, which aborts on
     /// `d.prefill.q_sum + d.decode.n == q_count`.
-    void PrepareAttention(TensorMap& env);
+    void PrepareAttention(int phase, TensorMap& env);
 
 private:
     /// Normalise both inputs, concatenate them per row, and project back down
@@ -152,9 +152,10 @@ private:
     /// handing the attention layer the MTP weight pointer is what sends the
     /// draft's keys and values to their own slot.
     const int attn_index_;
-    /// Phase slot owned by the draft, so its decode-shaped attention plan does
-    /// not overwrite the target's.
-    const int attn_phase_;
+    /// Base of the draft's attention slots. The slot for batch phase p is
+    /// attn_phase_base_ + p: one per phase, because two batches are in flight
+    /// and a shared slot would be overwritten by the next batch's Setup.
+    const int attn_phase_base_;
 
     const int      hidden_units_;
     const int      tp_size_;
