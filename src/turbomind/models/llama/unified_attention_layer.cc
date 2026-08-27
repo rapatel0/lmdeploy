@@ -114,6 +114,10 @@ struct AttentionData {
     /// kPrepare. Length is the batch size, not the token count.
     Buffer_<bool> decode_token_mask;
     bool          decode_shape{false};
+    /// Row 0's draft count at Setup. Diagnostics only: a prompt's final chunk
+    /// can be as short as a verification forward, so token counts alone do not
+    /// identify the call.
+    int           num_drafts0{-1};
     Buffer_<int>  k_offsets;
     Buffer_<int>  readonly_block_num;  // per-request, batch order
 
@@ -408,6 +412,12 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     // of the target's.
     const bool decode_shape = env.try_("attn_decode_shape") != nullptr;
     d.decode_shape          = decode_shape;
+
+    // Row 0's draft count, so a diagnostic can say what kind of call it is
+    // looking at instead of inferring it from token counts. A prompt's final
+    // chunk can be as short as a verification forward, and the two are then
+    // indistinguishable by q_sum alone.
+    d.num_drafts0 = bsz > 0 ? rc[0]->num_drafts : -1;
 
     // Report each Setup once per phase, so the log shows whether the draft's
     // phase is being set up at all and with which shape. Four rounds of
@@ -858,9 +868,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                         / engine_param_.cache_block_seq_len;
                 const int have_blocks = d.prefill.n > 0 ? off_host[1] - off_host[0] : 0;
 
-                TM_LOG_ERROR("[kv] SPEC need_blocks={} have_blocks={} phase={} offset={} "
+                TM_LOG_ERROR("[kv] SPEC num_drafts0={} need_blocks={} have_blocks={} phase={} offset={} "
                              "prefill.n={} q_sum={} k_sum={} k_max={} "
                              "block_len={} cache_block_offset={} block_ptr_offsets=[{}]",
+                             d.num_drafts0,
                              need_blocks,
                              have_blocks,
                              p.phase,
