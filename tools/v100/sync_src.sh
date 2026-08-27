@@ -81,8 +81,8 @@ kubectl -n "${NS}" wait --for=condition=Ready "pod/${POD}" --timeout=120s >/dev/
 #
 # which looks exactly like a code defect in the job's log and cost two GPU
 # runs to recognise as a race with my own sync.
-if ACTIVE=$(kubectl -n "${NS}" get jobs -o jsonpath='{range .items[?(@.status.active)]}{.metadata.name} {end}' 2>/dev/null) \
-    && [ -n "${ACTIVE// /}" ]; then
+if ACTIVE=$(kubectl -n "${NS}" get jobs -o jsonpath='{range .items[?(@.status.active)]}{.metadata.name} {end}' 2>/dev/null) &&
+    [ -n "${ACTIVE// /}" ]; then
     echo "REFUSING: jobs still active: ${ACTIVE}" >&2
     echo "  Wait for them or delete them; syncing now would delete the tree they are building." >&2
     exit 3

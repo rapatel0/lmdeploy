@@ -2,6 +2,8 @@
 
 #include "src/turbomind/models/llama/rejection_sampling.h"
 
+#include <climits>
+
 #include <cuda_fp16.h>
 #ifdef ENABLE_BF16
 #include <cuda_bf16.h>
@@ -45,7 +47,12 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
 
         // Each thread finds local max over its strided elements
         float max_val = -1e30f;
-        int   max_idx = 0;
+        // INT_MAX for the same reason as the padding lanes below: a thread
+        // whose strided range is empty (blockDim > vocab_size) never assigns
+        // max_idx, and an index of 0 would win the lowest-index tie-break
+        // against threads that also hold the sentinel.
+        int max_idx = INT_MAX;
+        // Strict `>` here already prefers the lower index, since i increases.
         for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
             float val = static_cast<float>(pos_logits[i]);
             if (val > max_val) {
@@ -58,7 +65,12 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
         for (int mask = 16; mask > 0; mask >>= 1) {
             float other_val = __shfl_xor_sync(0xffffffff, max_val, mask);
             int   other_idx = __shfl_xor_sync(0xffffffff, max_idx, mask);
-            if (other_val > max_val) {
+            // Ties go to the LOWER index, deterministically. Without the
+            // second clause the winner depends on which lane the reduction
+            // reaches first, so two runs can disagree on tied logits -- and an
+            // accepted draft is committed verbatim, so that disagreement
+            // becomes an output difference.
+            if (other_val > max_val || (other_val == max_val && other_idx < max_idx)) {
                 max_val = other_val;
                 max_idx = other_idx;
             }
@@ -76,15 +88,25 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
             max_idx = s_max_idx[threadIdx.x];
         }
         else {
+            // INT_MAX, not 0.
+            //
+            // These lanes carry no candidate. With a lowest-index tie-break,
+            // an idx of 0 at the sentinel value would beat a real candidate
+            // whenever that candidate also sat at -1e30f -- and every logit is
+            // below the sentinel only in degenerate cases, but the padding
+            // lanes tie with EACH OTHER on every single reduction. Giving them
+            // the largest possible index makes them lose every tie they take
+            // part in.
             max_val = -1e30f;
-            max_idx = 0;
+            max_idx = INT_MAX;
         }
 
         if (threadIdx.x < 32) {
             for (int mask = 16; mask > 0; mask >>= 1) {
                 float other_val = __shfl_xor_sync(0xffffffff, max_val, mask);
                 int   other_idx = __shfl_xor_sync(0xffffffff, max_idx, mask);
-                if (other_val > max_val) {
+                // Same lower-index tie-break as the warp reduction above.
+                if (other_val > max_val || (other_val == max_val && other_idx < max_idx)) {
                     max_val = other_val;
                     max_idx = other_idx;
                 }
@@ -93,7 +115,13 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
 
         // Thread 0 broadcasts the argmax token
         if (threadIdx.x == 0) {
-            s_argmax_token = max_idx;
+            // Clamp the sentinel. max_idx stays INT_MAX only if no thread ever
+            // saw a logit above -1e30f, which needs an all-(-inf) or corrupt
+            // row. Committing INT_MAX as a token id would index the embedding
+            // table out of bounds on the NEXT forward -- a crash far from the
+            // cause. Falling back to 0 keeps it in range; the draft still gets
+            // rejected, because a real draft will not equal 0 by chance.
+            s_argmax_token = (max_idx == INT_MAX) ? 0 : max_idx;
         }
         __syncthreads();
 
