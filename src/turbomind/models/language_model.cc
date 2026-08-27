@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -465,6 +466,29 @@ Tensor LanguageModel::Impl::LookupEmbedding(const Buffer_<int>& input_ids, Buffe
     TM_CHECK_EQ(embedding_table.shape(1) * tp_size_, hidden_units);
 
     const int token_num = input_ids.size();
+
+    // TM_SPEC_VALIDATE_IDS=1: read back the ids this lookup is ABOUT to
+    // dereference and bounds-check them on the host. The launch-blocking abort
+    // blames embeddingLookupKernel, but its cudaGetLastError also inherits any
+    // sticky error from the un-checked batched memcpy that ran just before the
+    // forward -- launch blocking serializes kernels, not memcpys. This check
+    // separates the two: ids valid here + kernel still faults means the ids
+    // were never the problem and the earlier copy (or the table pointer) is.
+    static const bool validate_ids = [] {
+        const auto v = std::getenv("TM_SPEC_VALIDATE_IDS");
+        return v && v[0] == '1';
+    }();
+    if (TM_UNLIKELY(validate_ids) && token_num > 0) {
+        Buffer_<int> h_ids{token_num, kCPU};
+        core::Copy(input_ids, token_num, h_ids);
+        core::Context::stream().Sync();
+        const auto limit = embedding_table.shape(0);
+        for (int i = 0; i < token_num; ++i) {
+            TM_CHECK(0 <= h_ids[i] && h_ids[i] < limit)
+                << "[spec] input_ids[" << i << "] = " << h_ids[i] << " outside the embedding table of " << limit
+                << " rows (token_num " << token_num << ")";
+        }
+    }
 
     Tensor input_embeds{{token_num, hidden_units}, weights_.data_type, kDEVICE};
 

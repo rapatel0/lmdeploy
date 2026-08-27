@@ -110,7 +110,7 @@ echo "  MODEL=${MODEL} TP=${TP} K=${K} max_new=${MAXNEW}"
 echo
 echo "=== stage A: CUDA_LAUNCH_BLOCKING=1, TP=${TP}, no sanitizer ==="
 BLOCKING_LOG="${RESULTS}/launch_blocking.log"
-CUDA_LAUNCH_BLOCKING=1 TM_DEBUG_LEVEL=INFO \
+CUDA_LAUNCH_BLOCKING=1 TM_SPEC_VALIDATE_IDS=1 TM_DEBUG_LEVEL=INFO \
     timeout -k 30 900 stdbuf -oL -eL \
     python3 /src/tools/v100/memcheck_child.py \
     --model-dir "${MODEL}" --tp "${TP}" \
