@@ -45,6 +45,12 @@ cat /src/SOURCE_STAMP 2>/dev/null || echo "no SOURCE_STAMP"
 
 echo
 echo "=== build ==="
+# The progress line stalls at roughly 351/359 for several minutes while
+# kv_cache_utils_v2.cu compiles. That is not a hang: ninja cannot advance
+# because the remaining targets depend on that one translation unit, and nvcc
+# spends the time inside cicc. I have twice gone looking for a stuck build on
+# this signature and twice found a healthy one -- check for a live nvcc before
+# concluding otherwise.
 cd /src
 # Keep the FULL build log.
 #
