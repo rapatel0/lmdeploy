@@ -336,7 +336,15 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
         // One query token per row for the draft; the key length is unchanged,
         // because the draft attends over the same accepted history.
         const int q_len = decode_shape ? 1 : c.input_len;
-        const int k_len = c.history_len + c.inflight_input_len + c.input_len;
+
+        // The draft grows its key length by one per draft step via
+        // AdvanceCuSeqLens, so its true maximum is num_drafts beyond the
+        // target's. k_max only sizes the split-K grid -- cu_k_len drives the
+        // actual iteration, so under-counting costs parallelism rather than
+        // correctness -- but it is free to be right, and the cliff would
+        // otherwise appear only when those extra keys cross a CTA_S boundary.
+        const int k_len =
+            c.history_len + c.inflight_input_len + c.input_len + (decode_shape ? c.num_drafts : 0);
 
         auto& s = i < d.decode.n ? d.decode : d.prefill;
         s.q_sum += q_len;
