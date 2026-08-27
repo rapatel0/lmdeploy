@@ -28,6 +28,7 @@ set -euo pipefail
 TP="${TP:-4}"
 NUM_DRAFT_TOKENS="${NUM_DRAFT_TOKENS:-4}"
 MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
+TM_BATCH_COPY_DURING_API_CALL="${TM_BATCH_COPY_DURING_API_CALL:-0}"
 
 # Refuse to launch while a job of the same name is already active.
 #
@@ -73,9 +74,10 @@ for f in "${EXTRA[@]}"; do
 done
 kubectl -n "$NS" create configmap "${JOB}-script" "${CM_ARGS[@]}" >/dev/null
 
-python3 - "$JOB" "$NS" "$IMAGE" "$ISLAND2" "$ISLAND1" "$TP" "$NUM_DRAFT_TOKENS" "$MODEL_DIR" <<'PY' | kubectl apply -f - >/dev/null
+python3 - "$JOB" "$NS" "$IMAGE" "$ISLAND2" "$ISLAND1" "$TP" "$NUM_DRAFT_TOKENS" "$MODEL_DIR" \
+    "$TM_BATCH_COPY_DURING_API_CALL" <<'PY' | kubectl apply -f - >/dev/null
 import json, sys
-job, ns, image, island2, island1, tp, num_draft, model_dir = sys.argv[1:9]
+job, ns, image, island2, island1, tp, num_draft, model_dir, batch_copy_order = sys.argv[1:10]
 
 guard = r'''set -uo pipefail
 for BAD in $ISLAND1_UUIDS; do
@@ -119,6 +121,7 @@ manifest = {
                     {"name": "TP", "value": tp},
                     {"name": "NUM_DRAFT_TOKENS", "value": num_draft},
                     {"name": "MODEL_DIR", "value": model_dir},
+                    {"name": "TM_BATCH_COPY_DURING_API_CALL", "value": batch_copy_order},
                 ],
                 # No nvidia.com/gpu request: the device plugin must not
                 # reassign devices out from under the UUID pin.

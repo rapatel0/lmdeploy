@@ -2,6 +2,7 @@
 #include "src/turbomind/core/copy.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -131,8 +132,19 @@ void BatchCopy::Run()
                 }
             }
             else {
+                static const bool during_api_call = [] {
+                    const char* s = std::getenv("TM_BATCH_COPY_DURING_API_CALL");
+                    return s && s[0] == '1';
+                }();
+
                 CUmemcpyAttributes_v1 attr{};
-                attr.srcAccessOrder = CU_MEMCPY_SRC_ACCESS_ORDER_STREAM;
+                // STREAM permits the driver to read pinned host staging only
+                // when this stream reaches the copy. The engine can reuse and
+                // refill that staging from the main thread first, changing
+                // model metadata nondeterministically. This diagnostic mode
+                // requires the source to be consumed before Run returns.
+                attr.srcAccessOrder = during_api_call ? CU_MEMCPY_SRC_ACCESS_ORDER_DURING_API_CALL
+                                                      : CU_MEMCPY_SRC_ACCESS_ORDER_STREAM;
                 attr.flags          = CU_MEMCPY_FLAG_PREFER_OVERLAP_WITH_COMPUTE;
                 std::vector<size_t> attr_idxs(src_.size(), 0);
                 size_t              fail_idx{SIZE_MAX};
