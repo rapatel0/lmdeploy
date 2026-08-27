@@ -19,9 +19,23 @@ RESULTS=/results/$(date +%Y%m%d_%H%M%S)-specverify-${SRC_COMMIT}
 mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
 
+# Mark the run incomplete until it reaches its own end.
+#
+# The EXIT trap records whatever status the shell had when it died, so a job
+# killed mid-build -- by a pod delete, an eviction, a node restart -- writes
+# exit_code 0 and is indistinguishable from a clean pass. That happened: a
+# 238-byte console.log with exit 0, which I nearly read as a result.
+#
+# `completed` is written only on the last line of the script, so
+# exit_code 0 AND completed present is the only combination that means
+# anything.
 finish() {
     rc=$?
     echo "$rc" >"${RESULTS}/exit_code"
+    if [ ! -f "${RESULTS}/completed" ]; then
+        echo "KILLED_BEFORE_COMPLETION" >"${RESULTS}/incomplete"
+        echo "WARNING: job did not reach its end; exit ${rc} is not a verdict" >&2
+    fi
     echo "artifacts in ${RESULTS} (exit ${rc})"
 }
 trap finish EXIT
@@ -243,4 +257,5 @@ if [ "${FAILED}" -ne 0 ]; then
     echo "SPEC_VERIFY_FAIL" >&2
     exit 9
 fi
+touch "${RESULTS}/completed"
 echo "SPEC_VERIFY_COMPLETE"
