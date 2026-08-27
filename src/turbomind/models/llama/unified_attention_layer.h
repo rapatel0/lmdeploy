@@ -109,6 +109,9 @@ private:
     /// Phases whose first Setup has already been logged. Diagnostic only.
     std::set<int>  setup_logged_;
 
+    /// One-shot guard for the KV kernel argument dump. Diagnostic only.
+    bool           kv_dump_done_{false};
+
     ///////////////////////////////////////////////////////
     /// temp runtime buffers (allocated in constructor)
     Tensor_<float> partial_O_;

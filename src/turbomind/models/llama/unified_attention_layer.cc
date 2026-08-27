@@ -21,6 +21,7 @@
 
 #include "src/turbomind/engine/block.h"
 #include <algorithm>
+#include <string>
 #include <functional>
 #include <math.h>
 #include <numeric>
@@ -804,6 +805,36 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         // disable split kv for prefill for now
         auto params = CreateParams(offset, d.prefill, 1, pf_stream);
         if constexpr (sizeof(T) == 2) {
+            // Dump what the KV kernel is actually given, once.
+            //
+            // Two host-side assertions -- Setup's block-count check and the
+            // draft's reach check -- both stay silent while this kernel faults,
+            // so the numbers the kernel receives differ from the numbers I have
+            // been reasoning about. Five separate readings of the arithmetic
+            // all concluded it fits; the hardware disagrees, so the arithmetic
+            // is not the thing to read again.
+            if (!kv_dump_done_) {
+                kv_dump_done_ = true;
+                Buffer_<int> off_host{d.prefill.n + 1, kCPU};
+                Copy(d.block_ptrs_offsets.slice(offset, d.prefill.n + 1), off_host);
+                core::Context::stream().Sync();
+                std::string offs;
+                for (int i = 0; i <= d.prefill.n; ++i) {
+                    offs += std::to_string(off_host[i]) + (i < d.prefill.n ? "," : "");
+                }
+                TM_LOG_ERROR("[kv] phase={} offset={} prefill.n={} q_sum={} k_sum={} k_max={} "
+                             "block_len={} cache_block_offset={} block_ptr_offsets=[{}]",
+                             p.phase,
+                             offset,
+                             d.prefill.n,
+                             d.prefill.q_sum,
+                             d.prefill.k_sum,
+                             d.prefill.k_max,
+                             engine_param_.cache_block_seq_len,
+                             (int)weights.cache_block_offset,
+                             offs);
+            }
+
             invokeProcessKV_v2_(params);
             TM_CUDA_CHECK(cudaGetLastError());
 
