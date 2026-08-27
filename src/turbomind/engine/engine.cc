@@ -465,8 +465,31 @@ void Engine::Impl::Schedule()
             // a single token on exactly the step that must verify K+1. The
             // forward then submitted one token while kReject still expected
             // per-position logits, which is the `verify_logits_` abort.
-            if (param_.num_draft_tokens > 0 && c.generating && c.num_drafts > 0) {
-                c.inflight_new_tokens = 1 + c.num_drafts;
+            // `num_drafts`, NOT `1 + num_drafts`. Speculation now runs only
+            // in the synchronous loop, where inflight_input_len is always 0,
+            // so the window is [filled_len, seq_len + inflight_new_tokens).
+            // Update backs filled_len up by one, placing the window start at
+            // the committed tip (the bonus); the drafts injected at
+            // token_ids[seq_len..seq_len+K) are covered by K new tokens, for
+            // K+1 submitted positions total.
+            //
+            // The old `1 + num_drafts` was written for the async loop, where a
+            // stale inflight_input_len of 1 shifted the window one token
+            // right: the forward saw [D0..D3, uninitialized] instead of
+            // [bonus, D0..D3]. The in-kernel guard caught exactly that --
+            // ids[4] raw garbage, and the off-by-one draft comparison drove
+            // accept length to 0.07.
+            //
+            // Assigned for EVERY generating row, not only draft carriers: a
+            // row whose drafts were all rejected decodes normally next step,
+            // and a stale K here would widen its window with nothing behind
+            // it. Zero restores the upstream sync-decode identity.
+            // The `? :` rather than a guard: a swapped-in row re-enters with
+            // `generating` cleared but possibly a stale inflight_new_tokens
+            // from before the swap, and a stale K would claim forward tokens
+            // that do not exist. Non-generating rows are pinned to 0.
+            if (param_.num_draft_tokens > 0) {
+                c.inflight_new_tokens = c.generating ? c.num_drafts : 0;
             }
 
             eligible.push_back(&c);
@@ -780,7 +803,15 @@ void Engine::Impl::Update(BatchData& b, std::vector<Signal>& signals)
             // no per-position logits. num_drafts is 0 when speculation is off
             // or nothing was drafted, which reduces this to the original
             // expression exactly.
-            const int backup = generating[j] ? 1 + c.num_drafts : 0;
+            // In the synchronous loop a generating row backs up by exactly
+            // one, whether or not it carries drafts: resume lands on the
+            // committed tip, and the K drafts beyond it are counted by
+            // inflight_new_tokens at the next Schedule. The `1 + num_drafts`
+            // variant belonged to the async loop, whose inflight_input_len
+            // cancelled the extra K; with speculation forcing sync mode that
+            // cancellation no longer exists, and keeping the wide backup
+            // would re-submit K already-committed tokens.
+            const int backup = generating[j] ? (async_ ? 1 + c.num_drafts : 1) : 0;
             c.filled_len     = sequence_length[j] - backup;
             if (c.retiring) {
                 continue;

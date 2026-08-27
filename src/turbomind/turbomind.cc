@@ -170,6 +170,24 @@ TurboMind::Impl::Impl(string model_dir, EngineConfig config, FFICtxFactory ffi_c
 
     phases_ = config.async_ ? 2 : 1;
 
+    // Speculative decoding requires the synchronous engine loop.
+    //
+    // The async loop runs Schedule(N+2) while batch N+1 is still in flight for
+    // the same rows. Verification drafts are injected into token_ids at
+    // Schedule time, so the injection collides with N+1's commit -- Update
+    // writes token_ids[seq_len] over D0 -- and the drafts were conditioned on
+    // a tip that N+1 has since advanced. Measured consequence: the gather
+    // window shifted one token right, [S, S+K+1) instead of [S-1, S+K), so the
+    // forward saw [D0..D3, uninitialized] instead of [bonus, D0..D3]. The
+    // in-kernel guard caught ids[4] as raw garbage (806081216, -938880693) and
+    // the off-by-one comparison drove accept length to 0.07.
+    //
+    // The reference fork reached the same conclusion and the same fix.
+    if (engine_param_.num_draft_tokens > 0 && phases_ > 1) {
+        TM_LOG_WARNING("[TM] speculative decoding forces the synchronous engine loop (async_=0)");
+        phases_ = 1;
+    }
+
     auto max_forward_token_num = config.max_prefill_token_num;
     max_forward_token_num += engine_param_.max_batch_size;
 
