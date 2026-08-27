@@ -445,6 +445,30 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     // are nearly always rejected, and each one still consumes a slot in the
     // K+1 verification forward. Emitting fewer, real drafts is strictly better
     // than padding with duplicates.
+    // Assert the walk stays inside every row's allocation.
+    //
+    // The draft advances k_offsets once per step and writes MTP KV at each
+    // position. The block iterator does not bounds-check block_ptrs_, so
+    // overrunning reads a pointer belonging to another sequence and surfaces
+    // far away as
+    //
+    //   kv_cache_utils_v2.cu: CUDA error: an illegal memory access
+    //
+    // naming neither the row nor the amount. max_extend is supposed to prevent
+    // that; this states the invariant it is supposed to enforce, so a wrong
+    // bound fails here with the numbers attached instead of in a kernel.
+    if (block_len > 0 && block_counts) {
+        for (int i = 0; i < batch_size; ++i) {
+            const int reach    = seq_lens[i] + std::min(num_draft_tokens, max_extend);
+            const int capacity = block_counts[i] * block_len;
+            TM_CHECK_LE(reach, capacity)
+                << "MTP draft row " << i << " would reach key length " << reach << " but owns "
+                << block_counts[i] << " blocks of " << block_len << " = " << capacity
+                << " (seq_len=" << seq_lens[i] << " max_extend=" << max_extend
+                << " num_draft_tokens=" << num_draft_tokens << ")";
+        }
+    }
+
     const int effective_drafts = std::min(num_draft_tokens, max_extend);
     if (effective_drafts <= 0) {
         // Restore before leaving. The debug probe above can already have moved
