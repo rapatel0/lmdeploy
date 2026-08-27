@@ -1575,6 +1575,33 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             // bearing on the input path.
             out_ids[i] = c.token_ids[base - 1];
 
+            // Rewind the published length to the base. THE leak, measured.
+            //
+            // seq_lens was pre-filled from sequence_length_.front(), which
+            // Prepare set to base + K for this verification row: non-
+            // autoregressive rows publish history + input_len, and a
+            // verification submits 1 + K tokens. The normal path overwrites
+            // the entry with base + 1 + n; this branch used to `continue`
+            // with the pre-filled value still in place, so Engine::Update
+            // advanced c.seq_len over the re-fed tip AND every rejected
+            // draft that Schedule had injected into token_ids -- K + 1
+            // junk tokens committed per rejected verification, then decoded
+            // on top of. TM_SPEC_TRACE showed it directly:
+            //
+            //   [trace] verify base=65 accepted=0 new_len=69 no_commit=1
+            //
+            // where a no-commit row must republish exactly base.
+            seq_lens[i] = base;
+
+            // Tell Generation::Rollback to append NOTHING for this row.
+            //
+            // Its append loop runs slot 0 whenever `slot <= accepted[b]`,
+            // so 0 still appends the bonus into Generation's copy of the
+            // sequence -- at a position this row never committed. -1
+            // deactivates every slot. Published below via `clamped`, which
+            // the gdn branch already set.
+            accepted[i] = -1;
+
             // Count the step BEFORE bailing out.
             //
             // A rejected verification is still a forward that produced zero
