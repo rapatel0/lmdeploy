@@ -198,7 +198,20 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
                 weights.empty() ? size_t{0} : weights.back()->cache_block_offset);
     prefix_cache_offset_               = registry.prefix().Register(cache_block_byte_size, /*alignment=*/1);
 
-    const auto max_block_num = engine.max_batch_size * cdiv(engine.session_len, engine.cache_block_seq_len);
+    // Room for the draft's extra blocks, and a margin.
+    //
+    // EnsureBlocks now allocates ceil((seq_len + inflight_new_tokens +
+    // num_drafts) / block_len) blocks per row, so a sequence near session_len
+    // owns MORE than ceil(session_len / block_len). Sizing this staging buffer
+    // from session_len alone lets Setup's unbounded `*blocks++` walk off the
+    // end -- a host buffer overrun that then uploads whatever it read as device
+    // pointers.
+    //
+    // The device-side d->block_ptrs already carries a +16 margin; this now
+    // matches it, so both are bounded by the same number.
+    const auto blocks_per_seq =
+        cdiv(engine.session_len, engine.cache_block_seq_len) + cdiv(engine.num_draft_tokens + 1, engine.cache_block_seq_len) + 1;
+    const auto max_block_num = engine.max_batch_size * blocks_per_seq;
 
     block_ptrs_buf_         = {max_block_num, kCPUpinned};
     block_ptrs_offsets_buf_ = {engine.max_batch_size + 1, kCPUpinned};
@@ -219,7 +232,11 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
         mrope_default_buf_ = Buffer_<int>{std::max(bsz, 3), kDEVICE};
         Clear(mrope_default_buf_);
     }
-    const int max_blocks = bsz * cdiv(engine.session_len, engine_param_.cache_block_seq_len);
+    // Same bound as the host staging buffer above, including the draft's extra
+    // blocks. These two must agree: Setup fills the host buffer and copies
+    // `offsets[bsz]` entries into this one, so a device buffer sized from a
+    // smaller expression would truncate or overrun the upload.
+    const int max_blocks = (int)max_block_num;
     for (int i = 0; i < phases; ++i) {
         auto& d               = data_.emplace_back(std::make_shared<AttentionData>());
         d->block_ptrs         = {max_blocks + 16, kDEVICE};
@@ -389,6 +406,11 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
             for (const auto& h : r.block_ids) {
                 const CacheBlock& cb = *h->prefix;
                 TM_CHECK_NOTNULL(cb.allocation.a);
+                // Bounded. The unchecked `*blocks++` was safe only while every
+                // row owned at most ceil(session_len / block_len) blocks, which
+                // the draft headroom broke.
+                TM_CHECK_LT(blocks - block_ptrs_buf_.data(), block_ptrs_buf_.size())
+                    << "block pointer staging overflow at row " << i;
                 *blocks++ = cb.base(0) + prefix_cache_offset_;
             }
             offsets[i + 1] = offsets[i] + r.block_ids.size();
