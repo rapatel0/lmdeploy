@@ -557,6 +557,24 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
     const int batch_size = d.decode.n + d.prefill.n;
     const int q_count    = qkv.shape(0);
 
+    // Report the state, not just the mismatch.
+    //
+    // This assertion has fired five times from four different causes, and each
+    // time the two bare numbers were consistent with several stories. Printing
+    // the phase and the plan's composition distinguishes them immediately:
+    // a draft phase should show decode.n == batch and prefill.q_sum == 0, and
+    // anything else means the decode-shape marker did not reach Setup.
+    if (d.prefill.q_sum + d.decode.n != q_count) {
+        TM_LOG_ERROR("[attn] shape mismatch on phase {}: decode.n={} decode.q_sum={} "
+                     "prefill.n={} prefill.q_sum={} q_count={} decode_shape={}",
+                     p.phase,
+                     d.decode.n,
+                     d.decode.q_sum,
+                     d.prefill.n,
+                     d.prefill.q_sum,
+                     q_count,
+                     (int)d.decode_shape);
+    }
     TM_CHECK_EQ(d.prefill.q_sum + d.decode.n, q_count);
 
     const int local_q_kv_head_num = local_head_num + 2 * local_kv_head_num;
