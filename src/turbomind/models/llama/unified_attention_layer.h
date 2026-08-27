@@ -102,6 +102,9 @@ private:
     Buffer_<void*> block_ptrs_buf_;
     Buffer_<int>   block_ptrs_offsets_buf_;
 
+    /// Host staging for the MTP draft's one-query-per-row cu_q_len array.
+    Buffer_<int>   decode_q_offsets_buf_;
+
     ///////////////////////////////////////////////////////
     /// temp runtime buffers (allocated in constructor)
     Tensor_<float> partial_O_;

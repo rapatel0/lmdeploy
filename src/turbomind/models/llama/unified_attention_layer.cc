@@ -106,6 +106,10 @@ struct AttentionData {
     // borrowed from env
     Buffer_<bool> finished;
     Buffer_<int>  q_offsets;
+    /// Cumulative one-query-per-row offsets for the MTP draft, and whether this
+    /// phase slot is drafting. See the note in Setup.
+    Buffer_<int>  decode_q_offsets;
+    bool          decode_shape{false};
     Buffer_<int>  k_offsets;
     Buffer_<int>  readonly_block_num;  // per-request, batch order
 
@@ -174,6 +178,7 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
 
     block_ptrs_buf_         = {max_block_num, kCPUpinned};
     block_ptrs_offsets_buf_ = {engine.max_batch_size + 1, kCPUpinned};
+    decode_q_offsets_buf_   = {engine.max_batch_size + 1, kCPUpinned};
 
     TM_CUDA_CHECK(cudaStreamCreateWithFlags(&aux_stream_, cudaStreamNonBlocking));
     TM_CUDA_CHECK(cudaEventCreateWithFlags(&qkv_event_, cudaEventDisableTiming));
@@ -195,6 +200,7 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
         auto& d               = data_.emplace_back(std::make_shared<AttentionData>());
         d->block_ptrs         = {max_blocks + 16, kDEVICE};
         d->block_ptrs_offsets = {bsz + 1, kDEVICE};
+        d->decode_q_offsets   = {bsz + 1, kDEVICE};
         if (rope_param_.type == RopeType::kDynamic) {
             d->rope_base = empty_like(rope_base_buf_, kDEVICE);
         }
@@ -258,7 +264,26 @@ void UnifiedAttentionLayer::Run(BatchOp op, int phase, TensorMap& env)
     else if (op == BatchOp::kPrepare) {
         auto& d               = data_.at(phase);
         d->finished           = env.at("finished").buffer().borrow();
-        d->q_offsets          = env.at("q_offsets").buffer().borrow();
+        // The MTP draft submits one query per row, so it cannot borrow the
+        // target's q_offsets: those describe the target's input_len, which is
+        // K+1 on a verification step.
+        //
+        // cu_q_len is not merely a size hint. attention_universal indexes the
+        // query tensor with it directly --
+        //
+        //   qi_begin = cu_q_len[b] + query_idx;  qi_end = cu_q_len[b + 1];
+        //
+        // -- so a borrowed K+1 span would walk 5 query rows out of a 1-row
+        // tensor. The decode-shape flag fixes the plan's counts; this fixes the
+        // offsets the kernel actually dereferences.
+        // decode_q_offsets is filled during Setup, which is the only op with
+        // `requests` in env; Prepare carries just the prepared tensors.
+        if (d->decode_shape) {
+            d->q_offsets = d->decode_q_offsets;
+        }
+        else {
+            d->q_offsets = env.at("q_offsets").buffer().borrow();
+        }
         d->k_offsets          = env.at("k_offsets").buffer().borrow();
         d->readonly_block_num = env.at("readonly_block_num").buffer().borrow();
 
@@ -317,6 +342,21 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     // target's plan, but the draft still needs its OWN shape rather than a copy
     // of the target's.
     const bool decode_shape = env.try_("attn_decode_shape") != nullptr;
+    d.decode_shape          = decode_shape;
+
+    // One query token per row, cumulative: [0, 1, 2, ... bsz].
+    //
+    // Built here because Setup is the only op with `requests` in env, and used
+    // by Prepare, which carries just the prepared tensors. cu_q_len indexes the
+    // query tensor directly in attention_universal, so the draft cannot borrow
+    // the target's offsets: those describe input_len, which is K+1 on a
+    // verification step.
+    if (decode_shape) {
+        for (int i = 0; i <= bsz; ++i) {
+            decode_q_offsets_buf_[i] = i;
+        }
+        copy(decode_q_offsets_buf_, bsz + 1, d.decode_q_offsets);
+    }
 
     d.decode.n = decode_shape ?
                      bsz :
