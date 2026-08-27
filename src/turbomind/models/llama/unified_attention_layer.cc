@@ -109,6 +109,9 @@ struct AttentionData {
     /// Cumulative one-query-per-row offsets for the MTP draft, and whether this
     /// phase slot is drafting. See the note in Setup.
     Buffer_<int>  decode_q_offsets;
+    /// All-true per-row validity mask for the MTP draft; see the note in
+    /// kPrepare. Length is the batch size, not the token count.
+    Buffer_<bool> decode_token_mask;
     bool          decode_shape{false};
     Buffer_<int>  k_offsets;
     Buffer_<int>  readonly_block_num;  // per-request, batch order
@@ -201,8 +204,20 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
         d->block_ptrs         = {max_blocks + 16, kDEVICE};
         d->block_ptrs_offsets = {bsz + 1, kDEVICE};
         d->decode_q_offsets   = {bsz + 1, kDEVICE};
+        d->decode_token_mask  = {bsz, kDEVICE};
         if (rope_param_.type == RopeType::kDynamic) {
             d->rope_base = empty_like(rope_base_buf_, kDEVICE);
+        }
+    }
+
+    // The draft's validity mask is constant: every row's single query is valid,
+    // because rows that finished this step are excluded from drafting upstream
+    // by skip_draft. Fill it once here rather than rebuilding it per step.
+    {
+        Buffer_<bool> ones{bsz, kCPUpinned};
+        std::fill_n(ones.data(), bsz, true);
+        for (auto& d : data_) {
+            core::Copy(ones, bsz, d->decode_token_mask);
         }
     }
 
@@ -289,8 +304,27 @@ void UnifiedAttentionLayer::Run(BatchOp op, int phase, TensorMap& env)
 
         // Borrow the global mask owned by LanguageModel (pointer only; its content is
         // built at Forward time) and resolve this rank's token offset within it.
-        d->token_mask      = env.at("token_mask").buffer().borrow();
-        d->token_mask_base = 0;
+        // The MTP draft needs a per-ROW mask, not the target's per-TOKEN one.
+        //
+        // reduce.cu indexes it as token_mask[query_idx]. The target's mask has
+        // one entry per submitted token, so on a verification step row i owns
+        // entry i*(K+1). The draft has one query per row and would read entry
+        // i -- which for i > 0 belongs to an earlier row's later token. At
+        // bsz == 1 the two happen to coincide, which is why this survives a
+        // single-sequence test and breaks as soon as a second request arrives.
+        //
+        // The draft's queries are all valid: rows that finished this step are
+        // excluded from drafting by skip_draft, and CanDraft requires every row
+        // generating. So an all-true mask of length bsz is correct, and stays
+        // correct because the exclusion happens upstream rather than here.
+        if (d->decode_shape) {
+            d->token_mask      = d->decode_token_mask;
+            d->token_mask_base = 0;
+        }
+        else {
+            d->token_mask      = env.at("token_mask").buffer().borrow();
+            d->token_mask_base = 0;
+        }
         if (engine_param_.attn_dp_size > 1) {
             const auto& local_token_num = env.at("batch").data<BatchData*>()[0]->local_token_num;
             TM_CHECK_EQ((int)local_token_num.size(), engine_param_.attn_dp_size);

@@ -1313,6 +1313,18 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // verification step nothing else sets it: stop_criteria belongs to
     // Generation, which this path skips. Without this the row keeps generating
     // after emitting EOS.
+    // A row that just emitted EOS must not draft.
+    //
+    // It is finished, so its drafts would predict tokens past the end of its
+    // own answer, and the next step retires it before they could be verified.
+    // Worse, the draft's per-row validity mask is derived from `finished`, and
+    // a finished row drafting means reading a mask entry that says otherwise.
+    for (int i = 0; i < bsz; ++i) {
+        if (eos_hit_[i]) {
+            d.skip_draft[i] = 1;
+        }
+    }
+
     if (std::find(eos_hit_.begin(), eos_hit_.begin() + bsz, true) != eos_hit_.begin() + bsz) {
         Buffer_<bool> host{bsz, kCPU};
         Copy(finished_.front().buffer().slice(0, bsz), host);
