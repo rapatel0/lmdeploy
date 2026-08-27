@@ -29,6 +29,23 @@ TP="${TP:-4}"
 NUM_DRAFT_TOKENS="${NUM_DRAFT_TOKENS:-4}"
 MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
 
+# Refuse to launch while a job of the same name is already active.
+#
+# Two launchers -- an interactive one and a background watcher that chains
+# "wait, then launch" -- raced and produced two results directories four seconds
+# apart, both incomplete, with two containers competing for the same four GPUs.
+# Neither run was usable and the collision was invisible until the directory
+# listing showed duplicate timestamps.
+#
+# kubectl create fails on a duplicate name, but the watcher deletes the job
+# first, so the window is real. Checking here makes it explicit.
+if [ -n "${2:-}" ] && kubectl -n "${NS:-llm}" get "job/${2}" >/dev/null 2>&1; then
+    if [ -n "$(kubectl -n "${NS:-llm}" get "job/${2}" -o jsonpath='{.status.active}' 2>/dev/null)" ]; then
+        echo "REFUSING: job/${2} is already active. Delete it or wait." >&2
+        exit 3
+    fi
+fi
+
 SCRIPT="${1:?usage: run_island2.sh <script.sh> [job-name] [extra-file ...]}"
 JOB="${2:-lmdeploy-v100-island2}"
 shift 2 2>/dev/null || shift $#
