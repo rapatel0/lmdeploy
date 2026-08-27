@@ -22,6 +22,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <set>
 #include <vector>
 
 #include "src/turbomind/core/core.h"
@@ -104,6 +105,9 @@ private:
 
     /// Host staging for the MTP draft's one-query-per-row cu_q_len array.
     Buffer_<int>   decode_q_offsets_buf_;
+
+    /// Phases whose first Setup has already been logged. Diagnostic only.
+    std::set<int>  setup_logged_;
 
     ///////////////////////////////////////////////////////
     /// temp runtime buffers (allocated in constructor)

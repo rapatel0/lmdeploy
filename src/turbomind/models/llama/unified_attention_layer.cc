@@ -378,6 +378,18 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     const bool decode_shape = env.try_("attn_decode_shape") != nullptr;
     d.decode_shape          = decode_shape;
 
+    // Report each Setup once per phase, so the log shows whether the draft's
+    // phase is being set up at all and with which shape. Four rounds of
+    // reasoning have not settled that, and one line of evidence will.
+    if (!setup_logged_.count(phase)) {
+        setup_logged_.insert(phase);
+        TM_LOG_INFO("[attn] first Setup on phase {}: bsz={} decode_shape={} input_len[0]={}",
+                    phase,
+                    bsz,
+                    (int)decode_shape,
+                    bsz > 0 ? rc[0]->input_len : -1);
+    }
+
     // One query token per row, cumulative: [0, 1, 2, ... bsz].
     //
     // Built here because Setup is the only op with `requests` in env, and used
