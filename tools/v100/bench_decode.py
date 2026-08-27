@@ -146,9 +146,7 @@ def main() -> int:
     # loaded" rather than "speculation ENABLED" -- the old phrasing appeared in
     # the K=0 baseline's log too, because the loader builds MTP weights whenever
     # the checkpoint carries them. Accept both so an older wheel still reports.
-    mtp_enabled = any(
-        ("draft layer weights loaded" in r) or ("speculation ENABLED" in r) for r in mtp_records
-    )
+    mtp_enabled = any(("draft layer weights loaded" in r) or ("speculation ENABLED" in r) for r in mtp_records)
     print("=== MTP status for this run ===", flush=True)
     for r in mtp_records:
         print(f"  {r}", flush=True)
