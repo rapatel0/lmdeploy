@@ -289,11 +289,13 @@ Scheduler::Scheduler(ObjectAllocator&   alloc,
                      const std::string& cache_prompt,
                      int                cache_prompt_boundary_skip,
                      const std::string& cache_generation,
+                     int                num_draft_tokens,
                      const int&         is_warm_up):
     enable_prefix_caching_{enable_prefix_caching},
     prompt_cache_mode_{ParseCacheMode(cache_prompt)},
     cache_prompt_boundary_skip_{cache_prompt_boundary_skip < 1 ? 1 : cache_prompt_boundary_skip},
     generation_cache_mode_{ParseCacheMode(cache_generation)},
+    num_draft_tokens_{num_draft_tokens},
     is_warm_up_{is_warm_up},
     alloc_{alloc},
     registry_{std::move(registry)},
@@ -342,7 +344,31 @@ void Scheduler::EnsureBlocks(Sequence& s)
     //
     // Correctness never depended on this: the clamp holds and short drafts are
     // still verified. It is acceptance thrown away for block geometry.
-    const int draft_headroom = s.num_drafts > 0 ? s.num_drafts : 0;
+    // Headroom for every step that can draft, not only the ones already
+    // carrying drafts.
+    //
+    // Gating on `num_drafts > 0` skipped the first decode step -- precisely the
+    // step that primes the drafts, where num_drafts is still 0 and the draft
+    // nonetheless walks num_draft_tokens positions past the tip. That row got
+    // no headroom at all.
+    //
+    // A generating row is one draft away from needing the space, so reserve it
+    // whenever speculation is on. max_extend still clamps the walk to what is
+    // actually allocated; this only stops the clamp from biting for want of a
+    // block.
+    // Sequence::kMaxDraftTokens, not the configured K.
+    //
+    // Gating on `num_drafts > 0` skipped the first decode step -- precisely the
+    // step that primes the drafts, where num_drafts is still 0 and the draft
+    // nonetheless walks num_draft_tokens positions past the tip. That row got
+    // no headroom at all.
+    //
+    // Gated on num_draft_tokens_ so the non-speculative path is untouched.
+    // An unconditional margin would give roughly one decode step in eight an
+    // extra block -- real KV memory charged for a feature that is switched off.
+    // max_extend still clamps the walk to what is really allocated; this only
+    // stops the clamp from biting for want of a block.
+    const int draft_headroom = num_draft_tokens_ > 0 && s.generating ? num_draft_tokens_ : 0;
 
     const int length = s.seq_len + s.inflight_new_tokens + draft_headroom;
     const int needed = (length + bs - 1) / bs;

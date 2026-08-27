@@ -93,6 +93,7 @@ public:
               const std::string& cache_prompt,
               int                cache_prompt_boundary_skip,
               const std::string& cache_generation,
+              int                num_draft_tokens,
               const int&         is_warm_up);
 
     ~Scheduler();
@@ -216,6 +217,9 @@ private:
     CacheMode        prompt_cache_mode_{CacheMode::kAuto};
     int              cache_prompt_boundary_skip_{1};
     CacheMode        generation_cache_mode_{CacheMode::kAuto};
+    /// Speculative draft depth, 0 when speculation is off. Used only to size
+    /// the KV headroom a drafting row needs beyond its committed tip.
+    const int        num_draft_tokens_;
     const int&       is_warm_up_;
     ObjectAllocator& alloc_;     // owned by Engine; also used outside the scheduler
     CacheRegistry    registry_;  // owned: registration is closed before construction

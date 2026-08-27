@@ -244,6 +244,7 @@ Engine::Impl::Impl(EngineParam                  param,
                param_.cache_prompt,
                param_.cache_prompt_boundary_skip,
                param_.cache_generation,
+               param_.num_draft_tokens,
                is_warm_up_},
     model_{std::move(model)},
     vision_model_{std::move(vision_model)}
