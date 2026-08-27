@@ -947,7 +947,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     // rejected; there is no way to recover it afterwards, because the forward
     // advances it in place.
     if (gdn_rollback_ && HasDraftsToVerify(phase)) {
-        unified_decoder_->SnapshotGDNState();
+        unified_decoder_->SnapshotGDNState(phase);
     }
 
     unified_decoder_->Forward(phase, env, weights_.layers_list());
@@ -1431,9 +1431,10 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // that. Per-token snapshots would avoid the replay but cost 12 GB at
         // batch 64.
         //
-        // Cost: one forward either way. Value depends on the per-draft accept
-        // rate p as p^K * (K+1) + (1 - p^K), which is never below 1.0.
-        // On rejection, commit NOTHING from this step.
+        // Cost: one verification forward either way. Value depends on the
+        // full-run accept probability p^K: an accepted step commits K+1
+        // tokens, while a rejected step commits zero and requires an ordinary
+        // decode on the next iteration. On rejection, commit NOTHING here.
         //
         // Not even the bonus token, and that is the part that took several
         // wrong attempts to get right. Restoring the snapshot rewinds the
@@ -1739,7 +1740,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // already disproved earlier in this same turn. The next forward starts at
     // resume_len + inflight_input_len, which lands on the new tip.
     if (restore_gdn) {
-        unified_decoder_->RestoreGDNState(gdn_restore_.data(), bsz);
+        unified_decoder_->RestoreGDNState(phase, gdn_restore_.data(), bsz);
     }
 
     // Publish the no-commit mask separately from the accepted count.

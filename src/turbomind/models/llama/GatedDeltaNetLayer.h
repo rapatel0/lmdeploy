@@ -54,7 +54,7 @@ public:
     ///
     /// 48 of this model's 64 layers are linear attention, so the drift changes
     /// every subsequent token.
-    void SnapshotState();
+    void SnapshotState(int phase);
 
     /// Put back the state saved by SnapshotState this step.
     ///
@@ -65,7 +65,7 @@ public:
     /// advanced state, and rewinding it strands the state behind a tip that was
     /// already committed -- the next forward begins at that tip and never
     /// re-runs the prefix, so nothing recovers it.
-    void RestoreState(const char* rows = nullptr, int row_count = 0);
+    void RestoreState(int phase, const char* rows = nullptr, int row_count = 0);
 
     /// Whether snapshot buffers exist. False when speculation is disabled, in
     /// which case Snapshot/Restore are no-ops.
@@ -109,6 +109,13 @@ private:
         std::optional<linear_attn::delta_rule::Plan> chunked_plan;
         core::Tensor                                 chunked_workspace;
         Buffer_<uint8_t>                             recurrent_state_tma_descs;
+
+        // The main thread may prepare the next phase while the executor still
+        // snapshots or restores this one. Keep the frontier identity with the
+        // phase plan; a shared vector can silently redirect rollback into the
+        // next batch's requests.
+        int                                          snapshot_batch{};
+        std::vector<const CacheBlock*>                snapshot_blocks;
     };
     std::vector<Data> data_;
 
@@ -126,12 +133,7 @@ private:
     // sized for max_batch_size sequences: conv state plus every recurrent
     // block, laid out contiguously per sequence.
     Buffer_<uint8_t> snapshot_;
-    size_t           snapshot_bytes_{};   // per sequence
-    int              snapshot_batch_{0};  // sequences captured by the last snapshot
-
-    /// Frontier block per sequence, captured at Setup because the snapshot runs
-    /// at Forward time, when `requests` is no longer in the env.
-    std::vector<const CacheBlock*> snapshot_blocks_;
+    size_t           snapshot_bytes_{};  // per sequence
 
     std::unordered_map<const DeltaNetWeight*, int> layer_index_;  // weight ptr -> GDN-local layer index
 

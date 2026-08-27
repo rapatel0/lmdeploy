@@ -9,8 +9,8 @@
 # speedup is meaningless -- it is a different, cheaper computation, not the same
 # one done faster.
 #
-# So this runs the same prompts at K=0 and K=4 and requires byte-identical text
-# before it will even look at the timing.
+# So this runs the same prompts at K=0 and the configured draft depth and
+# requires byte-identical text before it will even look at the timing.
 set -uo pipefail
 
 SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/null)"
@@ -160,7 +160,7 @@ done
 
 echo
 echo "=== comparison ==="
-python3 - "${RESULTS}/bench_k0.json" "${RESULTS}/bench_k${K}.json" <<'PY'
+python3 - "${RESULTS}/bench_k0.json" "${RESULTS}/bench_k${K}.json" "${K}" <<'PY'
 import json, sys
 
 def load(p):
@@ -176,7 +176,7 @@ if not base or not spec:
     print("  incomplete results")
     raise SystemExit(0)
 
-print(f"  {'metric':<24} {'K=0':>10} {'K=4':>10} {'change':>10}")
+print(f"  {'metric':<24} {'K=0':>10} {f'K={sys.argv[3]}':>10} {'change':>10}")
 for key, label in [("mean_decode_tok_s", "decode tok/s"),
                    ("mean_inclusive_tok_s", "inclusive tok/s"),
                    ("ttft_ms", "TTFT ms")]:
@@ -252,7 +252,7 @@ done
 # not delivered anything, and without this check the job would report success
 # for it.
 if [ -s "${RESULTS}/bench_k0.json" ] && [ -s "${RESULTS}/bench_k${K}.json" ]; then
-    python3 - "${RESULTS}/bench_k0.json" "${RESULTS}/bench_k${K}.json" <<'PY' || FAILED=1
+    python3 - "${RESULTS}/bench_k0.json" "${RESULTS}/bench_k${K}.json" "${K}" <<'PY' || FAILED=1
 import json, sys
 
 try:
@@ -271,7 +271,7 @@ if not b or not s:
     raise SystemExit(1)
 
 ratio = s / b
-print(f"  decode throughput ratio K=4/K=0: {ratio:.3f}x")
+print(f"  decode throughput ratio K={sys.argv[3]}/K=0: {ratio:.3f}x")
 if ratio <= 1.0:
     print(
         f"FAIL: speculation is not faster ({ratio:.3f}x); "

@@ -31,19 +31,19 @@ public:
     /// Attention-list index of the MTP draft layer, or -1 when absent.
     /// Save every sequence's recurrent state before a speculative forward.
     /// No-op when the model has no linear-attention layers.
-    void SnapshotGDNState()
+    void SnapshotGDNState(int phase)
     {
         if (linear_attn_layer_) {
-            linear_attn_layer_->SnapshotState();
+            linear_attn_layer_->SnapshotState(phase);
         }
     }
 
     /// Put back the state saved by SnapshotGDNState this step, for the rows
     /// selected by `rows` (one byte per batch row, non-zero to restore).
-    void RestoreGDNState(const char* rows, int row_count)
+    void RestoreGDNState(int phase, const char* rows, int row_count)
     {
         if (linear_attn_layer_) {
-            linear_attn_layer_->RestoreState(rows, row_count);
+            linear_attn_layer_->RestoreState(phase, rows, row_count);
         }
     }
 

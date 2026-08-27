@@ -282,23 +282,22 @@ void ForEachStatePart(const CacheBlock& block, int rec_base, int num_blocks, siz
 
 }  // namespace
 
-void GatedDeltaNetLayer::SnapshotState()
+void GatedDeltaNetLayer::SnapshotState(int phase)
 {
     if (!has_snapshot()) {
         return;
     }
 
-    // The frontier pointers captured at Setup, NOT env.at("requests").
-    //
-    // `requests` is placed in the map by Setup and is gone by Forward, so
-    // reading it here would abort. Setup already walks every sequence's
-    // frontier block to fill the state pointers, so it records them for this.
+    // The phase-local frontier pointers captured at Setup, NOT
+    // env.at("requests"). The main thread can prepare the other phase before
+    // this executor reaches Forward, so a shared frontier vector is a race.
+    auto&      data   = data_.at(phase);
     const auto stream = core::Context::stream().handle();
 
-    snapshot_batch_ = (int)snapshot_blocks_.size();
+    data.snapshot_batch = (int)data.snapshot_blocks.size();
 
-    for (int i = 0; i < snapshot_batch_; ++i) {
-        const CacheBlock& block = *TM_CHECK_NOTNULL(snapshot_blocks_[i]);
+    for (int i = 0; i < data.snapshot_batch; ++i) {
+        const CacheBlock& block = *TM_CHECK_NOTNULL(data.snapshot_blocks[i]);
         uint8_t*          dst   = snapshot_.data() + size_t(i) * snapshot_bytes_;
         ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
                          [&](char* src, size_t bytes) {
@@ -308,26 +307,26 @@ void GatedDeltaNetLayer::SnapshotState()
     }
 }
 
-void GatedDeltaNetLayer::RestoreState(const char* rows, int row_count)
+void GatedDeltaNetLayer::RestoreState(int phase, const char* rows, int row_count)
 {
-    if (!has_snapshot() || snapshot_batch_ == 0) {
+    auto& data = data_.at(phase);
+    if (!has_snapshot() || data.snapshot_batch == 0) {
         return;
     }
 
     const auto stream = core::Context::stream().handle();
 
-    // The batch must not have changed between snapshot and restore. If it had,
-    // sequence i would be a different request and this would write one
-    // sequence's state into another -- silent cross-request corruption rather
-    // than a fault.
-    TM_CHECK_EQ((int)snapshot_blocks_.size(), snapshot_batch_)
+    // Setup and rollback must refer to the same phase-local batch. Otherwise
+    // sequence i can name another request and rollback becomes silent
+    // cross-request corruption rather than a fault.
+    TM_CHECK_EQ((int)data.snapshot_blocks.size(), data.snapshot_batch)
         << "GDN snapshot batch changed between save and restore";
     if (rows) {
-        TM_CHECK_EQ(row_count, snapshot_batch_)
+        TM_CHECK_EQ(row_count, data.snapshot_batch)
             << "GDN restore mask length does not match the snapshotted batch";
     }
 
-    for (int i = 0; i < snapshot_batch_; ++i) {
+    for (int i = 0; i < data.snapshot_batch; ++i) {
         // Only the rows that rejected something.
         //
         // Restoring the whole batch would corrupt any row that accepted every
@@ -339,7 +338,7 @@ void GatedDeltaNetLayer::RestoreState(const char* rows, int row_count)
             continue;
         }
 
-        const CacheBlock& block = *TM_CHECK_NOTNULL(snapshot_blocks_[i]);
+        const CacheBlock& block = *TM_CHECK_NOTNULL(data.snapshot_blocks[i]);
         const uint8_t*    src   = snapshot_.data() + size_t(i) * snapshot_bytes_;
         ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
                          [&](char* dst, size_t bytes) {
@@ -375,17 +374,11 @@ void GatedDeltaNetLayer::Setup(int phase, TensorMap& env)
     data.chunked_workspace         = {};
     data.recurrent_state_tma_descs = {};
 
-    // The frontier list is the current batch, not a high-water mark.
-    //
-    // This used to grow but never shrink. When one row retired from a mixed
-    // batch, SnapshotState recorded snapshot_batch_ from the stale vector size
-    // and RestoreState then read rows[i] beyond the current rollback mask. A
-    // non-zero byte there made it restore into the retired sequence's freed
-    // frontier block: host SIGSEGV, only after the first row retired, while
-    // every prompt passed at batch size one. Size the list before filling it so
-    // snapshot_batch_ always equals this phase's real batch.
+    // The phase-local frontier list is the current batch, not a high-water
+    // mark. It must both shrink after retirement and remain isolated from the
+    // other phase, which the main thread may prepare while this phase runs.
     if (snapshot_bytes_ != 0) {
-        snapshot_blocks_.resize(data.batch_size);
+        data.snapshot_blocks.resize(data.batch_size);
     }
 
     auto make_context = [&] {
@@ -451,7 +444,7 @@ void GatedDeltaNetLayer::Setup(int phase, TensorMap& env)
         // Retained for the speculative snapshot, which runs at Forward time
         // when `requests` is no longer in the env.
         if (snapshot_bytes_ != 0) {
-            snapshot_blocks_[sequence] = &block;
+            data.snapshot_blocks[sequence] = &block;
         }
 
         data.conv_state_ptrs_host[sequence] = block.base(0);
