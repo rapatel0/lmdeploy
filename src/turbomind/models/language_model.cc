@@ -120,6 +120,16 @@ struct LanguageModel::Impl {
         /// of the step, so the value the forward actually verified must be kept
         /// separately or rejection would read the wrong K.
         std::vector<int> num_drafts;
+
+        /// Per row, suppress drafting at the end of THIS step. Set by Rollback
+        /// when a verification was rejected, so the row takes an ordinary
+        /// decode next step instead of retrying the prediction that failed.
+        ///
+        /// Per-phase, not a shared member: with async execution the main thread
+        /// runs Setup for the next batch while the executor is still between
+        /// kRollback and kDraft for this one, so a shared vector would be reset
+        /// mid-step -- losing the suppression and racing at the same time.
+        std::vector<char> skip_draft;
     };
 
     vector<Data> data_;
@@ -547,6 +557,12 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     // block is one row per sequence so the offset must be 0.
     last_accepted_.assign(rc.size(), 0);
 
+    // Sized here, not in Rollback, because DraftTokens reads it on EVERY step
+    // while Rollback runs only on verification steps. Left to Rollback it would
+    // carry the previous step's length: too short is an out-of-range read, too
+    // long suppresses drafting for rows that never rejected anything.
+    d.skip_draft.assign(rc.size(), 0);
+
     for (int i = 0; i < rc.size(); ++i) {
         auto& c         = *rc[i];
         d.rows[i]       = &c;
@@ -920,7 +936,17 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
         core::Copy(drafts.draft_tokens, n * bsz, host);
         core::Context::stream().Sync();
         for (int i = 0; i < bsz; ++i) {
-            auto& c              = *d.rows[i];
+            auto& c = *d.rows[i];
+
+            // A row whose verification was just rejected takes an ordinary
+            // decode next step. Drafting for it again would retry the same
+            // prediction against the same state and fail the same way, and the
+            // row would never make progress.
+            if (i < (int)d.skip_draft.size() && d.skip_draft[i]) {
+                c.pending_num_drafts = 0;
+                continue;
+            }
+
             c.pending_num_drafts = n;
             for (int k = 0; k < n; ++k) {
                 c.pending_draft_tokens[k] = host[k * bsz + i];
@@ -1189,7 +1215,20 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // A no-commit row emits nothing: no bonus token, no length change.
         // Its next step decodes normally and produces one token there.
         if (no_commit_[i]) {
-            c.num_drafts = 0;  // decode next step instead of retrying the miss
+            // Force an ordinary decode next step via the pending field, NOT by
+            // writing c.num_drafts here.
+            //
+            // Two reasons. Rollback runs on the executor thread while the main
+            // thread may already be in Schedule(), so touching the live field
+            // is the same cross-thread race that commit 2428300a fixed. And
+            // kDraft runs after this in the same step and sets
+            // pending_num_drafts = K, so a write here would simply be
+            // overwritten by Update's publish -- the row would draft again and
+            // retry the prediction that just failed.
+            //
+            // d.skip_draft is honoured by DraftTokens, which runs later in this
+            // same step, so the suppression survives to the publish.
+            d.skip_draft[i] = 1;
             continue;
         }
 
