@@ -157,7 +157,11 @@ struct LanguageModel::Impl {
     /// Accept-length accounting. 1 + accepted/steps is the tokens emitted per
     /// forward, which is the number that decides whether speculation pays.
     size_t mtp_accepted_ = 0;
-    size_t mtp_steps_    = 0;
+    /// Tokens actually committed by verification forwards. Distinct from
+    /// mtp_accepted_, which counts only drafts: a committed step contributes
+    /// 1 + n, a rejected one contributes nothing.
+    size_t mtp_committed_ = 0;
+    size_t mtp_steps_     = 0;
 
     /// Per row, did this verification commit an EOS token? A verification step
     /// skips Generation, so stop_criteria never runs and Rollback must set
@@ -1236,6 +1240,16 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // A no-commit row emits nothing: no bonus token, no length change.
         // Its next step decodes normally and produces one token there.
         if (no_commit_[i]) {
+            // Count the step BEFORE bailing out.
+            //
+            // A rejected verification is still a forward that produced zero
+            // tokens, and leaving it out makes the meter average over only the
+            // steps that accepted everything -- so it would report exactly
+            // 1 + K forever, whatever the real rate. That is the ceiling, not a
+            // measurement, and the accept-length gate would pass a build that
+            // accepts almost nothing.
+            mtp_steps_ += 1;
+
             // Force an ordinary decode next step via the pending field, NOT by
             // writing c.num_drafts here.
             //
@@ -1274,6 +1288,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         d.last_accepted[i] = n;
 
         mtp_accepted_ += n;
+        mtp_committed_ += 1 + n;  // the bonus token plus every accepted draft
         mtp_steps_ += 1;
     }
 
@@ -1348,13 +1363,29 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // would abort.
     Copy(out_ids, autoreg_ids_.slice(0, bsz));
 
-    // Accept length is the quantity that decides whether this is worth doing:
-    // 1 + mean accepted drafts is the tokens produced per forward.
+    // Tokens committed per verification forward -- the quantity that decides
+    // whether speculation pays for itself.
+    //
+    // NOT `1 + accepted/steps`. That formula assumes every step commits at
+    // least a bonus token, which stopped being true when rejection became a
+    // no-op: an all-or-nothing step commits 1 + K tokens or nothing at all.
+    // With rejected steps also excluded from the denominator, as they were, the
+    // meter averaged over only the steps that accepted everything and therefore
+    // reported exactly 1 + K forever -- the ceiling, not a measurement, and
+    // enough to pass an accept-length gate on a build that accepts almost
+    // nothing.
+    //
+    // mtp_committed_ counts tokens actually committed; mtp_steps_ counts every
+    // verification forward including the rejected ones.
     if (mtp_steps_ >= 64 && mtp_steps_ % 64 == 0) {
-        TM_LOG_INFO("[MTP] accept length {:.2f} tokens/step over {} steps ({} drafts accepted)",
-                    1.0 + (double)mtp_accepted_ / (double)mtp_steps_,
+        TM_LOG_INFO("[MTP] accept length {:.2f} tokens/step over {} steps "
+                    "({} committed, {} full accepts)",
+                    (double)mtp_committed_ / (double)mtp_steps_,
                     mtp_steps_,
-                    mtp_accepted_);
+                    mtp_committed_,
+                    mtp_accepted_ / (engine_param_.num_draft_tokens > 0 ?
+                                         engine_param_.num_draft_tokens :
+                                         1));
     }
 }
 

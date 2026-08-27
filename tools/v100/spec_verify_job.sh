@@ -172,16 +172,28 @@ FAILED=0
 if [ "${ACC_SEEN}" -eq 1 ]; then
     LAST_AL="$(grep -aoE '\[MTP\] accept length [0-9.]+' "${RESULTS}/console.log" |
         tail -1 | awk '{print $NF}')"
+    # The bound is > 0, not > 1.
+    #
+    # The meter now reports committed tokens per verification forward. Under
+    # all-or-nothing acceptance a step commits 1 + K tokens or none, so a poor
+    # accept rate legitimately produces a value below 1.0 -- that is a real
+    # measurement of speculation costing more than it returns, not a broken
+    # meter, and the throughput check below is what rejects it.
+    #
+    # What this catches is a meter that saw nothing at all.
     awk -v al="${LAST_AL}" -v k="${K}" 'BEGIN {
-        if (al <= 1.0) {
-            printf "FAIL: accept length %.2f means no draft was ever accepted\n", al > "/dev/stderr"
+        if (al <= 0.0) {
+            printf "FAIL: %.2f tokens/forward means nothing was ever committed\n", al > "/dev/stderr"
             exit 1
         }
         if (al > k + 1) {
-            printf "FAIL: accept length %.2f exceeds the ceiling of %d\n", al, k + 1 > "/dev/stderr"
+            printf "FAIL: %.2f tokens/forward exceeds the ceiling of %d\n", al, k + 1 > "/dev/stderr"
             exit 1
         }
-        printf "  accept length %.2f of a possible %d\n", al, k + 1
+        printf "  %.2f tokens/forward of a possible %d\n", al, k + 1
+        if (al < 1.0) {
+            printf "  NOTE: below 1.0 -- speculation is costing more than it returns\n"
+        }
     }' || FAILED=1
 fi
 for f in bench_k0.json "bench_k${K}.json" identity.json; do
