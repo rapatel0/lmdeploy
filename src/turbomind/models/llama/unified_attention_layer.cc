@@ -97,6 +97,26 @@ struct AttentionData {
     Buffer_<void*> block_ptrs;
     Buffer_<int>   block_ptrs_offsets;
 
+    // Host staging for the device buffers above, PER PHASE.
+    //
+    // These were single buffers on the layer, shared by every phase. That was
+    // a use-after-overwrite: BatchCopy records the source POINTER and defers
+    // the read to stream execution (cuMemcpyBatchAsync with
+    // SRC_ACCESS_ORDER_STREAM), so "fill staging, enqueue copy" followed by
+    // another phase's "fill staging, enqueue copy" lets the second host fill
+    // race the first stream read. The draft's SetupAttention refilled the
+    // staging while the target's copy was still queued, and the target then
+    // attended through the draft's block pointers.
+    //
+    // CUDA_LAUNCH_BLOCKING=1 made the crash vanish -- the drain after every
+    // launch closed the window -- which is what identified this as an
+    // ordering race rather than a bad address. Host staging must follow the
+    // same rule as every other per-step value: one slot per in-flight phase.
+    Buffer_<void*> block_ptrs_host;
+    Buffer_<int>   block_ptrs_offsets_host;
+    Buffer_<int>   decode_q_offsets_host;
+    Buffer_<float> rope_base_host;
+
     Buffer_<float> rope_base;
 
     Buffer_<int> mrope_position_ids;
@@ -213,10 +233,6 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
         cdiv(engine.session_len, engine.cache_block_seq_len) + cdiv(engine.num_draft_tokens + 1, engine.cache_block_seq_len) + 1;
     const auto max_block_num = engine.max_batch_size * blocks_per_seq;
 
-    block_ptrs_buf_         = {max_block_num, kCPUpinned};
-    block_ptrs_offsets_buf_ = {engine.max_batch_size + 1, kCPUpinned};
-    decode_q_offsets_buf_   = {engine.max_batch_size + 1, kCPUpinned};
-
     TM_CUDA_CHECK(cudaStreamCreateWithFlags(&aux_stream_, cudaStreamNonBlocking));
     TM_CUDA_CHECK(cudaEventCreateWithFlags(&qkv_event_, cudaEventDisableTiming));
     TM_CUDA_CHECK(cudaEventCreateWithFlags(&aux_event_, cudaEventDisableTiming));
@@ -225,9 +241,6 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
 
     const int bsz = engine.max_batch_size;
 
-    if (rope_param_.type == RopeType::kDynamic) {
-        rope_base_buf_ = {bsz + 1, kCPUpinned};
-    }
     if (rope_param_.mrope_mode != MropeMode::kNone) {
         mrope_default_buf_ = Buffer_<int>{std::max(bsz, 3), kDEVICE};
         Clear(mrope_default_buf_);
@@ -243,8 +256,15 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
         d->block_ptrs_offsets = {bsz + 1, kDEVICE};
         d->decode_q_offsets   = {bsz + 1, kDEVICE};
         d->decode_token_mask  = {bsz, kDEVICE};
+        // Host staging is per phase for the same reason the device buffers
+        // are: a copy enqueued from one phase's Setup may not have executed
+        // when another phase's Setup runs on the host. See AttentionData.
+        d->block_ptrs_host         = {max_blocks, kCPUpinned};
+        d->block_ptrs_offsets_host = {bsz + 1, kCPUpinned};
+        d->decode_q_offsets_host   = {bsz + 1, kCPUpinned};
         if (rope_param_.type == RopeType::kDynamic) {
-            d->rope_base = empty_like(rope_base_buf_, kDEVICE);
+            d->rope_base_host = {bsz + 1, kCPUpinned};
+            d->rope_base      = {bsz + 1, kDEVICE};
         }
     }
 
@@ -397,8 +417,8 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     auto& copy = *env.at("copy").data<BatchCopy*>()[0];
 
     {  /// Upload KV cache ptrs
-        auto blocks  = block_ptrs_buf_.data();
-        auto offsets = block_ptrs_offsets_buf_.data();
+        auto blocks  = d.block_ptrs_host.data();
+        auto offsets = d.block_ptrs_offsets_host.data();
 
         offsets[0] = 0;
         for (int i = 0; i < rc.size(); ++i) {
@@ -409,15 +429,15 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
                 // Bounded. The unchecked `*blocks++` was safe only while every
                 // row owned at most ceil(session_len / block_len) blocks, which
                 // the draft headroom broke.
-                TM_CHECK_LT(blocks - block_ptrs_buf_.data(), block_ptrs_buf_.size())
+                TM_CHECK_LT(blocks - d.block_ptrs_host.data(), d.block_ptrs_host.size())
                     << "block pointer staging overflow at row " << i;
                 *blocks++ = cb.base(0) + prefix_cache_offset_;
             }
             offsets[i + 1] = offsets[i] + r.block_ids.size();
         }
 
-        copy(block_ptrs_buf_, block_ptrs_offsets_buf_[bsz], d.block_ptrs);
-        copy(block_ptrs_offsets_buf_, bsz + 1, d.block_ptrs_offsets);
+        copy(d.block_ptrs_host, d.block_ptrs_offsets_host[bsz], d.block_ptrs);
+        copy(d.block_ptrs_offsets_host, bsz + 1, d.block_ptrs_offsets);
     }
 
     /// prepare Q/K stats for decode/prefill
@@ -462,9 +482,9 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     // verification step.
     if (decode_shape) {
         for (int i = 0; i <= bsz; ++i) {
-            decode_q_offsets_buf_[i] = i;
+            d.decode_q_offsets_host[i] = i;
         }
-        copy(decode_q_offsets_buf_, bsz + 1, d.decode_q_offsets);
+        copy(d.decode_q_offsets_host, bsz + 1, d.decode_q_offsets);
     }
 
     d.decode.n = decode_shape ?
@@ -543,9 +563,9 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     /// handling different RoPE types
     if (rope_param_.type == RopeType::kDynamic) {
         for (int i = 0; i < bsz; ++i) {
-            rope_base_buf_[i] = rc[i]->rope_base;
+            d.rope_base_host[i] = rc[i]->rope_base;
         }
-        copy(rope_base_buf_, bsz, d.rope_base);
+        copy(d.rope_base_host, bsz, d.rope_base);
     }
     else if (rope_param_.mrope_mode != MropeMode::kNone) {
         auto* mrope_length           = env.try_("mrope_length");

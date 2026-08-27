@@ -100,11 +100,10 @@ private:
 
     size_t prefix_cache_offset_{};
 
-    Buffer_<void*> block_ptrs_buf_;
-    Buffer_<int>   block_ptrs_offsets_buf_;
-
-    /// Host staging for the MTP draft's one-query-per-row cu_q_len array.
-    Buffer_<int>   decode_q_offsets_buf_;
+    // Host staging for Setup's uploads lives on AttentionData, one set per
+    // phase. It was here, shared across phases, and the draft's Setup refilled
+    // it while the target's stream-ordered copy was still queued -- the target
+    // then attended through the draft's block pointers. See AttentionData.
 
     /// Phases whose first Setup has already been logged. Diagnostic only.
     std::set<int>  setup_logged_;
@@ -118,7 +117,6 @@ private:
     Tensor_<float> partial_ML_;
     Tensor_<int>   split_cnt_;
 
-    Buffer_<float> rope_base_buf_;
     Buffer_<int>   mrope_default_buf_;
 
     CpPostContext cp_fn_ctx_;  // context parallel

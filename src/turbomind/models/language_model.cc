@@ -627,22 +627,19 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     // for exactly this. Running Setup against the target's phase is what
     // corrupted the target's plan; running it against the draft's own does not.
     if (mtp_predictor_) {
-        // Flush first. UnifiedAttentionLayer::Setup stages block pointers in
-        // SHARED host buffers -- block_ptrs_buf_, block_ptrs_offsets_buf_,
-        // rope_base_buf_ -- and hands them to BatchCopy, which records the
-        // source POINTER and defers the read until copy.Run().
+        // An earlier version flushed `copy` here and claimed that made the
+        // shared host staging safe. It did not: BatchCopy::Run only ENQUEUES a
+        // stream-ordered batched memcpy (SRC_ACCESS_ORDER_STREAM), so the
+        // host-side source read happens when the stream reaches it, not when
+        // Run returns. The draft's Setup could still refill the staging before
+        // the target's queued copy executed, and the target then attended
+        // through the draft's block pointers. That was the illegal memory
+        // access: absent at K=0, absent under CUDA_LAUNCH_BLOCKING=1 (the
+        // drain closed the window), present otherwise.
         //
-        // So without this, the draft's Setup refills those buffers before the
-        // target's queued copy has executed, and both phases end up with the
-        // draft's block table. The target would attend through the draft's
-        // pointers, silently.
-        //
-        // The draft's own copies are flushed by Engine::Setup, which calls
-        // copy.Run() as soon as this returns. Both sets therefore execute, and
-        // neither reads staging the other has already overwritten. Checked,
-        // because dropping that second flush would leave the draft's block
-        // table on the host and the draft attending through uninitialised
-        // device pointers -- which reads as garbage output, not as a fault.
+        // The staging is now per phase, on AttentionData, so the draft's fill
+        // cannot alias the target's. The flush is kept only to bound the queue
+        // depth; correctness no longer depends on it.
         copy.Run();
 
         mtp_predictor_->SetupAttention(phase, env);
