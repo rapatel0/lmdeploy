@@ -97,12 +97,21 @@ def main() -> int:
     # 'Warm-up for N tokens failed with status 6' before any request runs.
     # Keep session_len comfortably above input plus output.
     session_len = max(16384, (args.input_tokens + args.output_tokens) * 4)
+    # Prefix caching OFF, deliberately.
+    #
+    # Every trial sends the same prompt, so with the cache enabled the first
+    # trial computes the prefill and the rest reuse it. That is not the
+    # configuration under test, and it does not distort both arms equally: the
+    # speculative arm runs a different number of forwards, so cache hits shift
+    # the K=0 and K=4 timings by different amounts and the ratio stops meaning
+    # what it claims to mean.
     engine_config = TurbomindEngineConfig(
         model_format=args.model_format,
         tp=args.tp,
         cache_max_entry_count=args.cache_max_entry_count,
         session_len=session_len,
         num_draft_tokens=args.num_draft_tokens,
+        enable_prefix_caching=False,
     )
     print(
         f"engine: tp={args.tp} model_format={args.model_format} "
