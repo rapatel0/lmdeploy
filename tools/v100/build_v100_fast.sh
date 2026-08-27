@@ -39,6 +39,18 @@ set -euo pipefail
 ARCH_TARGET="${ARCH_TARGET:-70-real}"
 WHEEL_DIR="${WHEEL_DIR:-/wheels}"
 
+# Self-locating: build the tree this script lives in, whatever the caller's
+# cwd. The first caller that forgot `cd /src` produced
+#   ERROR Source . does not appear to be a Python project
+# and burned a GPU job on it. The script knows where its repo root is;
+# requiring every caller to know it too is one invariant per caller instead
+# of one total.
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+[ -f pyproject.toml ] || [ -f setup.py ] || {
+    echo "FAIL: $(pwd) has no pyproject.toml/setup.py; script moved?" >&2
+    exit 1
+}
+
 echo "=== toolchain check ==="
 command -v nvcc >/dev/null 2>&1 || { echo "FAIL: nvcc not found" >&2; exit 1; }
 CUDA_MAJOR="$(nvcc --version | sed -n 's/.*release \([0-9]*\)\..*/\1/p')"
