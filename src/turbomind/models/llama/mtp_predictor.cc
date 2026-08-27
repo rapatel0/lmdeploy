@@ -74,22 +74,20 @@ MTPPredictor::~MTPPredictor() = default;
 
 void MTPPredictor::SetupAttention(TensorMap& env)
 {
-    // Run the MTP attention layer's own Setup and Prepare.
-    //
-    // The target's UnifiedDecoder never does this for the draft layer: its
-    // Forward iterates weights_.layers_list(), which returns only the target's
-    // `layers` child. So without this call the MTP KV slot is never populated,
-    // the first draft attention reads uninitialised entries, and every step
-    // reuses one set of q/k offsets and writes the same cache position.
-    //
-    // That is why the acceptance figure measured before this existed could not
-    // be trusted as a predictor: it described a draft attending to nothing.
-    // Requires `requests` in env, so this must be called from the engine's
-    // Setup, not from the executor's forward-time env, which carries only
-    // `batch` and `copy`.
+    // Needs `requests`, so this runs from the engine's Setup rather than the
+    // executor's forward-time env, which carries only `batch` and `copy`.
     TM_CHECK(env.try_("requests")) << "SetupAttention needs the setup-time env";
 
+    // Build the plan for the DRAFT's shape: one query token per row.
+    //
+    // Without this the plan is derived from the target's input_len, which is
+    // K+1 on a verification step, and the draft's bsz-token forward aborts on
+    // `d.prefill.q_sum + d.decode.n == q_count`. The separate phase slot keeps
+    // the draft from corrupting the target's plan; this keeps the draft's own
+    // plan correct.
+    env.produce("attn_decode_shape", Buffer_<int>{1, kCPU});
     attn_layer_.Run(BatchOp::kSetup, attn_phase_, env);
+    env.consume("attn_decode_shape");
 }
 
 void MTPPredictor::PrepareAttention(TensorMap& env)

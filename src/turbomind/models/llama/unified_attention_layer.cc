@@ -307,7 +307,20 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     /// prepare Q/K stats for decode/prefill
     d.decode = d.prefill = {};
 
-    d.decode.n  = std::find_if(rc.begin(), rc.end(), [](auto r) { return r->input_len > 1; }) - rc.begin();
+    // The MTP draft always submits exactly one token per row, whatever the
+    // target's input_len is for this step.
+    //
+    // On a verification step input_len is K+1, so deriving the draft's plan
+    // from it describes bsz*(K+1) tokens while the draft submits bsz. That is
+    // the `d.prefill.q_sum + d.decode.n == q_count` abort, and a separate phase
+    // slot alone does not fix it: the slot stops the draft corrupting the
+    // target's plan, but the draft still needs its OWN shape rather than a copy
+    // of the target's.
+    const bool decode_shape = env.try_("attn_decode_shape") != nullptr;
+
+    d.decode.n = decode_shape ?
+                     bsz :
+                     std::find_if(rc.begin(), rc.end(), [](auto r) { return r->input_len > 1; }) - rc.begin();
     d.prefill.n = bsz - d.decode.n;
 
     // d.dbg_offset = d.dbg_size = 0;
@@ -320,11 +333,16 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
         //     d.dbg_size   = c.input_len;
         // }
 
+        // One query token per row for the draft; the key length is unchanged,
+        // because the draft attends over the same accepted history.
+        const int q_len = decode_shape ? 1 : c.input_len;
+        const int k_len = c.history_len + c.inflight_input_len + c.input_len;
+
         auto& s = i < d.decode.n ? d.decode : d.prefill;
-        s.q_sum += c.input_len;
-        s.k_sum += c.history_len + c.inflight_input_len + c.input_len;
-        s.q_max = std::max(s.q_max, c.input_len);
-        s.k_max = std::max(s.k_max, c.history_len + c.inflight_input_len + c.input_len);
+        s.q_sum += q_len;
+        s.k_sum += k_len;
+        s.q_max = std::max(s.q_max, q_len);
+        s.k_max = std::max(s.k_max, k_len);
     }
 
     // auto &D = d.decode, &P = d.prefill;
