@@ -622,6 +622,13 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
         // target's queued copy has executed, and both phases end up with the
         // draft's block table. The target would attend through the draft's
         // pointers, silently.
+        //
+        // The draft's own copies are flushed by Engine::Setup, which calls
+        // copy.Run() as soon as this returns. Both sets therefore execute, and
+        // neither reads staging the other has already overwritten. Checked,
+        // because dropping that second flush would leave the draft's block
+        // table on the host and the draft attending through uninitialised
+        // device pointers -- which reads as garbage output, not as a fault.
         copy.Run();
 
         mtp_predictor_->SetupAttention(phase, env);
