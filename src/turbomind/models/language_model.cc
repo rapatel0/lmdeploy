@@ -121,6 +121,15 @@ struct LanguageModel::Impl {
         /// separately or rejection would read the wrong K.
         std::vector<int> num_drafts;
 
+        /// Per row, how many drafts the last verification accepted. Selects
+        /// which row of a [bsz*(K+1), hidden] block carries the accepted tip.
+        ///
+        /// Per-phase for the same reason as skip_draft: Setup runs on the main
+        /// thread and would otherwise zero this vector while the executor sits
+        /// between Rollback and DraftTokens, making the draft gather the state
+        /// from before any draft instead of the accepted tip.
+        std::vector<int> last_accepted;
+
         /// Per row, suppress drafting at the end of THIS step. Set by Rollback
         /// when a verification was rejected, so the row takes an ordinary
         /// decode next step instead of retrying the prediction that failed.
@@ -149,10 +158,6 @@ struct LanguageModel::Impl {
     /// forward, which is the number that decides whether speculation pays.
     size_t mtp_accepted_ = 0;
     size_t mtp_steps_    = 0;
-
-    /// Per row, how many drafts the last verification accepted. Selects which
-    /// row of a [bsz*(K+1), hidden] block carries the accepted tip.
-    std::vector<int> last_accepted_;
 
     /// Per row, did this verification commit an EOS token? A verification step
     /// skips Generation, so stop_criteria never runs and Rollback must set
@@ -555,7 +560,7 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     // Reset every step. A stale accepted-count would make the next draft read
     // the wrong row of the hidden block, and on a non-verification step the
     // block is one row per sequence so the offset must be 0.
-    last_accepted_.assign(rc.size(), 0);
+    d.last_accepted.assign(rc.size(), 0);
 
     // Sized here, not in Rollback, because DraftTokens reads it on EVERY step
     // while Rollback runs only on verification steps. Left to Rollback it would
@@ -868,9 +873,9 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
 
         Tensor gathered = empty_like(hidden.slice(0, bsz));
         for (int i = 0; i < bsz; ++i) {
-            // last_accepted_[i] is the offset of the accepted tip inside this
+            // d.last_accepted[i] is the offset of the accepted tip inside this
             // row's block, recorded by Rollback.
-            const int off = i * rows_per_seq + last_accepted_[i];
+            const int off = i * rows_per_seq + d.last_accepted[i];
             TM_CHECK_LT(off, (int)hidden.shape(0));
             Copy(hidden.slice(off, 1), gathered.slice(i, 1));
         }
@@ -1250,7 +1255,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
 
         // Where this row's accepted tip sits inside its K+1 hidden block, for
         // the draft that runs next on this same env.
-        last_accepted_[i] = n;
+        d.last_accepted[i] = n;
 
         mtp_accepted_ += n;
         mtp_steps_ += 1;
