@@ -829,8 +829,19 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
             // been reasoning about. Five separate readings of the arithmetic
             // all concluded it fits; the hardware disagrees, so the arithmetic
             // is not the thing to read again.
-            if (!kv_dump_done_) {
-                kv_dump_done_ = true;
+            // Fire on SPECULATIVE prefill calls, not the first prefill call.
+            //
+            // The one-shot guard captured the prompt prefill -- 1102 tokens in
+            // 18 blocks, entirely healthy -- and then stayed quiet for the step
+            // that actually faults. A diagnostic that reports the wrong call is
+            // worse than none: it looks like evidence.
+            //
+            // A verification forward is prefill-shaped but short: q_sum is
+            // bsz * (1 + num_drafts), never the prompt length. Bounding the
+            // dump to small prefills selects those and skips the prompt.
+            const bool spec_shaped = d.prefill.q_sum <= 64;
+            if (spec_shaped && kv_dumps_ < 4) {
+                ++kv_dumps_;
                 Buffer_<int> off_host{d.prefill.n + 1, kCPU};
                 Copy(d.block_ptrs_offsets.slice(offset, d.prefill.n + 1), off_host);
                 core::Context::stream().Sync();
@@ -838,8 +849,20 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                 for (int i = 0; i <= d.prefill.n; ++i) {
                     offs += std::to_string(off_host[i]) + (i < d.prefill.n ? "," : "");
                 }
-                TM_LOG_ERROR("[kv] phase={} offset={} prefill.n={} q_sum={} k_sum={} k_max={} "
+                // Blocks the k_max keys actually need, against the blocks this
+                // row's offsets say it owns. If those disagree the fault is
+                // located; if they agree the address error is elsewhere and
+                // this rules the block table out for the failing call rather
+                // than for a healthy one.
+                const int need_blocks = (d.prefill.k_max + engine_param_.cache_block_seq_len - 1)
+                                        / engine_param_.cache_block_seq_len;
+                const int have_blocks = d.prefill.n > 0 ? off_host[1] - off_host[0] : 0;
+
+                TM_LOG_ERROR("[kv] SPEC need_blocks={} have_blocks={} phase={} offset={} "
+                             "prefill.n={} q_sum={} k_sum={} k_max={} "
                              "block_len={} cache_block_offset={} block_ptr_offsets=[{}]",
+                             need_blocks,
+                             have_blocks,
                              p.phase,
                              offset,
                              d.prefill.n,
