@@ -890,6 +890,39 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     {  // compute input embeddings
         auto input_ids = env.at("input_ids").buffer();
 
+        // TM_SPEC_TRACE=1: log what THIS forward actually consumes, per row.
+        //
+        // Two hypothesis-driven fixes in a row have not moved the identity
+        // divergence at position 2-4. This replaces the next guess with a
+        // measurement: the K=0 and K=4 arms each emit one line per forward,
+        // and diffing the traces names the first step whose INPUT differs
+        // -- which is the step whose predecessor leaked, whatever the
+        // mechanism. Bounded to small batches; identity runs use 5 prompts.
+        static const bool spec_trace = [] {
+            const char* s = std::getenv("TM_SPEC_TRACE");
+            return s && s[0] == '1';
+        }();
+        if (TM_UNLIKELY(spec_trace) && d.rows.size() <= 8) {
+            Buffer_<int> h_ids{input_ids.size(), kCPU};
+            core::Copy(input_ids, input_ids.size(), h_ids);
+            core::Context::stream().Sync();
+            int off = 0;
+            for (size_t i = 0; i < d.rows.size(); ++i) {
+                const int len = d.input_lens[i];
+                std::string toks;
+                for (int k = 0; k < len; ++k) {
+                    toks += std::to_string(h_ids[off + k]) + (k + 1 < len ? "," : "");
+                }
+                TM_LOG_WARNING("[trace] fwd uid={} seq_len={} in_len={} drafts={} in=[{}]",
+                               (long)d.uids[i],
+                               d.seq_lens[i],
+                               len,
+                               d.num_drafts[i],
+                               toks);
+                off += len;
+            }
+        }
+
         Tensor input_embeds = LookupEmbedding(input_ids, symm_buf_);
         TM_DEBUG_TENSOR(input_embeds, "embeddings", 1);
 
@@ -974,6 +1007,21 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     if (d.n_generating) {
         generation_->Run(BatchOp::kForward, phase, env);
         Copy(env.at("output_ids").buffer(), autoreg_ids_);
+
+        // TM_SPEC_TRACE: the token this ordinary decode step produced.
+        static const bool spec_trace = [] {
+            const char* s = std::getenv("TM_SPEC_TRACE");
+            return s && s[0] == '1';
+        }();
+        if (TM_UNLIKELY(spec_trace) && d.rows.size() <= 8) {
+            Buffer_<int> h_out{(ssize_t)d.rows.size(), kCPU};
+            Copy(autoreg_ids_.slice(0, (ssize_t)d.rows.size()), h_out);
+            core::Context::stream().Sync();
+            for (size_t i = 0; i < d.rows.size(); ++i) {
+                TM_LOG_WARNING("[trace] gen uid={} seq_len={} out={}",
+                               (long)d.uids[i], d.seq_lens[i], h_out[i]);
+            }
+        }
 
         // Drafting happens at kDraft, which the executor runs immediately
         // after this forward in the same env.
@@ -1579,6 +1627,28 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         mtp_steps_ += 1;
         if (n == d.num_drafts[i]) {
             ++mtp_full_accepts_;
+        }
+    }
+
+    // TM_SPEC_TRACE: the verification verdict, per row, before publication.
+    {
+        static const bool spec_trace = [] {
+            const char* s = std::getenv("TM_SPEC_TRACE");
+            return s && s[0] == '1';
+        }();
+        if (TM_UNLIKELY(spec_trace) && bsz <= 8) {
+            for (int i = 0; i < bsz; ++i) {
+                TM_LOG_WARNING("[trace] verify uid={} base={} accepted={} bonus={} out_id={} "
+                               "new_len={} no_commit={} skip_draft={}",
+                               (long)d.uids[i],
+                               d.rows[i]->seq_len,
+                               accepted[i],
+                               bonus[i],
+                               out_ids[i],
+                               seq_lens[i],
+                               (int)no_commit_[i],
+                               (int)d.skip_draft[i]);
+            }
         }
     }
 
