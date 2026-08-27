@@ -56,12 +56,20 @@ def main() -> int:
         do_sample=False,
     )
 
-    # One short prompt. The observed fault occurs at seq_len ~67, which this
-    # reaches within a few decode steps.
-    outs = pipe(["Count from 1 to 20, separated by spaces."], gen_config=cfg)
+    # Two prompt shapes, run separately, because the failure mode depends on
+    # the shape. Observed matrix at K=4:
+    #   8-token prompt    -> hang under async, clean under launch-blocking
+    #   1102-token prompt -> illegal access ~200ms after the first draft
+    # A short-prompt-only probe declared the configuration clean and was wrong
+    # for the long-prompt path.
+    short = "Count from 1 to 20, separated by spaces."
+    long = "The following is a detailed technical description. " * 130
 
-    for i, o in enumerate(outs):
-        print(f"MEMCHECK_ROW {i}: {len(o.token_ids or [])} tokens", flush=True)
+    for tag, prompt in (("short", short), ("long", long)):
+        print(f"MEMCHECK_PROMPT {tag}", flush=True)
+        outs = pipe([prompt], gen_config=cfg)
+        for i, o in enumerate(outs):
+            print(f"MEMCHECK_ROW {tag} {i}: {len(o.token_ids or [])} tokens", flush=True)
 
     pipe.close()
     print("MEMCHECK_CHILD_DONE", flush=True)
