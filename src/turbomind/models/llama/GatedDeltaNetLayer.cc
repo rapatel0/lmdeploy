@@ -156,6 +156,21 @@ GatedDeltaNetLayer::GatedDeltaNetLayer(std::vector<DeltaNetWeight*> weights,
     conv_total_bytes_ = byte_size(input_dtype_, conv_offset);
     registry.checkpoint().Register(conv_total_bytes_, 1);
 
+    // Speculative rollback snapshot.
+    //
+    // Only allocated when speculation is on, because it is not small: one
+    // sequence's conv state plus every recurrent block, times max_batch_size.
+    // A single copy is affordable; keeping one per drafted token would not be,
+    // which is why the design restores and replays rather than selecting an
+    // intermediate state.
+    if (engine.num_draft_tokens > 0) {
+        snapshot_bytes_ = conv_total_bytes_ + size_t(num_blocks_) * block_bytes_;
+        snapshot_       = Buffer_<uint8_t>{core::ssize_t(snapshot_bytes_) * engine.max_batch_size, kDEVICE};
+        TM_LOG_INFO("[GDN] speculative snapshot enabled: {} bytes/sequence, {} MB total",
+                    snapshot_bytes_,
+                    snapshot_bytes_ * size_t(engine.max_batch_size) / (1024 * 1024));
+    }
+
     const size_t prefix_bytes = registry.prefix().accumulation_bytes();
     TM_LOG_INFO("[GDN] input_dtype={} state_dtype={} gdr_cp_level={} block config L_b={} H_b={} -> "
                 "num_layer_groups={} num_head_groups={} num_blocks={} block_bytes={} "
@@ -237,6 +252,72 @@ void GatedDeltaNetLayer::Run(BatchOp op, int phase, TensorMap& env)
                                      *data.recurrent_plan,
                                      core::Context::stream().handle());
         }
+    }
+}
+
+namespace {
+
+// Walk one sequence's state blocks. Handing both directions the same traversal
+// keeps save and restore from drifting apart, which would be silent: a partial
+// restore leaves a state that is neither the old one nor the new one.
+template<class F>
+void ForEachStatePart(const CacheBlock& block, int rec_base, int num_blocks, size_t conv_bytes,
+                      size_t block_bytes, F&& fn)
+{
+    fn(block.base(0), conv_bytes);
+    for (int i = 0; i < num_blocks; ++i) {
+        fn(block.base(rec_base + i), block_bytes);
+    }
+}
+
+}  // namespace
+
+void GatedDeltaNetLayer::SnapshotState(int phase, TensorMap& env)
+{
+    if (!has_snapshot()) {
+        return;
+    }
+
+    const Buffer_<Sequence*> rc     = env.at("requests").buffer();
+    const auto               stream = core::Context::stream().handle();
+
+    snapshot_batch_ = (int)rc.size();
+
+    for (int i = 0; i < snapshot_batch_; ++i) {
+        const CacheBlock& block = *TM_CHECK_NOTNULL(rc[i]->frontier.get());
+        uint8_t*          dst   = snapshot_.data() + size_t(i) * snapshot_bytes_;
+        ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
+                         [&](char* src, size_t bytes) {
+                             TM_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
+                             dst += bytes;
+                         });
+    }
+}
+
+void GatedDeltaNetLayer::RestoreState(int phase, TensorMap& env)
+{
+    if (!has_snapshot() || snapshot_batch_ == 0) {
+        return;
+    }
+
+    const Buffer_<Sequence*> rc     = env.at("requests").buffer();
+    const auto               stream = core::Context::stream().handle();
+
+    // The batch must not have changed between snapshot and restore. If it had,
+    // sequence i would be a different request and this would write one
+    // sequence's state into another -- silent cross-request corruption rather
+    // than a fault.
+    TM_CHECK_EQ((int)rc.size(), snapshot_batch_)
+        << "GDN snapshot batch changed between save and restore";
+
+    for (int i = 0; i < snapshot_batch_; ++i) {
+        const CacheBlock& block = *TM_CHECK_NOTNULL(rc[i]->frontier.get());
+        const uint8_t*    src   = snapshot_.data() + size_t(i) * snapshot_bytes_;
+        ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
+                         [&](char* dst, size_t bytes) {
+                             TM_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
+                             src += bytes;
+                         });
     }
 }
 

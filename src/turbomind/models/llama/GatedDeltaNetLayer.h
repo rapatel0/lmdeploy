@@ -36,6 +36,38 @@ public:
 
     void Run(BatchOp op, int phase, TensorMap& env);
 
+    /// Copy every active sequence's recurrent and conv state aside.
+    ///
+    /// A speculative forward submits K+1 tokens and keeps only the accepted
+    /// prefix. For the KV cache that is harmless, because KV is positional and
+    /// re-running a position overwrites it. Recurrent state has no positions --
+    /// S_t = f(S_{t-1}, x_t) -- so a rejected draft advances S irreversibly and
+    /// the next forward continues from a state reflecting tokens the sequence
+    /// never accepted.
+    ///
+    /// delta_rule::Arguments carries one `state_ptrs`, used by both the
+    /// recurrent and chunked kernels, and GatedDeltaNetLayer fills it from each
+    /// request's live frontier block. So the K+1 forward writes that block in
+    /// place: this is not a hypothetical.
+    ///
+    /// 48 of this model's 64 layers are linear attention, so the drift changes
+    /// every subsequent token.
+    void SnapshotState(int phase, TensorMap& env);
+
+    /// Put back the state saved by SnapshotState this step.
+    ///
+    /// The caller replays the accepted prefix afterwards; restoring alone
+    /// rewinds to before the verification forward, which is correct but not yet
+    /// advanced.
+    void RestoreState(int phase, TensorMap& env);
+
+    /// Whether snapshot buffers exist. False when speculation is disabled, in
+    /// which case Snapshot/Restore are no-ops.
+    bool has_snapshot() const noexcept
+    {
+        return snapshot_bytes_ != 0;
+    }
+
     void Forward(ForwardParam p);
 
 private:
@@ -77,6 +109,13 @@ private:
     int    num_blocks_{};        // num_layer_groups_ * num_head_groups_
     size_t block_bytes_{};       // one recurrent block's bytes (one composite part)
     size_t conv_total_bytes_{};  // accumulated conv-state bytes (part 0)
+
+    // Speculative rollback snapshot. Allocated only when speculation is on,
+    // sized for max_batch_size sequences: conv state plus every recurrent
+    // block, laid out contiguously per sequence.
+    Buffer_<uint8_t> snapshot_;
+    size_t        snapshot_bytes_{};   // per sequence
+    int           snapshot_batch_{0};  // sequences captured by the last snapshot
 
     std::unordered_map<const DeltaNetWeight*, int> layer_index_;  // weight ptr -> GDN-local layer index
 
