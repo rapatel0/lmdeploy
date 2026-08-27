@@ -1012,7 +1012,22 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
 
             c.pending_num_drafts = n;
             for (int k = 0; k < n; ++k) {
-                c.pending_draft_tokens[k] = host[k * bsz + i];
+                const int id = host[k * bsz + i];
+                // Validate here, where the tokens are already on the host,
+                // rather than letting a bad id reach the embedding lookup.
+                // Launch-blocking placed the long-prompt illegal access in
+                // embeddingLookupKernel during the VERIFICATION forward -- the
+                // kernel that dereferences table[token_id]. That kernel faults
+                // in exactly one way: an id outside the table. The drafts are
+                // the only ids that do not come from the tokenizer, so they
+                // are checked at their source; an abort HERE with the value in
+                // hand indicts the draft's argmax/logits path, and a fault
+                // THERE with clean ids acquits it.
+                TM_CHECK(0 <= id && id < weights_.vocab_size)
+                    << "[MTP] draft step " << k << " for row " << i << " (uid " << c.req->unique_id
+                    << ", seq_len " << seq_lens[i] << ") produced token " << id << " outside the vocab of "
+                    << weights_.vocab_size;
+                c.pending_draft_tokens[k] = id;
             }
         }
     }

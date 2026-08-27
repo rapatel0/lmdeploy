@@ -31,8 +31,7 @@ def main() -> int:
     from lmdeploy.api import pipeline
 
     print(
-        f"MEMCHECK_CHILD: tp={args.tp} k={args.num_draft_tokens} "
-        f"max_new={args.max_new_tokens}",
+        f"MEMCHECK_CHILD: tp={args.tp} k={args.num_draft_tokens} max_new={args.max_new_tokens}",
         flush=True,
     )
 
