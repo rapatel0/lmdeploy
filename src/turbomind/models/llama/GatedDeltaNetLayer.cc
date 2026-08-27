@@ -300,9 +300,30 @@ void GatedDeltaNetLayer::SnapshotState(int phase)
 
     data.snapshot_batch = (int)data.snapshot_blocks.size();
 
+    // Reuse the existing max-batch snapshot allocation as active-row history.
+    // This avoids the old max_batch*(K+1) allocation. Small speculative batches
+    // retain every position, while large batches fall back to slot zero and the
+    // exact all-or-nothing policy.
+    const int max_input = data.input_lens.empty() ? 0 : *std::max_element(data.input_lens.begin(), data.input_lens.end());
+    const int    requested_slots = max_input + 1;  // pre-forward plus every input
+    const size_t capacity_slots  = snapshot_.size() / snapshot_bytes_;
+    const bool supported_kernel  = arch_ < 900;  // only pre_sm90 writes intermediate states
+    const bool fits = size_t(data.snapshot_batch) * requested_slots <= capacity_slots;
+    data.snapshot_slots = supported_kernel && fits ? requested_slots : 1;
+    if (requested_slots > 1 && data.snapshot_slots == 1 && !data.snapshot_fallback_warned) {
+        TM_LOG_WARNING("[GDN] partial verification state unavailable: arch={} active_rows={} requested_slots={} "
+                       "capacity_slots={}; using exact all-or-nothing fallback",
+                       arch_,
+                       data.snapshot_batch,
+                       requested_slots,
+                       capacity_slots);
+        data.snapshot_fallback_warned = true;
+    }
+
+    const size_t row_stride = size_t(data.snapshot_slots) * snapshot_bytes_;
     for (int i = 0; i < data.snapshot_batch; ++i) {
         const CacheBlock& block = *TM_CHECK_NOTNULL(data.snapshot_blocks[i]);
-        uint8_t*          dst   = snapshot_.data() + size_t(i) * snapshot_bytes_;
+        uint8_t*          dst   = snapshot_.data() + size_t(i) * row_stride;
         ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
                          [&](char* src, size_t bytes) {
                              TM_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
@@ -320,13 +341,13 @@ void GatedDeltaNetLayer::SnapshotState(int phase)
         return s && s[0] == '1';
     }();
     if (TM_UNLIKELY(trace_state)) {
-        const size_t         bytes = size_t(data.snapshot_batch) * snapshot_bytes_;
+        const size_t bytes = size_t(data.snapshot_batch) * data.snapshot_slots * snapshot_bytes_;
         std::vector<uint8_t> host(bytes);
         TM_CUDA_CHECK(cudaMemcpyAsync(host.data(), snapshot_.data(), bytes, cudaMemcpyDeviceToHost, stream));
         TM_CUDA_CHECK(cudaStreamSynchronize(stream));
         for (int i = 0; i < data.snapshot_batch; ++i) {
             uint64_t hash = 1469598103934665603ull;
-            const auto* begin = host.data() + size_t(i) * snapshot_bytes_;
+            const auto* begin = host.data() + size_t(i) * data.snapshot_slots * snapshot_bytes_;
             const auto* end   = begin + snapshot_bytes_;
             for (const auto* p = begin; p != end; ++p) {
                 hash = (hash ^ *p) * 1099511628211ull;
@@ -368,7 +389,45 @@ void GatedDeltaNetLayer::RestoreState(int phase, const char* rows, int row_count
         }
 
         const CacheBlock& block = *TM_CHECK_NOTNULL(data.snapshot_blocks[i]);
-        const uint8_t*    src   = snapshot_.data() + size_t(i) * snapshot_bytes_;
+        const uint8_t*    src = snapshot_.data() + size_t(i) * data.snapshot_slots * snapshot_bytes_;
+        ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
+                         [&](char* dst, size_t bytes) {
+                             TM_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
+                             src += bytes;
+                         });
+    }
+}
+
+bool GatedDeltaNetLayer::has_intermediate_state(int phase) const noexcept
+{
+    return has_snapshot() && data_.at(phase).snapshot_slots > 1;
+}
+
+void GatedDeltaNetLayer::SelectState(int phase, const int* slots, int row_count)
+{
+    auto& data = data_.at(phase);
+    TM_CHECK_NOTNULL(slots);
+    TM_CHECK(has_intermediate_state(phase));
+    TM_CHECK_EQ(row_count, data.snapshot_batch);
+    TM_CHECK_EQ((int)data.snapshot_blocks.size(), data.snapshot_batch);
+
+    const auto   stream     = core::Context::stream().handle();
+    const size_t row_stride = size_t(data.snapshot_slots) * snapshot_bytes_;
+    for (int i = 0; i < data.snapshot_batch; ++i) {
+        const int slot = slots[i];
+        if (slot < 0) {
+            continue;
+        }
+        TM_CHECK_LT(slot, data.snapshot_slots);
+
+        // The final submitted position is already the live state. Avoid a
+        // redundant full-state copy for fully accepted rows.
+        if (slot == data.input_lens[i]) {
+            continue;
+        }
+
+        const CacheBlock& block = *TM_CHECK_NOTNULL(data.snapshot_blocks[i]);
+        const uint8_t* src = snapshot_.data() + size_t(i) * row_stride + size_t(slot) * snapshot_bytes_;
         ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
                          [&](char* dst, size_t bytes) {
                              TM_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
@@ -385,6 +444,12 @@ void GatedDeltaNetLayer::Setup(int phase, TensorMap& env)
     data.batch_size = requests.size();
     data.input_lens.resize(data.batch_size);
     data.reset_ptrs.clear();
+
+    // Intermediate capture belongs to one verification forward only.
+    // SnapshotState enables it after this Setup. Without this reset, a later
+    // ordinary prompt prefill reuses the previous three/six-slot layout and
+    // writes hundreds of token frontiers past the fixed snapshot allocation.
+    data.snapshot_slots = 1;
 
     std::vector<int32_t> host_offsets(data.batch_size + 1, 0);
     for (int sequence = 0; sequence < data.batch_size; ++sequence) {
@@ -540,6 +605,13 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
     Tensor attn_out{{token_num, value_dim}, dtype, device};
     Tensor conv_out{{token_num, conv_dim}, dtype, device};
 
+    const bool    capture_intermediate = phase_data.snapshot_slots > 1;
+    const int64_t snapshot_step_stride = capture_intermediate ? int64_t(snapshot_bytes_) : 0;
+    const int64_t snapshot_row_stride = capture_intermediate
+                                            ? int64_t(phase_data.snapshot_slots) * snapshot_step_stride
+                                            : 0;
+    uint8_t* state_snapshots = capture_intermediate ? snapshot_.data() : nullptr;
+
     invokeFusedConv1dSiLU(conv_out,
                           all_proj,
                           weights.conv1d,
@@ -552,7 +624,10 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
                           weights.conv_state_offset,
                           sm_count_,
                           work_counter_.data(),
-                          stream);
+                          stream,
+                          state_snapshots,
+                          snapshot_row_stride,
+                          snapshot_step_stride);
 
     auto make_view = [](const Tensor& storage, core::ssize_t offset, core::Layout layout) {
         return Tensor{storage.buffer().slice(offset, storage.buffer().size() - offset),
@@ -649,6 +724,14 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
         arguments.out                = &out;
         arguments.workspace          = phase_data.chunked_workspace ? &phase_data.chunked_workspace : nullptr;
         arguments.state_layer_offset = state_layer_offset;
+        if (capture_intermediate) {
+            arguments.state_snapshots = state_snapshots + int64_t(phase_data.decode_count) * snapshot_row_stride;
+            arguments.snapshot_row_stride = snapshot_row_stride;
+            arguments.snapshot_step_stride = snapshot_step_stride;
+            arguments.snapshot_recurrent_offset = int64_t(conv_total_bytes_);
+            arguments.snapshot_block_bytes = int64_t(block_bytes_);
+            arguments.snapshot_layer_group = layer_group;
+        }
         delta_rule_.Run(arguments, *phase_data.chunked_plan, chunk_stream);
     }
 

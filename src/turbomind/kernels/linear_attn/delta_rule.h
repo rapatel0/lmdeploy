@@ -69,6 +69,15 @@ struct Arguments {
     core::Tensor* out{};
     core::Tensor* workspace{};
     int64_t       state_layer_offset{};
+
+    // Optional row-major speculative state history. Slot zero contains the
+    // pre-forward state. Chunked kernels write slot token+1 after each input.
+    uint8_t* state_snapshots{};
+    int64_t  snapshot_row_stride{};
+    int64_t  snapshot_step_stride{};
+    int64_t  snapshot_recurrent_offset{};
+    int64_t  snapshot_block_bytes{};
+    int      snapshot_layer_group{};
 };
 
 struct Problem {

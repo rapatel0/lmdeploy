@@ -32,7 +32,10 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out,
                            int                   state_layer_offset,
                            int                   sm_count,
                            int*                  work_counter,
-                           cudaStream_t          stream);
+                           cudaStream_t          stream,
+                           uint8_t*              state_snapshots = nullptr,
+                           int64_t               snapshot_row_stride = 0,
+                           int64_t               snapshot_step_stride = 0);
 
 inline void invokeFusedConv1dSiLU(Ref<Tensor>           out,
                                   const Tensor&         in,

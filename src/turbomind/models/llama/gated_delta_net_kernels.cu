@@ -245,7 +245,10 @@ __global__ void __launch_bounds__(BLOCK_DIM) fused_conv1d_batched_kernel_v2(T*  
                                                                             int          num_token_tiles,
                                                                             int          state_layer_offset,
                                                                             int          total_work,
-                                                                            int          num_ch_tiles)
+                                                                            int          num_ch_tiles,
+                                                                            uint8_t*     state_snapshots,
+                                                                            int64_t      snapshot_row_stride,
+                                                                            int64_t      snapshot_step_stride)
 {
     static_assert(BLOCK_DIM * CHANNELS_PER_THREAD > 0);
 
@@ -383,6 +386,24 @@ __global__ void __launch_bounds__(BLOCK_DIM) fused_conv1d_batched_kernel_v2(T*  
                     }
 
                     Store(out + (seq_off + t_local_start + tok) * conv_dim + c_base, out_vals);
+
+                    // Verification needs the recurrent frontier at every
+                    // accepted prefix, not only after the full submitted run.
+                    // The conv state is a ring of the last D_CONV inputs. Save
+                    // that ring after this token into slot token+1. Each layer
+                    // writes only its own state_layer_offset slice.
+                    if (state_snapshots && !skip_state_store) {
+                        T* snapshot = reinterpret_cast<T*>(state_snapshots
+                                                           + int64_t(b) * snapshot_row_stride
+                                                           + int64_t(t_local_start + tok + 1)
+                                                                 * snapshot_step_stride)
+                                      + state_layer_offset;
+                        PRAGMA_UNROLL
+                        for (int d = 0; d < D_CONV; ++d) {
+                            const int ring_d = (ring_start + tok + d) % D_CONV;
+                            Store(snapshot + ring_d * conv_dim + c_base, vals[tok + d]);
+                        }
+                    }
                 }
             }
 
@@ -412,7 +433,10 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out_,
                            int                   state_layer_offset,
                            int                   sm_count,
                            int*                  work_counter,
-                           cudaStream_t          stream)
+                           cudaStream_t          stream,
+                           uint8_t*              state_snapshots,
+                           int64_t               snapshot_row_stride,
+                           int64_t               snapshot_step_stride)
 {
     auto& out = out_.get();
 
@@ -458,7 +482,10 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out_,
                                                      num_token_tiles,
                                                      state_layer_offset,
                                                      total_work,
-                                                     num_ch_tiles);
+                                                     num_ch_tiles,
+                                                     state_snapshots,
+                                                     snapshot_row_stride,
+                                                     snapshot_step_stride);
             };
 
             int avg_seq = total_tokens / batch_size;

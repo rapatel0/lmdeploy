@@ -67,6 +67,17 @@ public:
     /// re-runs the prefix, so nothing recovers it.
     void RestoreState(int phase, const char* rows = nullptr, int row_count = 0);
 
+    /// Select the recurrent state after a verification input position.
+    ///
+    /// `slots[i]` is the number of verification input tokens whose state to
+    /// retain for row i. Slot zero is the pre-forward snapshot. Negative slots
+    /// leave a row unchanged. The final slot already equals the live state and
+    /// does not require a copy.
+    void SelectState(int phase, const int* slots, int row_count);
+
+    /// Whether this phase retained per-position verification states.
+    bool has_intermediate_state(int phase) const noexcept;
+
     /// Whether snapshot buffers exist. False when speculation is disabled, in
     /// which case Snapshot/Restore are no-ops.
     bool has_snapshot() const noexcept
@@ -115,6 +126,8 @@ private:
         // phase plan; a shared vector can silently redirect rollback into the
         // next batch's requests.
         int                                          snapshot_batch{};
+        int                                          snapshot_slots{1};
+        bool                                         snapshot_fallback_warned{};
         std::vector<const CacheBlock*>                snapshot_blocks;
     };
     std::vector<Data> data_;

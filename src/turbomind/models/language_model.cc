@@ -205,13 +205,16 @@ struct LanguageModel::Impl {
     /// EOS but not the verifier's bonus token after it.
     std::vector<int> no_bonus_;
 
-    /// Per row, must this sequence's recurrent state be rewound? Set when the
-    /// row rejected a draft; rows that accepted everything must NOT be rewound.
+    /// Per row, must this sequence's recurrent state be rewound? This is the
+    /// bounded-memory fallback when the active batch cannot retain every slot.
     std::vector<char> gdn_restore_;
 
-    /// Does this model carry recurrent state that a rejected draft corrupts?
-    /// True whenever the decoder has linear-attention layers, which forces
-    /// all-or-nothing acceptance.
+    /// Per row, the verification-input frontier to publish after acceptance.
+    /// Negative values keep the final live state unchanged.
+    std::vector<int> gdn_state_slots_;
+
+    /// Does this model carry recurrent state that speculative verification
+    /// must preserve?
     bool gdn_rollback_{false};
 
     /// Engine parameters, retained for the speculation settings.
@@ -1305,6 +1308,21 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     TM_CHECK_EQ((int)verify_logits_.shape(1), vocab_stride);
     TM_CHECK_EQ((int)verify_logits_.shape(0), bsz * (K + 1));
 
+    // TM_MTP_FORCE_REJECT=1 makes position zero reject inside GreedyReject,
+    // rather than clearing the accepted count afterwards. Clearing afterwards
+    // leaves bonus_tokens at target[n] from the original accepted prefix; once
+    // partial commits are enabled that skips target[0] and invalidates the
+    // forced-rejection identity diagnostic itself.
+    static const bool force_reject = [] {
+        const char* s = std::getenv("TM_MTP_FORCE_REJECT");
+        return s && s[0] == '1';
+    }();
+    if (TM_UNLIKELY(force_reject)) {
+        Buffer_<int> rejected{bsz * K, kCPU};
+        std::fill(rejected.data(), rejected.data() + rejected.size(), -1);
+        Copy(rejected, drafts);
+    }
+
     auto result = GreedyReject(verify_logits_.raw_data(),
                                drafts.data(),
                                bsz,
@@ -1313,35 +1331,6 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
                                vocab_stride,         // rows are strided by the padded size
                                weights_.data_type,
                                st);
-
-    // TM_MTP_FORCE_REJECT=1: discard every acceptance, keeping the whole
-    // verification pipeline running. This separates the two remaining
-    // suspects for the position-2 identity divergence, which predates the
-    // prefill fill and survives near-zero acceptance:
-    //
-    //   With zero accepts, every verification is a no-commit step -- GDN
-    //   restored, tip unmoved, next step an ordinary decode. If the output
-    //   STILL diverges from K=0, the verification forward itself leaks
-    //   state (an incomplete GDN restore, or a target KV write the next
-    //   step does not rewrite). If it becomes byte-identical, the leak is
-    //   in the accept-commit path or in chunked-vs-sequential GDN numerics
-    //   on accepted runs -- reachable only through an accept.
-    //
-    // Under gdn_rollback_ (this model: 48 GDN layers), a forced n = 0 puts
-    // every row on the no-commit path in Rollback: nothing is committed,
-    // not even the bonus, the GDN snapshot is restored, and the row takes
-    // an ordinary decode next step. The committed sequence is therefore
-    // produced ENTIRELY by ordinary decode steps -- which is the point.
-    // (The bonus GreedyReject computed for a would-have-accepted row is
-    // target[n], not target[0]; harmless here because no_commit swallows
-    // it before anything reads it.)
-    static const bool force_reject = [] {
-        const char* s = std::getenv("TM_MTP_FORCE_REJECT");
-        return s && s[0] == '1';
-    }();
-    if (TM_UNLIKELY(force_reject)) {
-        Clear(result.num_accepted);
-    }
 
     static const bool trace_logit_parity = [] {
         const char* s = std::getenv("TM_SPEC_LOGIT_PARITY");
@@ -1480,8 +1469,19 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // token_ids[seq_len - new_tokens .. seq_len) rather than a single token.
     bool clamped     = false;
     bool restore_gdn = false;
+    bool select_gdn  = false;
+    // Parity mode deliberately takes the legacy restore-and-replay branch so
+    // it can compare this verifier's first-position logits with the next
+    // ordinary recurrent decode in the same process.
+    static const bool trace_logit_parity = [] {
+        const char* s = std::getenv("TM_SPEC_LOGIT_PARITY");
+        return s && s[0] == '1';
+    }();
+    const bool has_intermediate_gdn = gdn_rollback_ && !trace_logit_parity
+                                      && unified_decoder_->has_intermediate_gdn_state(phase);
     eos_hit_.assign(bsz, false);
     gdn_restore_.assign(bsz, 0);
+    gdn_state_slots_.assign(bsz, -1);
     no_commit_.assign(bsz, 0);
     no_bonus_.assign(bsz, 0);
     Buffer_<int> seq_lens{bsz, kCPU};
@@ -1503,71 +1503,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         int n = accepted[i];
         TM_CHECK_GE(n, 0);
         TM_CHECK_LE(n, d.num_drafts[i]);
-
-        // All-or-nothing acceptance, forced by the recurrent state.
-        //
-        // 48 of this model's 64 layers are linear attention. Their state is
-        // advanced in place over every token the forward processed, so after a
-        // K+1 verification it reflects ALL the drafts, including rejected ones.
-        // Committing a partial prefix would leave the state describing a
-        // sequence that was never generated, and every later token would be
-        // wrong -- silently, since nothing checks it.
-        //
-        // With every draft accepted, the forward's final state is exactly the
-        // right one and nothing needs undoing. With any rejection we restore
-        // the pre-forward snapshot and keep only the bonus token, which is
-        // argmax(logits[0]) and therefore depends only on the state before any
-        // draft was processed -- precisely what the snapshot holds.
-        //
-        // The alternative, committing n and replaying the accepted prefix,
-        // needs a second forward with per-row input_len decided inside the
-        // step. That is re-scheduling in the executor, and the scheduler owns
-        // that. Per-token snapshots would avoid the replay but cost 12 GB at
-        // batch 64.
-        //
-        // Cost: one verification forward either way. Value depends on the
-        // full-run accept probability p^K: an accepted step commits K+1
-        // tokens, while a rejected step commits zero and requires an ordinary
-        // decode on the next iteration. On rejection, commit NOTHING here.
-        //
-        // Not even the bonus token, and that is the part that took several
-        // wrong attempts to get right. Restoring the snapshot rewinds the
-        // recurrent state to before this forward. A committed bonus token would
-        // then sit in the sequence with no corresponding state update -- it
-        // never passed through GDN in a way that survived the restore -- and
-        // the next forward begins past it, so nothing ever fixes that. The gap
-        // grows by one token per rejection.
-        //
-        // Committing nothing keeps state and tip exactly aligned: the state is
-        // the pre-forward one, the tip never moved, and the next forward starts
-        // where the state ends. Contiguous by construction rather than by
-        // arithmetic I have already got wrong three times.
-        //
-        // The row then makes no progress this step, so it must not draft again
-        // immediately or it would retry the same failing prediction forever.
-        // num_drafts is cleared, which sends it down the ordinary decode path
-        // next step: one token, state advanced normally, and drafting resumes
-        // after that.
-        // This branch must be taken identically on every TP rank.
-        //
-        // If ranks disagreed, some would rewind their recurrent state and
-        // others would not, and the model would desynchronise across TP with
-        // nothing to assert on -- the shapes stay valid, only the values drift.
-        //
-        // They cannot disagree, because the decision comes from GreedyReject
-        // over full-vocabulary logits: all three PostEmbedding paths return
-        // [bsz, local_vocab * tp_size] after an allgather, so every rank sees
-        // the same numbers and computes the same argmax. Worth stating because
-        // nothing here enforces it -- a future change that left logits
-        // rank-local would break this silently.
-        if (gdn_rollback_ && n < d.num_drafts[i]) {
-            n               = 0;
-            accepted[i]     = 0;
-            clamped         = true;
-            gdn_restore_[i] = 1;
-            restore_gdn     = true;
-            no_commit_[i]   = 1;
-        }
+        const int verifier_n = n;
 
         // `seq_len` still points at the tip from before this forward, because
         // Update has not run yet for this step.
@@ -1607,13 +1543,38 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         if (!eos.empty()) {
             for (int k = 0; k < n; ++k) {
                 if (std::find(eos.begin(), eos.end(), c.draft_tokens[k]) != eos.end()) {
-                    n           = k + 1;
-                    accepted[i] = n;
-                    clamped     = true;
-                    eos_hit_[i] = true;
+                    n            = k + 1;
+                    accepted[i]  = n;
+                    clamped      = true;
+                    eos_hit_[i]  = true;
                     no_bonus_[i] = 1;
                     break;
                 }
+            }
+        }
+
+        if (gdn_rollback_) {
+            if (has_intermediate_gdn) {
+                // Verification input is [old tip, D0, ...]. If n drafts and
+                // the bonus commit, state must include input positions through
+                // D(n-1): slot n+1. An accepted EOS draft omits the bonus and
+                // finishes at slot n. Slot zero is the pre-forward state.
+                gdn_state_slots_[i] = n + (no_bonus_[i] ? 0 : 1);
+                select_gdn          = true;
+            }
+            else if (verifier_n < d.num_drafts[i]) {
+                // The active batch exceeded the fixed snapshot budget. Keep
+                // the exact fallback: restore slot zero, commit nothing, and
+                // perform an ordinary decode on the next step.
+                n                    = 0;
+                accepted[i]          = 0;
+                clamped              = true;
+                eos_hit_[i]          = false;
+                no_bonus_[i]         = 0;
+                gdn_restore_[i]      = 1;
+                restore_gdn          = true;
+                no_commit_[i]        = 1;
+                gdn_state_slots_[i]  = -1;
             }
         }
 
@@ -1835,6 +1796,9 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // resume_len + inflight_input_len, which lands on the new tip.
     if (restore_gdn) {
         unified_decoder_->RestoreGDNState(phase, gdn_restore_.data(), bsz);
+    }
+    if (select_gdn) {
+        unified_decoder_->SelectGDNState(phase, gdn_state_slots_.data(), bsz);
     }
 
     // Publish the no-commit mask separately from the accepted count.

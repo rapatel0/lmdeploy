@@ -1,175 +1,168 @@
-# TurboMind MTP qualification — rejected
+# TurboMind MTP qualification — partial acceptance implemented, still rejected
 
-Date: 2026-08-27  
-Hardware: 4x Tesla V100-SXM2-32GB, TP4, FP16 execution of Qwen3.8-27B-FP8  
+Date: 2026-08-28
+
+Hardware: 4x Tesla V100-SXM2-32GB, TP4, FP16 execution of Qwen3.8-27B-FP8
+
 Model: `/models/Qwen3.8-27B-FP8`
 
 ## Decision
 
 Do not enable TurboMind MTP by default. Keep `num_draft_tokens=0`.
 
-The implementation now survives mixed-row retirement and restores recurrent
-state correctly, but exact greedy MTP is slower than ordinary decoding at both
-depths tested:
+TurboMind now retains accepted draft prefixes for the recurrent Gated DeltaNet
+(GDN) model. This removes the previous requirement for full K-token acceptance
+and more than doubles K=4 throughput. It still does not beat target-only decode:
 
-| Depth | Committed tokens / verification forward | Decode throughput vs K=0 | Decision |
-| ---: | ---: | ---: | --- |
-| K=1 | 0.62 / 2 | 0.552x | reject |
-| K=4 | 0.02 / 5 | 0.288x | reject |
+| Depth | Committed tokens / verification forward | Decode | Ratio vs K=0 | Decision |
+| ---: | ---: | ---: | ---: | --- |
+| K=0 | 1.00 / 1 | 55.02 tok/s | 1.000x | baseline |
+| K=1 | 1.31 / 2 | 42.62 tok/s | 0.775x | reject |
+| K=4 | 1.40 / 5 | 35.62 tok/s | 0.647x | reject |
 
-K=1 improved only from 0.538x to 0.552x after removing the temporary
-per-draft CUDA synchronizations. The remaining loss is structural rather than
-a hidden synchronization tax.
+The remaining limitation is draft quality and draft/verification cost, not an
+all-or-nothing acceptance policy or idle tensor-parallel ranks.
 
-## Correctness findings
+## Partial-prefix recurrent-state commit
 
-### Recurrent rollback
+The V100 path now preserves the GDN frontier after each verification input and
+selects the frontier corresponding to the committed prefix:
 
-A rejected verification must restore 48 Gated DeltaNet layers. The retained
-implementation:
+- fused Conv1d captures each intermediate convolution-state frontier;
+- the pre-SM90 chunked delta-rule kernel captures each intermediate recurrent
+  state using the same arithmetic and tile geometry as ordinary recurrent
+  decode;
+- verification records slot zero as the pre-forward state and slots `1..K+1`
+  after successive verifier inputs;
+- accepting `n` drafts plus the verifier bonus selects slot `n+1`;
+- an accepted EOS draft omits the bonus and selects slot `n`;
+- forced rejection commits the position-zero verifier bonus and selects slot 1;
+- if the active batch exceeds the fixed snapshot budget, the exact fallback
+  restores slot zero, commits nothing, and performs an ordinary decode;
+- intermediate capture is reset before every forward and enabled only for the
+  current verification forward, preventing a later long prompt prefill from
+  writing beyond the speculative slot allocation.
 
-- snapshots convolution and recurrent state before verification;
-- restores only rows that reject;
-- publishes no token on a rejecting recurrent row;
-- forces one ordinary decode before drafting again;
-- keeps snapshot frontier metadata bounded to the active batch;
-- handles accepted EOS without appending the verifier bonus.
+The design reuses the fixed snapshot allocation rather than allocating one full
+conv-plus-recurrent snapshot for every possible row and draft position.
 
-A diagnostic fingerprint of every recurrent and convolution-state byte matched
-before verification and before ordinary replay on all four TP ranks. This
-establishes byte-exact GDN restoration for the traced transitions.
+Commit: `d47ccac69311`
+
+## Correctness evidence
+
+### Force-rejection harness
+
+`TM_MTP_FORCE_REJECT` now injects invalid draft IDs before `GreedyReject` rather
+than clearing the accepted count afterward. The old harness retained a bonus
+from the originally accepted prefix and skipped `target[0]`; the corrected
+harness rejects naturally at position zero and publishes the right bonus.
+
+With partial state selection, both normal and forced K=4 complete without the
+prior crash or five-row divergence. Four of five fresh-process rows are
+byte-identical. The only remaining text split is row 2 at output position 3,
+the same unstable FP16 near-tie repeatedly observed in K=0-versus-K=0 controls.
 
 Artifact:
-`/localpool/lmdeploy-v100-next/results/20260827_222055-spectrace-20616e837294`
+`/localpool/lmdeploy-v100-next/results/20260828_023857-identity-d47ccac69311`
 
-### Fresh-process token equality is not a valid oracle
+### Fresh-process token equality is not a valid oracle at the near-tie
 
-The K=0 control is not byte-deterministic across fresh processes. K=0 versus
-K=0 repeatedly flipped row 2 at output position 3 (`4087` versus `5707`), under:
+Independent K=0 processes have repeatedly flipped row 2 at output position 3
+(`4087` versus `5707`), including with:
 
 - ordinary execution;
 - `CUDA_LAUNCH_BLOCKING=1`;
 - `CUBLAS_WORKSPACE_CONFIG=:4096:8`.
 
-Therefore a fresh-process K=0 versus K=N text mismatch at that tie cannot be
-attributed to speculation.
+The ordinary top-k reduction and speculative verifier now both resolve exact
+ties using a value-descending, token-ID-ascending total order. This removes
+reduction-tree-dependent exact-tie selection, but it cannot eliminate small
+fresh-process FP16 logit differences before argmax.
 
-### Same-process verifier/replay numeric contract
+### Same-process verifier/replay parity
 
-`TM_SPEC_LOGIT_PARITY=1` retained the verifier logits before forced rejection
-and compared them with the next ordinary replay after restoration:
+`TM_SPEC_LOGIT_PARITY=1` retained verifier logits and compared them with the
+next ordinary replay in the same process after rollback. On the final partial
+state implementation:
 
-- comparisons: 15;
-- maximum absolute logit error: 0.05078125;
-- maximum RMS logit error: 0.0075805338;
-- same argmax: 14/15;
-- only argmax split: `5707` versus `4087`;
-- both cross-scores at the split: 26.953125 in FP16;
-- split comparison max absolute error: 0.015625;
-- split comparison RMS error: 0.0028913227.
+- comparisons: 20;
+- same argmax: 20/20;
+- maximum absolute logit error: 0.07421875;
+- maximum RMS logit error: 0.0131.
 
-The observed token split is an FP16 near-tie, not state-publication drift.
+The remaining fresh-process row-2 text split is therefore not a measured
+same-process decision mismatch.
 
 Artifact:
-`/localpool/lmdeploy-v100-next/results/20260827_225119-spectrace-29427f235dc3`
+`/localpool/lmdeploy-v100-next/results/20260828_014213-spectrace-6dc8d64ff913`
 
 ## Performance evidence
 
-### K=1, final hot path
+### Final partial-prefix benchmark
 
-Commit: `f1268a4dd5f9`
+Commit: `d47ccac69311`
 
-- K=0 mean decode: 54.03 tok/s;
-- K=1 mean decode: 29.82 tok/s;
-- ratio: 0.552x;
-- K=1 committed 476 tokens over 768 verification forwards in the measured
-  acceptance stream (238 full accepts).
+| Depth | Decode | Inclusive | Mean all-GPU utilization | Maximum memory |
+| ---: | ---: | ---: | ---: | ---: |
+| K=0 | 55.02 tok/s | 50.80 tok/s | 40.6% | 28,462 MiB |
+| K=1 | 42.62 tok/s | 39.97 tok/s | 45.3% | 31,408 MiB |
+| K=4 | 35.62 tok/s | 33.84 tok/s | 48.6% | 31,408 MiB |
+
+Acceptance telemetry over the measured streams:
+
+- K=1: 672 committed tokens over 512 verification forwards, commit length
+  1.31, with 160 full accepts;
+- K=4: 718 committed tokens over 512 verification forwards, commit length
+  1.40, with zero full accepts.
+
+K=4 now makes useful progress despite never accepting all four drafts. This is
+the intended result of partial-prefix state retention.
 
 Artifact:
-`/localpool/lmdeploy-v100-next/results/20260827_225801-specverify-f1268a4dd5f9`
+`/localpool/lmdeploy-v100-next/results/20260828_030949-gpuutil-d47ccac69311`
 
-### K=4
+### Improvement over all-or-nothing rollback
 
-Commit: `f3d9b3719a65`
-
-- ratio: 0.288x;
-- committed rate: 0.02 tokens per verification forward;
-- 20 tokens committed over 960 verification forwards (4 full accepts).
-
-Artifact:
-`/localpool/lmdeploy-v100-next/results/20260827_215413-specverify-f3d9b3719a65`
-
-### GPU-utilization attribution
-
-A matched K=0/K=1/K=4 rerun sampled all four V100s every 100 ms over each
-complete benchmark arm, including model setup and warm-up:
-
-| Depth | Decode | Mean GPU utilization | Polls with all GPUs >=90% |
+| Depth | Old decode | Partial-prefix decode | Relative improvement |
 | ---: | ---: | ---: | ---: |
-| K=0 | 55.19 tok/s | 40.7% | 32.6% |
-| K=1 | 29.57 tok/s | 51.4% | 44.9% |
-| K=4 | 16.00 tok/s | 64.6% | 60.2% |
+| K=1 | 29.82 tok/s | 42.62 tok/s | 1.43x |
+| K=4 | 16.00 tok/s | 35.62 tok/s | 2.23x |
 
-K=4 had 97% median utilization on every GPU while producing the lowest
-throughput. Deeper speculation therefore increases useful hardware occupancy
-but spends it on draft and verification work that almost never commits. GPU
-starvation is not the cause of the speculative slowdown. GPU 0 was moderately
-busier in the shorter K=0/K=1 arms, but all four ranks reached 100% and K=4 was
-balanced at a 97% median.
+Partial acceptance fixed the structural full-acceptance problem, but K=1 still
+performs about 29% more GPU work than K=0 per wall-clock interval while
+producing 22.5% fewer output tokens. K=4 performs still more draft and verifier
+work for only 1.40 committed tokens per target verification.
 
-Artifact:
-`/localpool/lmdeploy-v100-next/results/20260827_231421-gpuutil-cc6bd020cab1`
-
-### Why the SGLang DFlash2 result is different
+## Why the SGLang DFlash2 result is still different
 
 The SGLang V100 result of 136.6 tok/s versus its 58.2 tok/s target-only
-baseline (2.35x) is not this MTP configuration. It uses a dedicated five-layer
-DFlash2 drafter, a block of one anchor plus seven proposals, E5M2 target KV,
-CUDA graphs for both selector and draft, and overlap-plan-stream execution. It
-committed 3.77 tokens per step on the 1K workload.
+baseline (2.35x) uses a dedicated five-layer DFlash2 drafter, one anchor plus
+seven parallel proposals, E5M2 target KV, CUDA graphs for selector and draft,
+and overlap-plan-stream execution. It reported a 3.77-token average commit
+length on the 1K workload.
 
-Most importantly, SGLang's target verifier runs GDN/Mamba with state updates
-disabled, retains every per-step intermediate convolution and recurrent state,
-and then uses a fused gather/scatter to publish the state at each request's
-last accepted step. It can retain a partial accepted prefix. TurboMind's
-current implementation has only the pre-verification snapshot, so a rejection
-must discard the whole speculative run and perform an ordinary replay.
+TurboMind now has the corresponding selective recurrent-state publication
+mechanism, but not the same draft architecture or commit quality. Its measured
+K=4 commit length is 1.40, only 37% of DFlash2's 3.77. The current MTP predictor
+also performs sequential draft forwards and cannot amortize them at that commit
+rate.
 
 Reference:
 `sglang-V100/benchmark/qwen38_27b_fp8_dflash2_e5m2_v100_20260821/README.md`
 
-## Why exact MTP cannot pay on this path
-
-For this recurrent model, a partial draft prefix cannot be retained after a
-rejection without an intermediate recurrent-state snapshot or replay. The
-current safe policy is all-or-nothing:
-
-- full acceptance commits K drafts plus the verifier bonus;
-- any rejection commits nothing and requires an ordinary decode next.
-
-At K=1 the benchmark's full-accept probability is about 31%. Even before draft
-cost, that policy advances only `(1+p)/(2-p) ~= 0.78` token per target forward
-relative to ordinary decoding. The MTP layer and shared LM-head projection add
-more work. K=4 compounds draft error and almost never accepts the entire run.
-
-Removing two temporary stream synchronizations per K=1 attempt improved the
-ratio by only 0.014, confirming that synchronization was not the dominant
-limit.
-
 ## Conditions for reopening
 
-Do not resume by micro-optimizing the current all-or-nothing loop. Reopen only
-with one of these designs:
+Partial recurrent-state commit is no longer the blocker. Reopen qualification
+only with a change expected to raise useful work per verification, such as:
 
-1. capture the GDN state after the verifier processes the committed tip, so a
-   rejection can commit the verifier token without an ordinary replay;
-2. provide per-position recurrent snapshots cheaply enough to retain accepted
-   prefixes;
-3. add a selective-drafting policy proven to exceed the break-even full-accept
-   probability on a representative serving workload;
-4. use an explicitly approved approximate acceptance policy with a separate
-   quality qualification.
+1. a substantially stronger or parallel drafter that raises average commit
+   length toward the measured break-even point;
+2. CUDA-graph capture and launch-overhead reduction for the draft and verifier
+   paths;
+3. selective drafting that disables MTP where predicted prefix acceptance does
+   not amortize its cost;
+4. overlap of draft/selector work comparable to the DFlash2 execution plan.
 
 Any reopened path must rerun same-process logit parity, mixed-row retirement,
-EOS, forced-rejection, and end-to-end throughput gates. A throughput ratio at
-or below 1.0 is a rejection regardless of acceptance telemetry.
+EOS, forced rejection, and matched end-to-end throughput gates. A throughput
+ratio at or below 1.0 remains a rejection regardless of acceptance telemetry.

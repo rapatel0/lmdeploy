@@ -41,7 +41,13 @@ __global__ void ChunkedGdrKernel(T*             out,
                                  int            hv,
                                  int64_t        state_layer_offset,
                                  int            num_head_groups,
-                                 int            heads_per_block)
+                                 int            heads_per_block,
+                                 uint8_t*       state_snapshots,
+                                 int64_t        snapshot_row_stride,
+                                 int64_t        snapshot_step_stride,
+                                 int64_t        snapshot_recurrent_offset,
+                                 int64_t        snapshot_block_bytes,
+                                 int            snapshot_layer_group)
 {
     constexpr int C = ChunkSize;
     constexpr int D = HeadDim;
@@ -57,8 +63,11 @@ __global__ void ChunkedGdrKernel(T*             out,
     auto* state = reinterpret_cast<StateT*>(static_cast<uintptr_t>(state_ptrs[sequence * num_head_groups + head_group]))
                   + state_layer_offset + int64_t(local_head) * D * D;
 
-    constexpr int tile_k    = 8;
-    constexpr int tile_v    = 8;
+    // Match RecurrentGdrKernel's decomposition exactly. Verification uses the
+    // chunked path while ordinary decode uses recurrent; differing reduction
+    // trees here are enough to flip a near-tied greedy argmax.
+    constexpr int tile_k    = 16;
+    constexpr int tile_v    = 4;
     constexpr int k_threads = D / tile_k;
     constexpr int v_threads = BlockDim / k_threads;
     constexpr int v_iters   = (D / tile_v + v_threads - 1) / v_threads;
@@ -70,49 +79,18 @@ __global__ void ChunkedGdrKernel(T*             out,
 
     extern __shared__ __align__(16) char smem_buf[];
 
-    {
-        using Map_S          = ThreadMap_V2<D, D, sizeof(uint4) / sizeof(StateT), Raked, BlockDim / WARP_SIZE>;
-        constexpr int kBase  = sizeof(StateT) == 4 ? 2 : 3;
-        constexpr int kShift = 10 - kBase;
-        using Layout         = SmemLayoutV2<D, D, -1, -1, Swizzle<4, kBase, kShift>>;
-        SmemAccessor<StateT, Layout> smem_S{reinterpret_cast<StateT*>(smem_buf)};
-
-        const int     warp_id  = threadIdx.x / WARP_SIZE;
-        const int     lane_id  = threadIdx.x % WARP_SIZE;
-        constexpr int kAccessC = Map_S::kAccessC;
-
+    // Use the same direct state loads as RecurrentGdrKernel. Besides matching
+    // its floating-point path, this supports tile_v=4 for both FP16 and FP32
+    // state without routing through an eight-element shared-memory access.
+    PRAGMA_UNROLL
+    for (int v_iter = 0; v_iter < v_iters; ++v_iter) {
         PRAGMA_UNROLL
-        for (int s = 0; s < Map_S::kIterS; ++s) {
-            Array<StateT, kAccessC> vec;
-            PRAGMA_UNROLL
-            for (int c = 0; c < Map_S::kIterC; ++c) {
-                const auto [vd, kd] = Map_S::get_offset(warp_id, lane_id);
-                const int final_vd  = vd + c * Map_S::kDeltaC;
-                const int final_kd  = kd + s * Map_S::kDeltaS;
-                Load(vec, state + final_kd * D + final_vd);
-                Store(&smem_S(final_kd, final_vd), vec);
-            }
-        }
-        __syncthreads();
-
-        PRAGMA_UNROLL
-        for (int v_iter = 0; v_iter < v_iters; ++v_iter) {
-            PRAGMA_UNROLL
-            for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
-                static_assert(tile_v % Map_S::kAccessC == 0);
-                PRAGMA_UNROLL
-                for (int c = 0; c < tile_v / Map_S::kAccessC; ++c) {
-                    Array<StateT, Map_S::kAccessC> tmp;
-                    Load(tmp,
-                         &smem_S(offset_k * tile_k + k_idx,
-                                 (offset_v + v_iter * v_threads) * tile_v + c * Map_S::kAccessC));
-                    reinterpret_cast<Array<float, Map_S::kAccessC>&>(vec_S[v_iter][k_idx][c * Map_S::kAccessC]) =
-                        cast<float>(tmp);
-                }
-            }
+        for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
+            Array<StateT, tile_v> tmp;
+            Load(tmp, &state[(offset_k * tile_k + k_idx) * D + (offset_v + v_iter * v_threads) * tile_v]);
+            vec_S[v_iter][k_idx] = cast<float>(tmp);
         }
     }
-    __syncthreads();
 
     constexpr int kSmemStride = D + 4;
     float*        k_smem      = reinterpret_cast<float*>(smem_buf);
@@ -182,6 +160,16 @@ __global__ void ChunkedGdrKernel(T*             out,
                 vec_q[k_idx] = q_smem[token_in_chunk * kSmemStride + offset_k * tile_k + k_idx];
             }
 
+            float kq = 0.f;
+            PRAGMA_UNROLL
+            for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
+                kq += vec_k[k_idx] * vec_q[k_idx];
+            }
+            PRAGMA_UNROLL
+            for (int mask = k_threads / 2; mask > 0; mask /= 2) {
+                kq += __shfl_xor_sync(0xffffffff, kq, mask);
+            }
+
             const int global_token   = chunk_start + token_in_chunk;
             const int physical_batch = global_token / physical_token_slots;
             const int token          = global_token % physical_token_slots;
@@ -200,39 +188,53 @@ __global__ void ChunkedGdrKernel(T*             out,
                 Array<T, tile_v> vec_out;
                 PRAGMA_UNROLL
                 for (int v_idx = 0; v_idx < tile_v; ++v_idx) {
-                    PRAGMA_UNROLL
-                    for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
-                        vec_S[v_iter][k_idx][v_idx] *= decay;
-                    }
-
                     float kv_memory = 0.f;
+                    float sq        = 0.f;
                     PRAGMA_UNROLL
                     for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
-                        kv_memory += vec_S[v_iter][k_idx][v_idx] * vec_k[k_idx];
+                        const float s_decayed       = vec_S[v_iter][k_idx][v_idx] * decay;
+                        vec_S[v_iter][k_idx][v_idx] = s_decayed;
+                        kv_memory += s_decayed * vec_k[k_idx];
+                        sq += s_decayed * vec_q[k_idx];
                     }
                     PRAGMA_UNROLL
                     for (int mask = k_threads / 2; mask > 0; mask /= 2) {
                         kv_memory += __shfl_xor_sync(0xffffffff, kv_memory, mask);
+                        sq += __shfl_xor_sync(0xffffffff, sq, mask);
                     }
                     const float delta = (vec_v[v_idx] - kv_memory) * beta_value;
                     PRAGMA_UNROLL
                     for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
                         vec_S[v_iter][k_idx][v_idx] += vec_k[k_idx] * delta;
                     }
-
-                    float value = 0.f;
-                    PRAGMA_UNROLL
-                    for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
-                        value += vec_S[v_iter][k_idx][v_idx] * vec_q[k_idx];
-                    }
-                    PRAGMA_UNROLL
-                    for (int mask = k_threads / 2; mask > 0; mask /= 2) {
-                        value += __shfl_xor_sync(0xffffffff, value, mask);
-                    }
-                    vec_out[v_idx] = T(value * rsqrtf(float(D)));
+                    vec_out[v_idx] = T((sq + delta * kq) * rsqrtf(float(D)));
                 }
                 if (offset_k == 0) {
                     Store(&out_ptr[value_base], vec_out);
+                }
+
+                // Save this layer/head's recurrent matrix after every input
+                // token. Acceptance is known only after the complete target
+                // forward, so rollback later selects one of these frontiers.
+                if (state_snapshots && !finished[sequence] && value_base < D) {
+                    auto* snapshot = reinterpret_cast<StateT*>(
+                                         state_snapshots
+                                         + int64_t(sequence) * snapshot_row_stride
+                                         + int64_t(chunk * C + token_in_chunk + 1) * snapshot_step_stride
+                                         + snapshot_recurrent_offset
+                                         + int64_t(snapshot_layer_group * num_head_groups + head_group)
+                                               * snapshot_block_bytes)
+                                     + state_layer_offset + int64_t(local_head) * D * D;
+                    PRAGMA_UNROLL
+                    for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
+                        PRAGMA_UNROLL
+                        for (int v_idx = 0; v_idx < tile_v; ++v_idx) {
+                            if (value_base + v_idx < D) {
+                                snapshot[(offset_k * tile_k + k_idx) * D + value_base + v_idx] =
+                                    StateT(vec_S[v_iter][k_idx][v_idx]);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -240,40 +242,12 @@ __global__ void ChunkedGdrKernel(T*             out,
     }
 
     if (!finished[sequence]) {
-        using Map_S          = ThreadMap_V2<D, D, sizeof(uint4) / sizeof(StateT), Raked, BlockDim / WARP_SIZE>;
-        constexpr int kBase  = sizeof(StateT) == 4 ? 2 : 3;
-        constexpr int kShift = 10 - kBase;
-        using Layout         = SmemLayoutV2<D, D, -1, -1, Swizzle<4, kBase, kShift>>;
-        SmemAccessor<StateT, Layout> smem_S{reinterpret_cast<StateT*>(smem_buf)};
-        constexpr int                kAccessC = Map_S::kAccessC;
-
         PRAGMA_UNROLL
         for (int v_iter = 0; v_iter < v_iters; ++v_iter) {
             PRAGMA_UNROLL
             for (int k_idx = 0; k_idx < tile_k; ++k_idx) {
-                PRAGMA_UNROLL
-                for (int c = 0; c < tile_v / kAccessC; ++c) {
-                    auto tmp =
-                        cast<StateT>(reinterpret_cast<Array<float, kAccessC>&>(vec_S[v_iter][k_idx][c * kAccessC]));
-                    Store(&smem_S(offset_k * tile_k + k_idx, (offset_v + v_iter * v_threads) * tile_v + c * kAccessC),
-                          tmp);
-                }
-            }
-        }
-        __syncthreads();
-
-        const int warp_id = threadIdx.x / WARP_SIZE;
-        const int lane_id = threadIdx.x % WARP_SIZE;
-        PRAGMA_UNROLL
-        for (int s = 0; s < Map_S::kIterS; ++s) {
-            Array<StateT, Map_S::kAccessC> vec;
-            PRAGMA_UNROLL
-            for (int c = 0; c < Map_S::kIterC; ++c) {
-                const auto [vd, kd] = Map_S::get_offset(warp_id, lane_id);
-                const int final_vd  = vd + c * Map_S::kDeltaC;
-                const int final_kd  = kd + s * Map_S::kDeltaS;
-                Load(vec, &smem_S(final_kd, final_vd));
-                Store(state + final_kd * D + final_vd, vec);
+                auto tmp = cast<StateT>(vec_S[v_iter][k_idx]);
+                Store(&state[(offset_k * tile_k + k_idx) * D + (offset_v + v_iter * v_threads) * tile_v], tmp);
             }
         }
     }
@@ -285,9 +259,7 @@ void RunPreSm90Chunk16(const Arguments& args, const Plan& plan, cudaStream_t str
     constexpr int kBlockDim  = 256;
     constexpr int kChunkSize = 16;
     const int     grid       = plan.problem.sequence_num * plan.problem.hv;
-    const size_t  state_smem = 128 * 128 * sizeof(StateT);
-    const size_t  chunk_smem = 3 * kChunkSize * (128 + 4) * sizeof(float) + 2 * kChunkSize * sizeof(float);
-    const size_t  smem_bytes = std::max(state_smem, chunk_smem);
+    const size_t  smem_bytes = 3 * kChunkSize * (128 + 4) * sizeof(float) + 2 * kChunkSize * sizeof(float);
     auto          kernel     = ChunkedGdrKernel<128, kChunkSize, kBlockDim, T, StateT>;
     if (smem_bytes > (48u << 10)) {
         TM_CUDA_CHECK(
@@ -318,7 +290,13 @@ void RunPreSm90Chunk16(const Arguments& args, const Plan& plan, cudaStream_t str
                                                     plan.problem.hv,
                                                     args.state_layer_offset,
                                                     plan.problem.num_head_groups,
-                                                    plan.problem.heads_per_block);
+                                                    plan.problem.heads_per_block,
+                                                    args.state_snapshots,
+                                                    args.snapshot_row_stride,
+                                                    args.snapshot_step_stride,
+                                                    args.snapshot_recurrent_offset,
+                                                    args.snapshot_block_bytes,
+                                                    args.snapshot_layer_group);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 

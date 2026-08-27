@@ -47,6 +47,19 @@ public:
         }
     }
 
+    /// Select each row's recurrent state at its committed verification slot.
+    void SelectGDNState(int phase, const int* slots, int row_count)
+    {
+        if (linear_attn_layer_) {
+            linear_attn_layer_->SelectState(phase, slots, row_count);
+        }
+    }
+
+    bool has_intermediate_gdn_state(int phase) const noexcept
+    {
+        return linear_attn_layer_ && linear_attn_layer_->has_intermediate_state(phase);
+    }
+
     /// Does this model carry recurrent state that speculation must roll back?
     bool has_recurrent_state() const noexcept
     {

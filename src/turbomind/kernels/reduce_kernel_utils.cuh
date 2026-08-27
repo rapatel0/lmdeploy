@@ -375,7 +375,7 @@ struct TopK_2 {
 
     __device__ __forceinline__ void insert(T elem, int elem_id)
     {
-        if (elem > u) {
+        if (elem > u || (elem == u && elem_id < p)) {
             u = elem;
             p = elem_id;
         }
@@ -391,7 +391,9 @@ struct TopK_2 {
 template<typename T>
 __device__ __forceinline__ TopK_2<T> reduce_topk_op_2(const TopK_2<T>& a, const TopK_2<T>& b)
 {
-    return a.u > b.u ? a : b;
+    // A total order makes exact greedy ties deterministic across CUB's
+    // reduction tree and matches speculative verification's argmax rule.
+    return a.u > b.u || (a.u == b.u && a.p < b.p) ? a : b;
 }
 
 template<typename T>
