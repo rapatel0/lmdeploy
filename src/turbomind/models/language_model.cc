@@ -161,7 +161,12 @@ struct LanguageModel::Impl {
     /// mtp_accepted_, which counts only drafts: a committed step contributes
     /// 1 + n, a rejected one contributes nothing.
     size_t mtp_committed_ = 0;
-    size_t mtp_steps_     = 0;
+    /// Verification steps that accepted every draft. Counted directly rather
+    /// than derived as mtp_accepted_/K: that division is only valid while
+    /// acceptance is all-or-nothing, which holds for a model with recurrent
+    /// state and would silently produce nonsense on one without it.
+    size_t mtp_full_accepts_ = 0;
+    size_t mtp_steps_        = 0;
 
     /// Per row, did this verification commit an EOS token? A verification step
     /// skips Generation, so stop_criteria never runs and Rollback must set
@@ -1290,6 +1295,9 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         mtp_accepted_ += n;
         mtp_committed_ += 1 + n;  // the bonus token plus every accepted draft
         mtp_steps_ += 1;
+        if (n == d.num_drafts[i]) {
+            ++mtp_full_accepts_;
+        }
     }
 
     // Order matters here, and getting it backwards fails silently.
@@ -1383,9 +1391,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
                     (double)mtp_committed_ / (double)mtp_steps_,
                     mtp_steps_,
                     mtp_committed_,
-                    mtp_accepted_ / (engine_param_.num_draft_tokens > 0 ?
-                                         engine_param_.num_draft_tokens :
-                                         1));
+                    mtp_full_accepts_);
     }
 }
 
