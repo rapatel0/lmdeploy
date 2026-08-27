@@ -38,11 +38,12 @@ public:
         }
     }
 
-    /// Put back the state saved by SnapshotGDNState this step.
-    void RestoreGDNState()
+    /// Put back the state saved by SnapshotGDNState this step, for the rows
+    /// selected by `rows` (one byte per batch row, non-zero to restore).
+    void RestoreGDNState(const char* rows)
     {
         if (linear_attn_layer_) {
-            linear_attn_layer_->RestoreState();
+            linear_attn_layer_->RestoreState(rows);
         }
     }
 

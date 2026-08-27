@@ -58,10 +58,14 @@ public:
 
     /// Put back the state saved by SnapshotState this step.
     ///
-    /// The caller replays the accepted prefix afterwards; restoring alone
-    /// rewinds to before the verification forward, which is correct but not yet
-    /// advanced.
-    void RestoreState();
+    /// `rows` selects which sequences to rewind: one byte per batch row,
+    /// non-zero to restore. Pass nullptr to restore all of them.
+    ///
+    /// Selecting matters. A row that accepted every draft has correctly
+    /// advanced state, and rewinding it strands the state behind a tip that was
+    /// already committed -- the next forward begins at that tip and never
+    /// re-runs the prefix, so nothing recovers it.
+    void RestoreState(const char* rows = nullptr);
 
     /// Whether snapshot buffers exist. False when speculation is disabled, in
     /// which case Snapshot/Restore are no-ops.

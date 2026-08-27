@@ -149,6 +149,10 @@ struct LanguageModel::Impl {
     /// `finished` itself.
     std::vector<char> eos_hit_;
 
+    /// Per row, must this sequence's recurrent state be rewound? Set when the
+    /// row rejected a draft; rows that accepted everything must NOT be rewound.
+    std::vector<char> gdn_restore_;
+
     /// Does this model carry recurrent state that a rejected draft corrupts?
     /// True whenever the decoder has linear-attention layers, which forces
     /// all-or-nothing acceptance.
@@ -566,21 +570,13 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     generation_->Run(BatchOp::kSetup, phase, env);
     output_processor_->Run(BatchOp::kSetup, phase, env);
 
-    // Register the draft layer's KV slot.
+    // No SetupAttention here either.
     //
-    // This must happen here rather than at draft time. The MTP attention layer
-    // needs `requests` to set up its block table, and only the engine's Setup
-    // env carries that; the executor's forward-time env holds just `batch` and
-    // `copy`. Calling it from DraftTokens aborted on the missing key.
-    //
-    // The target's UnifiedDecoder walks only its own layers, so nothing else
-    // populates this slot. Without it the draft attends to uninitialised cache
-    // entries, which is what made the earlier acceptance measurement worthless.
-    //
-    // Only the kSetup half belongs here; see PrepareAttention for the rest.
-    if (mtp_predictor_) {
-        mtp_predictor_->SetupAttention(phase, env);
-    }
+    // Same reason as PrepareAttention: MTPPredictor shares the target's
+    // UnifiedAttentionLayer, and UnifiedDecoder::Run above already ran kSetup
+    // on it. The draft layer's KV slot is registered by unified_decoder at
+    // construction -- it pushes the MTP attention weights into attn_weights and
+    // records mtp_attn_index_ -- so the slot exists without a second Setup.
 }
 
 void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
@@ -653,11 +649,18 @@ void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
     generation_->Run(BatchOp::kPrepare, phase, env);
     output_processor_->Run(BatchOp::kPrepare, phase, env);
 
-    // The draft layer's attention borrows this step's offsets, which only
-    // exist once the tensors above have been produced.
-    if (mtp_predictor_) {
-        mtp_predictor_->PrepareAttention(phase, env);
-    }
+    // No PrepareAttention here.
+    //
+    // MTPPredictor shares the target's UnifiedAttentionLayer -- unified_decoder
+    // hands it attn_layer() directly -- and UnifiedDecoder::Run above already
+    // ran kPrepare on it. Running kPrepare a second time rebuilt that layer's
+    // decode/prefill plan from the draft's one-token-per-row shape, so the
+    // target's own forward then met a plan describing a different batch:
+    //
+    //   Check failed: d.prefill.q_sum + d.decode.n == q_count (15 vs. 3)
+    //
+    // 15 is bsz*(K+1) and 3 is bsz, which is exactly a K+1-shaped forward
+    // meeting a decode-shaped plan.
 }
 
 void LanguageModel::Impl::BuildTokenMask(const bool* finished, const int* q_offsets, const BatchData& b)
@@ -1032,6 +1035,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     bool clamped     = false;
     bool restore_gdn = false;
     eos_hit_.assign(bsz, false);
+    gdn_restore_.assign(bsz, 0);
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
@@ -1076,10 +1080,11 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // Cost: one forward either way. Value depends on the per-draft accept
         // rate p as p^K * (K+1) + (1 - p^K), which is never below 1.0.
         if (gdn_rollback_ && n < d.num_drafts[i]) {
-            n           = 0;
-            accepted[i] = 0;
-            clamped     = true;
-            restore_gdn = true;
+            n              = 0;
+            accepted[i]    = 0;
+            clamped        = true;
+            gdn_restore_[i] = 1;
+            restore_gdn    = true;
         }
 
         // `seq_len` still points at the tip from before this forward, because
@@ -1202,15 +1207,20 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         Copy(host, finished_.front().buffer().slice(0, bsz));
     }
 
-    // Rewind the recurrent state when anything was rejected.
+    // Rewind the recurrent state, for the rejecting rows ONLY.
     //
-    // Restore is all-or-nothing across the batch, because the snapshot is one
-    // contiguous save of every sequence. A row that accepted everything is
-    // rewound too, but its accepted tokens were the whole submitted run, so the
-    // next forward re-advances the state over exactly those tokens. Rewinding
-    // it is therefore harmless; not rewinding a rejecting row would not be.
+    // Restoring the whole batch would corrupt every row that accepted all its
+    // drafts: that row's state is correctly advanced, and rewinding strands it
+    // behind a tip already committed. The next forward begins at that tip and
+    // never re-runs the prefix, so the state would stay K+1 tokens behind for
+    // the rest of the sequence.
+    //
+    // I wrote the opposite in the previous commit -- that a fully-accepting row
+    // would be re-advanced for free -- which is the same assumption I had
+    // already disproved earlier in this same turn. The next forward starts at
+    // resume_len + inflight_input_len, which lands on the new tip.
     if (restore_gdn) {
-        unified_decoder_->RestoreGDNState();
+        unified_decoder_->RestoreGDNState(gdn_restore_.data());
     }
 
     // Publish the clamped acceptance before Generation reads it.

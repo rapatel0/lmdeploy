@@ -298,7 +298,7 @@ void GatedDeltaNetLayer::SnapshotState()
     }
 }
 
-void GatedDeltaNetLayer::RestoreState()
+void GatedDeltaNetLayer::RestoreState(const char* rows)
 {
     if (!has_snapshot() || snapshot_batch_ == 0) {
         return;
@@ -314,6 +314,17 @@ void GatedDeltaNetLayer::RestoreState()
         << "GDN snapshot batch changed between save and restore";
 
     for (int i = 0; i < snapshot_batch_; ++i) {
+        // Only the rows that rejected something.
+        //
+        // Restoring the whole batch would corrupt any row that accepted every
+        // draft: its state is correctly advanced, and rewinding it leaves the
+        // state K+1 tokens behind a tip that was already committed. Nothing
+        // recovers that -- the next forward starts at the new tip and never
+        // re-runs the prefix.
+        if (rows && !rows[i]) {
+            continue;
+        }
+
         const CacheBlock& block = *TM_CHECK_NOTNULL(snapshot_blocks_[i]);
         const uint8_t*    src   = snapshot_.data() + size_t(i) * snapshot_bytes_;
         ForEachStatePart(block, rec_base_, num_blocks_, conv_total_bytes_, block_bytes_,
