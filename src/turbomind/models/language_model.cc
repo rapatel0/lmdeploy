@@ -303,7 +303,21 @@ struct LanguageModel::Impl {
             return false;
         }
         for (size_t i = 0; i < d.rows.size(); ++i) {
-            if (!d.rows[i] || !d.rows[i]->generating || !d.autoregres[i]) {
+            const auto* c = d.rows[i];
+            if (!c || !c->generating) {
+                return false;
+            }
+            // A one-token decode, or a verification submitting exactly
+            // 1 + num_drafts. Anything wider is a genuine prefill chunk, and
+            // drafting from it would condition on a sequence whose prompt is
+            // still being consumed.
+            //
+            // Gating on `autoregres` alone is wrong in the other direction: it
+            // is false on EVERY verification step, so drafting would stop after
+            // the first cycle and speculation would decay to ordinary decoding
+            // with no error at all.
+            const int expected = 1 + d.num_drafts[i];
+            if (!d.autoregres[i] && c->input_len != expected) {
                 return false;
             }
         }
