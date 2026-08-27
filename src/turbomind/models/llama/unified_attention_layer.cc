@@ -448,8 +448,11 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
         {
             const int bs = engine_param_.cache_block_seq_len;
             if (bs > 0) {
-                const int k_len_row = c.history_len + c.inflight_input_len + c.input_len
-                                      + (decode_shape ? c.num_drafts : 0);
+                // The keys THIS Setup describes. The draft's own walk is
+                // bounded separately, in MTPPredictor::Draft, against the same
+                // block count -- adding num_drafts here would assert on a
+                // length no kernel writes, which is exactly what it did.
+                const int k_len_row = c.history_len + c.inflight_input_len + c.input_len;
                 const int need = (k_len_row + bs - 1) / bs;
                 TM_CHECK_LE(need, (int)c.block_ids.size())
                     << "row " << i << " needs " << need << " KV blocks for " << k_len_row
@@ -461,14 +464,22 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
 
         const int q_len = decode_shape ? 1 : c.input_len;
 
-        // The draft grows its key length by one per draft step via
-        // AdvanceCuSeqLens, so its true maximum is num_drafts beyond the
-        // target's. k_max only sizes the split-K grid -- cu_k_len drives the
-        // actual iteration, so under-counting costs parallelism rather than
-        // correctness -- but it is free to be right, and the cliff would
-        // otherwise appear only when those extra keys cross a CTA_S boundary.
-        const int k_len =
-            c.history_len + c.inflight_input_len + c.input_len + (decode_shape ? c.num_drafts : 0);
+        // NOT widened by num_drafts, though the draft does walk that far.
+        //
+        // I added `+ num_drafts` here as a free correctness improvement, on the
+        // reasoning that k_max should describe the furthest key the draft
+        // reaches. It is not free: MTPPredictor clamps the walk to
+        // `min(K, capacity - seq_len)`, so the draft often stops short, and
+        // claiming the unclamped length made this row assert at 130 keys
+        // against a 128-key allocation -- a bound violation invented by the
+        // hint, not by any actual write.
+        //
+        // Setup cannot know the clamped value: max_extend is computed later, in
+        // Draft. And under-counting is harmless, as established when this was
+        // first considered -- cu_k_len drives the real iteration, k_max only
+        // sizes the split-K grid, so the cost is parallelism in the rare case
+        // where the extra keys cross a CTA_S boundary.
+        const int k_len = c.history_len + c.inflight_input_len + c.input_len;
 
         auto& s = i < d.decode.n ? d.decode : d.prefill;
         s.q_sum += q_len;
