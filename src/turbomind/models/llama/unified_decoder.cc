@@ -114,11 +114,25 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
     }
 
     if (!attn_weights.empty()) {
+        // One extra phase slot for the MTP draft.
+        //
+        // The draft shares this layer with the target but has a different
+        // shape: it submits one token per row while a verification forward
+        // submits K+1. AttentionData is per-phase, so without a slot of its own
+        // the draft runs against the target's plan and aborts:
+        //
+        //   Check failed: d.prefill.q_sum + d.decode.n == q_count (15 vs. 3)
+        //
+        // where 15 is the plan's expected token count and 3 the draft's actual
+        // one. Preparing the draft's shape into the target's slot instead would
+        // corrupt the target -- that is the failure the previous commit
+        // introduced by removing PrepareAttention.
+        mtp_phase_ = engine.num_draft_tokens > 0 ? phases : -1;
         attn_layer_ = std::make_unique<UnifiedAttentionLayer>(attn_weights,  //
                                                               registry,
                                                               engine,
                                                               ctx,
-                                                              phases);
+                                                              mtp_phase_ >= 0 ? phases + 1 : phases);
     }
 
     if (!gdn_weights.empty()) {

@@ -53,6 +53,14 @@ public:
         return linear_attn_layer_ && linear_attn_layer_->has_snapshot();
     }
 
+    /// Phase slot reserved for the MTP draft's attention state, or -1 when
+    /// speculation is off. The draft has a different shape than the target, and
+    /// AttentionData is per-phase, so it needs its own slot.
+    int mtp_phase() const noexcept
+    {
+        return mtp_phase_;
+    }
+
     int mtp_attn_index() const noexcept
     {
         return mtp_attn_index_;
@@ -96,6 +104,7 @@ private:
 
     std::unique_ptr<UnifiedAttentionLayer> attn_layer_;
     std::unique_ptr<GatedDeltaNetLayer>    linear_attn_layer_;
+    int                                    mtp_phase_{-1};
     std::unique_ptr<LlamaFfnLayer>         ffn_layer_;
     std::unique_ptr<MoeFfnLayer>           moe_ffn_layer_;
 

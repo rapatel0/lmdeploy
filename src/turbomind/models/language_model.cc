@@ -371,6 +371,7 @@ LanguageModel::Impl::Impl(
             *weights_.mtp,
             *unified_decoder_->attn_layer(),
             unified_decoder_->mtp_attn_index(),
+            unified_decoder_->mtp_phase(),
             engine,
             ctx,
             [this](const Buffer_<int>& ids) { return LookupEmbedding(ids, symm_buf_); },
@@ -596,13 +597,15 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
     generation_->Run(BatchOp::kSetup, phase, env);
     output_processor_->Run(BatchOp::kSetup, phase, env);
 
-    // No SetupAttention here either.
+    // Set up the draft's attention in ITS OWN phase slot.
     //
-    // Same reason as PrepareAttention: MTPPredictor shares the target's
-    // UnifiedAttentionLayer, and UnifiedDecoder::Run above already ran kSetup
-    // on it. The draft layer's KV slot is registered by unified_decoder at
-    // construction -- it pushes the MTP attention weights into attn_weights and
-    // records mtp_attn_index_ -- so the slot exists without a second Setup.
+    // The draft shares the layer with the target but not the phase:
+    // AttentionData is per-phase, and unified_decoder allocated one extra slot
+    // for exactly this. Running Setup against the target's phase is what
+    // corrupted the target's plan; running it against the draft's own does not.
+    if (mtp_predictor_) {
+        mtp_predictor_->SetupAttention(env);
+    }
 }
 
 void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
@@ -675,18 +678,20 @@ void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
     generation_->Run(BatchOp::kPrepare, phase, env);
     output_processor_->Run(BatchOp::kPrepare, phase, env);
 
-    // No PrepareAttention here.
+    // Build the draft's decode-shaped plan, in the draft's own phase.
     //
-    // MTPPredictor shares the target's UnifiedAttentionLayer -- unified_decoder
-    // hands it attn_layer() directly -- and UnifiedDecoder::Run above already
-    // ran kPrepare on it. Running kPrepare a second time rebuilt that layer's
-    // decode/prefill plan from the draft's one-token-per-row shape, so the
-    // target's own forward then met a plan describing a different batch:
+    // The draft submits one token per row; a verification forward submits K+1.
+    // Both shapes must exist at once, because kDraft runs immediately after the
+    // verification forward on the same step. Two phase slots is what makes that
+    // possible -- sharing one meant whichever prepared last won, and the other
+    // aborted on
     //
     //   Check failed: d.prefill.q_sum + d.decode.n == q_count (15 vs. 3)
     //
-    // 15 is bsz*(K+1) and 3 is bsz, which is exactly a K+1-shaped forward
-    // meeting a decode-shaped plan.
+    // where 15 is the plan's expected token count and 3 the draft's actual one.
+    if (mtp_predictor_) {
+        mtp_predictor_->PrepareAttention(env);
+    }
 }
 
 void LanguageModel::Impl::BuildTokenMask(const bool* finished, const int* q_offsets, const BatchData& b)

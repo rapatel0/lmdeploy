@@ -162,8 +162,24 @@ public:
             decode_token_pos_buf_[i] = input_ids_offsets_buf_[i + 1] - 1;
         }
 
+
+        // dbg(core::to_vector<int>(input_ids_offsets_buf_.slice(0, bsz + 1)));
+        // dbg(core::to_vector<int>(decode_token_pos_buf_.slice(0, bsz)));
+
+        copy(input_ids_buf_, input_ids_offsets_buf_[b.bsz], d.input_ids);
+        copy(decode_token_pos_buf_, b.bsz, d.selected_token_pos);
+
         // Speculative verification needs a logit for EVERY submitted position,
         // not just the last one.
+        //
+        // AFTER the decode copy above, not before. That copy writes one
+        // position per row into the same buffer, so selecting here first meant
+        // its first bsz entries were immediately overwritten while
+        // spec_selected_num still claimed bsz*(K+1). unified_decoder then
+        // produced that many hidden rows against an attention plan built for
+        // bsz decode tokens:
+        //
+        //   Check failed: d.prefill.q_sum + d.decode.n == q_count (15 vs. 3)
         //
         // Normally one row contributes one selected position, because only the
         // final token's logit is sampled. A verification step submits
@@ -171,8 +187,8 @@ public:
         // its own position, so all K+1 positions are selected and the hidden
         // state comes back as [bsz*(K+1), hidden] instead of [bsz, hidden].
         //
-        // Selecting only the last position here would silently verify one token
-        // and treat the rest as accepted, which corrupts output rather than
+        // Selecting only the last position would silently verify one token and
+        // treat the rest as accepted, which corrupts output rather than
         // failing -- the worst available outcome.
         if (spec_verify) {
             int w = 0;
@@ -188,12 +204,6 @@ public:
         else {
             d.spec_selected_num = 0;
         }
-
-        // dbg(core::to_vector<int>(input_ids_offsets_buf_.slice(0, bsz + 1)));
-        // dbg(core::to_vector<int>(decode_token_pos_buf_.slice(0, bsz)));
-
-        copy(input_ids_buf_, input_ids_offsets_buf_[b.bsz], d.input_ids);
-        copy(decode_token_pos_buf_, b.bsz, d.selected_token_pos);
         copy(input_ids_offsets_buf_, b.bsz + 1, d.input_ids_offsets);
 
         // dbg(decode_token_pos_buf_[0]);

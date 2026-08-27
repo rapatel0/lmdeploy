@@ -69,6 +69,7 @@ public:
     MTPPredictor(const MTPLayerWeight&  weights,
                  UnifiedAttentionLayer& attn_layer,
                  int                    attn_index,
+                 int                    attn_phase,
                  const EngineParam&     engine,
                  const Context&         ctx,
                  EmbedFn                embed,
@@ -104,13 +105,20 @@ public:
     ///
     /// `env` must carry the batch, block pointers, q/k offsets and finished
     /// flags for the decode shape, one query token per sequence.
-    /// Register the draft layer's KV slot. Needs the engine's setup-time env,
-    /// which is the only one carrying `requests`.
-    void SetupAttention(int phase, TensorMap& env);
+    /// Register the draft layer's KV slot in the draft's OWN phase slot.
+    ///
+    /// Needs the engine's setup-time env, the only one carrying `requests`.
+    /// Runs against attn_phase_, not the target's phase, so the target's
+    /// attention state is untouched.
+    void SetupAttention(TensorMap& env);
 
-    /// Borrow this step's attention offsets for the draft layer. Needs the
-    /// prepared env: `finished` and the offset buffers do not exist at setup.
-    void PrepareAttention(int phase, TensorMap& env);
+    /// Build the draft's decode-shaped attention plan in its own phase slot.
+    ///
+    /// The draft submits one token per row while a verification forward submits
+    /// K+1, and AttentionData is per-phase. Sharing the target's slot means one
+    /// shape overwrites the other, which aborts on
+    /// `d.prefill.q_sum + d.decode.n == q_count`.
+    void PrepareAttention(TensorMap& env);
 
 private:
     /// Normalise both inputs, concatenate them per row, and project back down
@@ -144,6 +152,9 @@ private:
     /// handing the attention layer the MTP weight pointer is what sends the
     /// draft's keys and values to their own slot.
     const int attn_index_;
+    /// Phase slot owned by the draft, so its decode-shaped attention plan does
+    /// not overwrite the target's.
+    const int attn_phase_;
 
     const int      hidden_units_;
     const int      tp_size_;
