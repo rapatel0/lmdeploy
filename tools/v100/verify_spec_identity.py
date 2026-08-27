@@ -199,6 +199,40 @@ def main() -> int:
             "sampling, so this is a verification defect, not a tolerance issue.",
             file=sys.stderr,
         )
+
+        # Narrow the cause before anyone starts reading kernels.
+        #
+        # Two very different faults produce the same symptom here. A bug in
+        # verification -- rejection, commit order, indexing -- is present at
+        # every K. Recurrent-state drift is not: 48 of this model's 64 layers
+        # are linear attention, and their state advances over every token the
+        # forward processes, including drafts that are then rejected. Re-running
+        # a position fixes KV, because KV is positional; it does not fix a
+        # recurrent state, because S_t = f(S_{t-1}, x_t) has no position to
+        # overwrite.
+        #
+        # At K=1 a rejected draft still advances that state, so drift shows up
+        # there too -- but the accepted-prefix length is 1 or 2 rather than 1..5,
+        # so a divergence that appears ONLY at K=4 points away from drift and
+        # toward something that scales with draft count, such as indexing across
+        # the K+1 block.
+        print(file=sys.stderr)
+        print("  narrowing: re-running at K=1", file=sys.stderr)
+        k1 = run_config(args.model_dir, args.tp, 1, args.max_new_tokens, "k1")
+        k1_same = all(b["token_ids"] == s["token_ids"] for b, s in zip(base, k1))
+        if k1_same:
+            print(
+                "  K=1 is identical but K=4 is not: the fault scales with draft "
+                "count, so look at K+1 block indexing before recurrent state.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "  K=1 also diverges: the fault is present with a single draft, "
+                "so look at rejection, commit order, or recurrent-state drift "
+                "rather than anything K-dependent.",
+                file=sys.stderr,
+            )
         return 6
 
     print()
