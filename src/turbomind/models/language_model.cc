@@ -8,6 +8,7 @@
 #include <memory>
 #include <numeric>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "src/turbomind/comm/device_comm.h"
@@ -167,6 +168,11 @@ struct LanguageModel::Impl {
     /// Verification logits, held between Forward and kReject because the env
     /// map is rebuilt in between.
     Tensor verify_logits_;
+
+    /// Diagnostic reference: verifier logits at the first submitted position,
+    /// keyed by request uid until the forced-reject replay runs. Populated only
+    /// under TM_SPEC_LOGIT_PARITY=1.
+    std::unordered_map<uint64_t, std::vector<uint16_t>> replay_ref_logits_;
 
     /// Accept-length accounting. 1 + accepted/steps is the tokens emitted per
     /// forward, which is the number that decides whether speculation pays.
@@ -985,6 +991,66 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
     env.produce("logits", PostEmbedding(hidden_states, symm_buf_));
 
+    // Compare the rejected verifier's first-position logits with the ordinary
+    // replay from the exact restored state. This is a same-process numeric
+    // contract, unlike K=0-vs-K=N token text from independent prefills (the K=0
+    // control itself is nondeterministic on a near-tied argmax).
+    static const bool trace_logit_parity = [] {
+        const char* s = std::getenv("TM_SPEC_LOGIT_PARITY");
+        return s && s[0] == '1';
+    }();
+    if (TM_UNLIKELY(trace_logit_parity && !spec_verify && !replay_ref_logits_.empty())) {
+        const int   bsz          = (int)d.rows.size();
+        const auto& logits       = env.at("logits");
+        const int   vocab_stride = (int)logits.shape(1);
+        TM_CHECK_EQ(logits.dtype(), kHalf);
+        Buffer_<uint16_t> host{(ssize_t)bsz * vocab_stride, kCPU};
+        Copy(Buffer_<uint16_t>{(uint16_t*)logits.raw_data(), host.size(), kDEVICE}, host);
+        core::Context::stream().Sync();
+        auto half_to_float = [](uint16_t u) {
+            const int sign = (u >> 15) & 1;
+            const int exp  = (u >> 10) & 0x1f;
+            const int man  = u & 0x3ff;
+            float val;
+            if (exp == 0) val = std::ldexp((float)man, -24);
+            else if (exp == 31) val = man ? NAN : INFINITY;
+            else val = std::ldexp((float)(man + 1024), exp - 25);
+            return sign ? -val : val;
+        };
+        for (int i = 0; i < bsz; ++i) {
+            auto it = replay_ref_logits_.find(d.uids[i]);
+            if (it == replay_ref_logits_.end()) continue;
+            const auto& ref = it->second;
+            TM_CHECK_EQ((int)ref.size(), vocab_stride);
+            const uint16_t* got = host.data() + (ssize_t)i * vocab_stride;
+            float max_abs = 0.f;
+            double sum_sq = 0.;
+            int ref_argmax = 0, got_argmax = 0, raw_diff = 0;
+            float ref_max = -INFINITY, got_max = -INFINITY;
+            for (int v = 0; v < weights_.vocab_size; ++v) {
+                const float a = half_to_float(ref[v]);
+                const float b = half_to_float(got[v]);
+                const float e = std::abs(a - b);
+                max_abs = std::max(max_abs, e);
+                sum_sq += double(e) * e;
+                raw_diff += ref[v] != got[v];
+                if (a > ref_max) { ref_max = a; ref_argmax = v; }
+                if (b > got_max) { got_max = b; got_argmax = v; }
+            }
+            TM_LOG_WARNING("[logit-parity] uid={} raw_diff={} max_abs={} rms={} ref_argmax={} "
+                           "got_argmax={} ref_at_got={} got_at_ref={}",
+                           (long)d.uids[i],
+                           raw_diff,
+                           max_abs,
+                           std::sqrt(sum_sq / weights_.vocab_size),
+                           ref_argmax,
+                           got_argmax,
+                           half_to_float(ref[got_argmax]),
+                           half_to_float(got[ref_argmax]));
+            replay_ref_logits_.erase(it);
+        }
+    }
+
     output_processor_->OutputHiddenStatesAndLogits(phase, env, 1);
 
     // On a verification step the sampler must not run.
@@ -1273,6 +1339,28 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     }();
     if (TM_UNLIKELY(force_reject)) {
         Clear(result.num_accepted);
+    }
+
+    static const bool trace_logit_parity = [] {
+        const char* s = std::getenv("TM_SPEC_LOGIT_PARITY");
+        return s && s[0] == '1';
+    }();
+    if (TM_UNLIKELY(trace_logit_parity)) {
+        TM_CHECK_EQ(weights_.data_type, kHalf);
+        Buffer_<uint16_t> host{(ssize_t)bsz * vocab_stride, kCPU};
+        for (int i = 0; i < bsz; ++i) {
+            const ssize_t src_offset = (ssize_t)i * (K + 1) * vocab_stride;
+            core::Copy(Buffer_<uint16_t>{(uint16_t*)verify_logits_.raw_data() + src_offset,
+                                         vocab_stride,
+                                         kDEVICE},
+                       vocab_stride,
+                       host.slice((ssize_t)i * vocab_stride, vocab_stride));
+        }
+        core::Context::stream().Sync();
+        for (int i = 0; i < bsz; ++i) {
+            const uint16_t* row = host.data() + (ssize_t)i * vocab_stride;
+            replay_ref_logits_[d.uids[i]] = std::vector<uint16_t>(row, row + vocab_stride);
+        }
     }
 
     // Alignment diagnostic for the first few verifications: the drafts against

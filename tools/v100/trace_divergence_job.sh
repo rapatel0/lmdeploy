@@ -64,13 +64,13 @@ pipe.close()
 PYEOF
 
 echo "=== K=0 trace ==="
-TM_SPEC_TRACE=1 TM_GDN_TRACE_STATE=1 python3 /tmp/one_prompt.py 0 2>&1 |
-    grep -aE "\[trace\]|\[reject\]|\[gdn-state\]" >"${RESULTS}/trace_k0.log"
+TM_SPEC_TRACE=1 python3 /tmp/one_prompt.py 0 2>&1 |
+    grep -aE "\[trace\]|\[reject\]" >"${RESULTS}/trace_k0.log"
 wc -l "${RESULTS}/trace_k0.log"
 
 echo "=== K=${K} trace ==="
-TM_SPEC_TRACE=1 TM_GDN_TRACE_STATE=1 python3 /tmp/one_prompt.py "${K}" force 2>&1 |
-    grep -aE "\[trace\]|\[reject\]|\[gdn-state\]" >"${RESULTS}/trace_k${K}.log"
+TM_SPEC_TRACE=1 TM_SPEC_LOGIT_PARITY=1 python3 /tmp/one_prompt.py "${K}" force 2>&1 |
+    grep -aE "\[trace\]|\[reject\]|\[logit-parity\]" >"${RESULTS}/trace_k${K}.log"
 wc -l "${RESULTS}/trace_k${K}.log"
 
 cp /tmp/trace_k0.json "/tmp/trace_k${K}.json" "${RESULTS}/" 2>/dev/null
