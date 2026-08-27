@@ -234,6 +234,12 @@ struct Sequence {
     // orders it after everything the executor did for that batch.
     int  pending_draft_tokens[kMaxDraftTokens] = {};
     int  pending_num_drafts                    = 0;
+
+    // How many of this step's submitted tokens were KEPT, or -1 when all were.
+    // Only a verification step sets it: it submits K+1 and keeps 1 + accepted.
+    // Update reads it in place of input_len when carrying the in-flight length
+    // forward, so `begin` tracks the real tip instead of the submitted span.
+    int  accepted_len = -1;
     bool all_accepted                  = false;  // every draft accepted last step
 
     // Pending growth, consumed by SequenceManager when it sizes the next step.

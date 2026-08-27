@@ -981,6 +981,12 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // the draft that runs next on this same env.
         last_accepted_[i] = n;
 
+        // How many of the K+1 submitted tokens survived. Update carries this
+        // forward as inflight_input_len so the next step's `begin` lands on the
+        // real tip rather than past it. Written here on the executor thread but
+        // only read by Update, which runs after the queue handoff orders it.
+        c.accepted_len = 1 + n;
+
         mtp_accepted_ += n;
         mtp_steps_ += 1;
     }

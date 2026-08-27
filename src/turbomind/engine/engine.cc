@@ -764,7 +764,23 @@ void Engine::Impl::Update(BatchData& b, std::vector<Signal>& signals)
         int j = perm[i];
         if (j < b.bsz) {
             auto& c      = *TM_CHECK_NOTNULL(s.rc[i]);
-            c.filled_len = generating[j] ? sequence_length[j] - 1 : sequence_length[j];
+            // filled_len is the prefix whose KV is valid and may be skipped.
+            // It becomes resume_len, and because inflight_input_len cancels the
+            // in-flight span, the next forward's length reduces to
+            // `seq_len - resume_len`.
+            //
+            // A generating row backs up by one so the last committed token is
+            // re-run; that is what makes an ordinary decode step submit exactly
+            // one token.
+            //
+            // A verification step must re-run 1 + num_drafts instead: the bonus
+            // token plus each draft being checked. Backing up by one would make
+            // the next step submit a single token, and kReject would then find
+            // no per-position logits. num_drafts is 0 when speculation is off
+            // or nothing was drafted, which reduces this to the original
+            // expression exactly.
+            const int backup = generating[j] ? 1 + c.num_drafts : 0;
+            c.filled_len     = sequence_length[j] - backup;
             if (c.retiring) {
                 continue;
             }
@@ -839,6 +855,19 @@ void Engine::Impl::Update(BatchData& b, std::vector<Signal>& signals)
         for (int i = 0; i < size; ++i) {
             auto& c = *s.rc[i];
             if (i < s.active) {
+                // Unchanged from upstream, deliberately.
+                //
+                // I tried two rewrites here and both were wrong. Using the
+                // accepted count double-counts, because resume_len is
+                // filled_len == sequence_length - 1 and therefore already
+                // tracks the advanced tip after a multi-token commit; the next
+                // step's input_len then collapses from K+1 toward 1. Using a
+                // literal 1 for generating rows breaks the LAST PREFILL CHUNK,
+                // which is also `generating` but has input_len > 1.
+                //
+                // input_len is already correct for every case. Worked through
+                // on paper: a verification step submits exactly K+1 whether the
+                // previous step accepted none, some, or all of its drafts.
                 c.inflight_input_len  = c.input_len;
                 c.inflight_new_tokens = c.generating;
             }
