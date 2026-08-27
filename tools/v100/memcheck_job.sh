@@ -91,38 +91,64 @@ cd /
 echo
 echo "=== configuration ==="
 echo "  MODEL=${MODEL} TP=${TP} K=${K} max_new=${MAXNEW}"
-[ "${TP}" = "4" ] || {
-    echo "FAIL: island is 4 GPUs, TP=${TP} invalid" >&2
-    exit 3
-}
 [ "${K}" -gt 0 ] || {
     echo "FAIL: K=${K} would run the clean baseline, which has nothing to find" >&2
     exit 3
 }
 
+# Stage A: CUDA_LAUNCH_BLOCKING at full TP, no sanitizer.
+#
+# The first attempt ran memcheck against all four TP ranks and deadlocked:
+# one GPU pinned at 100%, three at 0%, no log output for 53 minutes. The
+# sanitizer serialises kernel launches per process, and NCCL collectives
+# across instrumented ranks degrade to a lockstep that never converged.
+#
+# Launch-blocking has no such interaction. Every launch becomes synchronous,
+# so the abort names the true launch site instead of wherever the async error
+# happened to surface. No address, no allocation -- but the correct kernel,
+# at normal execution speed, at the exact TP=4 configuration that faults.
 echo
-echo "=== memcheck: K=${K} generation ==="
-# --target-processes all is essential, not optional. The engine runs generation
-# in a child process, so without it the sanitizer would watch the parent, see no
-# kernels, and report a clean run for a job that crashed.
+echo "=== stage A: CUDA_LAUNCH_BLOCKING=1, TP=${TP}, no sanitizer ==="
+BLOCKING_LOG="${RESULTS}/launch_blocking.log"
+CUDA_LAUNCH_BLOCKING=1 TM_DEBUG_LEVEL=INFO \
+    timeout -k 30 900 stdbuf -oL -eL \
+    python3 /src/tools/v100/memcheck_child.py \
+    --model-dir "${MODEL}" --tp "${TP}" \
+    --num-draft-tokens "${K}" --max-new-tokens "${MAXNEW}" \
+    2>&1 | tee "${BLOCKING_LOG}"
+A_RC="${PIPESTATUS[0]}"
+echo "  stage A exit ${A_RC} (124 = timeout)"
+
+echo
+echo "=== stage A findings ==="
+grep -aE "CUDA error|FATAL|what\(\)|Aborted" "${BLOCKING_LOG}" | head -10 ||
+    echo "  no fault reported"
+
+# Stage B: memcheck at TP=2.
 #
-# --launch-timeout is raised because memcheck serialises launches and the
-# default is easily exceeded on a 27B model across 4 GPUs.
-#
-# No CUDA_LAUNCH_BLOCKING here: memcheck already attributes the fault to its
-# kernel, and blocking would multiply an already slow run.
+# TP=1 cannot hold the model: the weights alone are 29G against 32G of HBM.
+# TP=2 halves the rank count and the collective fan-in that hung TP=4. It may
+# still hang -- so it runs under a hard timeout, and stage A's answer is
+# already on disk before this starts. If the fault does not reproduce at TP=2,
+# that is itself a finding (points at cross-rank state), reported honestly
+# below rather than as a clean bill.
+echo
+echo "=== stage B: memcheck, TP=2, hard timeout 40m ==="
 MEMCHECK_LOG="${RESULTS}/memcheck.log"
-stdbuf -oL -eL "${CS}" \
+timeout -k 30 2400 stdbuf -oL -eL "${CS}" \
     --tool memcheck \
     --launch-timeout 120 \
     --target-processes all \
     --error-exitcode 88 \
     --print-limit 20 \
     python3 /src/tools/v100/memcheck_child.py \
-    --model-dir "${MODEL}" --tp "${TP}" \
+    --model-dir "${MODEL}" --tp 2 \
     --num-draft-tokens "${K}" --max-new-tokens "${MAXNEW}" \
     2>&1 | tee "${MEMCHECK_LOG}"
 MC_RC="${PIPESTATUS[0]}"
+if [ "${MC_RC}" = "124" ] || [ "${MC_RC}" = "137" ]; then
+    echo "  stage B TIMED OUT under the sanitizer -- treat its log as partial"
+fi
 
 echo
 echo "=== sanitizer findings ==="
@@ -153,21 +179,29 @@ fi
 
 echo
 echo "=== verdict ==="
-if [ "${ERRS}" -eq 0 ] && [ -z "${SUMMARY}" ]; then
-    echo "FAIL: the sanitizer produced no report at all; it likely never attached" >&2
-    echo "      check ${MEMCHECK_LOG} for a launch failure" >&2
-    exit 9
+# Stage A is the primary result: it runs the exact faulting configuration.
+# Stage B is supplementary: richer detail, different configuration.
+echo "--- stage A (launch-blocking, TP=${TP}) ---"
+if grep -aqE "CUDA error|FATAL" "${BLOCKING_LOG}"; then
+    echo "STAGE_A_FAULTED: the lines above name the true launch site"
+    grep -aE "\[TM\]\[FATAL\]" "${BLOCKING_LOG}" | head -3
+elif [ "${A_RC}" = "124" ]; then
+    echo "STAGE_A_TIMEOUT: did not fault within 15m under launch-blocking"
+else
+    echo "STAGE_A_CLEAN: ran to completion with no fault (exit ${A_RC})"
+    echo "  a fault that vanishes under synchronous launches points at an"
+    echo "  ordering race, not a fixed bad address"
 fi
 
+echo "--- stage B (memcheck, TP=2) ---"
 if [ "${ERRS}" -gt 0 ]; then
     echo "MEMCHECK_FOUND_ERRORS: ${ERRS} stanza(s) -- see ${MEMCHECK_LOG}"
+elif [ "${MC_RC}" = "124" ] || [ "${MC_RC}" = "137" ]; then
+    echo "MEMCHECK_TIMEOUT: no verdict from stage B; rely on stage A"
+elif [ -z "${SUMMARY}" ]; then
+    echo "MEMCHECK_NO_REPORT: sanitizer never attached; rely on stage A"
 else
-    # A clean run under memcheck is itself a finding: it means the fault does
-    # not reproduce under serialised launches, which points at a race rather
-    # than a fixed out-of-bounds address.
-    echo "MEMCHECK_CLEAN: no memory errors under this workload"
-    echo "  either the workload is too small to reach the fault, or the fault"
-    echo "  is a race that serialised execution hides"
+    echo "MEMCHECK_CLEAN at TP=2: fault did not reproduce, or needs TP=4"
 fi
 
 touch "${RESULTS}/completed"
