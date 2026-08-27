@@ -120,6 +120,21 @@ struct ModelExecutor::Impl {
         // them reading an env holding only `batch` and `copy`.
         model_.Run(BatchOp::kReject, d.phase, env);
         model_.Run(BatchOp::kRollback, d.phase, env);
+
+        // kDraft is UNCONDITIONAL here, deliberately, while the ordinary path
+        // below gates it on CanDraft. That asymmetry looks like an oversight
+        // and is not.
+        //
+        // CanDraft requires every row to be `autoregres`, which keeps a
+        // prefill-shaped batch from drafting: the draft submits one row per
+        // sequence and would meet attention statistics prepared for a longer
+        // prefill. On a verification step autoregres is false BY CONSTRUCTION,
+        // because input_len is K+1 rather than 1 -- yet this is exactly the
+        // step that must draft again.
+        //
+        // Gating this call on CanDraft would stop drafting after the first
+        // verification, and speculation would run one cycle and then decay to
+        // ordinary decoding, quietly and with no error.
         model_.Run(BatchOp::kDraft, d.phase, env);
 
         model_.Run(BatchOp::kUnprep, d.phase, env);
