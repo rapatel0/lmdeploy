@@ -481,6 +481,20 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
         return {};
     }
 
+    // Check the state the loop inherits, before the loop can be blamed for it.
+    //
+    // Everything above -- the tip gather, the k_offsets probe shift, the
+    // max_extend computation -- has already launched work on this stream. If
+    // one of those faulted, the loop's own sync would report it against step 0
+    // and send the search into the wrong place.
+    {
+        const auto err = cudaStreamSynchronize(stream);
+        TM_CHECK_EQ(err, cudaSuccess)
+            << "MTP draft faulted BEFORE its first step: " << cudaGetErrorString(err)
+            << " (batch=" << batch_size << " seq_len[0]=" << (batch_size > 0 ? seq_lens[0] : -1)
+            << " effective_drafts=" << effective_drafts << ")";
+    }
+
     for (int step = 0; step < effective_drafts; ++step) {
         // Step 0 advances too, placing the sampled token at L instead of L-1.
         {
@@ -497,28 +511,6 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
 
         // Decode phase: the draft always extends one token per sequence.
         Tensor out = DecodeStep(std::move(projected), phase, env);
-
-        // Synchronise after each draft step, so a fault is attributed here.
-        //
-        // CUDA errors are asynchronous: cudaGetLastError reports a fault from
-        // any earlier kernel on the stream. This one surfaced at the
-        // TM_CUDA_CHECK inside invokeFlattenKV_v2 -- the target's prefill path,
-        // which the draft never enters -- and I spent several rounds
-        // investigating that kernel before noticing the draft's own log line
-        // immediately precedes the crash and that no verification forward had
-        // run at all.
-        //
-        // The sync costs a stall per draft step and buys an accurate location.
-        // Remove it once the fault is found.
-        {
-            const auto err = cudaStreamSynchronize(stream);
-            TM_CHECK_EQ(err, cudaSuccess)
-                << "MTP draft step " << step << " of " << effective_drafts << " faulted: "
-                << cudaGetErrorString(err) << " (batch=" << batch_size << " seq_len[0]="
-                << (batch_size > 0 ? seq_lens[0] : -1)
-                << " blocks[0]=" << (block_counts ? block_counts[0] : -1)
-                << " max_extend=" << max_extend << " advanced=" << advanced << ")";
-        }
 
         Tensor logits = logits_fn_(out);
 
@@ -538,6 +530,30 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
         // Feed forward for the next iteration.
         cur_tokens = step_out;
         cur_hidden = std::move(out);
+
+        // Synchronise at the END of the step, so the check covers every kernel
+        // the step launched.
+        //
+        // My first attempt put this straight after DecodeStep, which proved the
+        // attention clean and said nothing about logits_fn_ (a linear plus a TP
+        // allgather) or invokeArgmax. The sync passed and the fault still
+        // occurred, and I read that as "the draft is clean" when it only meant
+        // "the draft's attention is clean".
+        //
+        // CUDA errors are asynchronous, so without this the fault surfaces at
+        // the next error check anywhere on the stream -- which is how six turns
+        // went into the target's KV path because the message named that file.
+        //
+        // Costs a stall per draft step. Remove once the fault is located.
+        {
+            const auto err = cudaStreamSynchronize(stream);
+            TM_CHECK_EQ(err, cudaSuccess)
+                << "MTP draft step " << step << " of " << effective_drafts << " faulted: "
+                << cudaGetErrorString(err) << " (batch=" << batch_size << " seq_len[0]="
+                << (batch_size > 0 ? seq_lens[0] : -1)
+                << " blocks[0]=" << (block_counts ? block_counts[0] : -1)
+                << " max_extend=" << max_extend << " advanced=" << advanced << ")";
+        }
     }
 
     // Restore the target's offsets. The next Forward recomputes them anyway,
