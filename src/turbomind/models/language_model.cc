@@ -925,7 +925,10 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // token_ids[seq_len - new_tokens .. seq_len) rather than a single token.
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
-    Copy(d.sequence_length.slice(0, bsz), seq_lens);
+    // sequence_length_.front(), not d.sequence_length. Rollback runs before
+    // Unprep, and Unprep is what copies the live buffer into d.sequence_length,
+    // so reading d here would give the PREVIOUS step's lengths.
+    Copy(sequence_length_.front().buffer().slice(0, bsz), seq_lens);
     Copy(autoreg_ids_.slice(0, bsz), out_ids);
     core::Context::stream().Sync();
 
@@ -998,19 +1001,24 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // advanced lengths first would make it write each token one full accepted
     // run too far into its copy of the sequence.
     //
-    // d.sequence_length still holds the base lengths at this point, so hand
-    // those to Generation first and let it advance its own copy.
-    env.produce("sequence_length", d.sequence_length.slice(0, bsz));
+    // d.sequence_length still holds the base lengths at this point, so let
+    // Generation read them and advance its own copy first.
+    //
+    // NOT env.produce: Prepare already published `sequence_length` into this
+    // same env, and produce refuses to overwrite -- it asserts on
+    // emplace(...).second. Generation::Rollback reads the key that is already
+    // there, so the buffer contents are what must be right, not the mapping.
     generation_->Run(BatchOp::kRollback, phase, env);
 
-    // Only now overwrite it with the advanced lengths, for Engine::Update.
+    // Only now overwrite with the advanced lengths, for Engine::Update.
     // Generation has already consumed the base values, and the sync inside its
     // Rollback means this write cannot race the read.
-    Copy(seq_lens, d.sequence_length.slice(0, bsz));
+    Copy(seq_lens, sequence_length_.front().buffer().slice(0, bsz));
 
-    // The token Engine::Update writes at token_ids[base] for each row.
+    // The token Engine::Update writes at token_ids[base] for each row. Unprep
+    // copies this buffer out, so writing it is enough; producing the key again
+    // would abort.
     Copy(out_ids, autoreg_ids_.slice(0, bsz));
-    env.produce("output_ids", autoreg_ids_.slice(0, bsz));
 
     // Accept length is the quantity that decides whether this is worth doing:
     // 1 + mean accepted drafts is the tokens produced per forward.
