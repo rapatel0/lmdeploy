@@ -60,7 +60,13 @@ cd /src
 #
 # The pipe was also swallowing the exit status: `cmd | tail` reports tail's
 # status, so only `set -o pipefail` made that `||` fire at all.
-if ! bash /src/tools/v100/build_v100.sh >"${RESULTS}/build.log" 2>&1; then
+# build_v100_fast.sh: incremental ninja + ccache instead of the release
+# path. build_v100.sh wipes build/ on every run, so a one-file change
+# paid ~25 minutes of nvcc per debug cycle. The fast path keeps the
+# ninja tree, keeps a content-keyed ccache on /wheels (which survives
+# sync_src.sh deleting the source tree), verifies the same SM70 pin,
+# and falls back to a clean build by itself when its caches are stale.
+if ! bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1; then
     echo "FAIL: build" >&2
     echo "--- compiler diagnostics ---"
     grep -aE "error:|Error [0-9]+|undefined reference|no member named|no matching" \
