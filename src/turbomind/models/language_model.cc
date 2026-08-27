@@ -114,6 +114,11 @@ struct LanguageModel::Impl {
         /// Per-row key length for this step, host-side, all rows.
         std::vector<int> seq_lens;
 
+        /// Per-row submitted token count this step, host-side. The MTP
+        /// prefill fill needs the chunk boundaries inside the flat input_ids
+        /// tensor, and `requests` is gone from the map by Forward.
+        std::vector<int> input_lens;
+
         /// Row sequence pointers, retained from Setup.
         ///
         /// `requests` is removed from the env map before Forward, but the
@@ -330,6 +335,31 @@ struct LanguageModel::Impl {
             // with no error at all.
             const int expected = 1 + d.num_drafts[i];
             if (!d.autoregres[i] && c->input_len != expected) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Should this step fill the draft layer's KV slot for prompt positions?
+    ///
+    /// True only for a PURE prefill batch: every row non-autoregressive with
+    /// no drafts in flight. The fill runs one attention pass over the whole
+    /// flat token tensor against the target's phase plan, so it cannot skip
+    /// rows -- and in a mixed batch a decode row would get its tip entry
+    /// overwritten with a degraded (zero-hidden) one, corrupting KV the
+    /// draft already wrote with the correct convention. Skipping mixed
+    /// batches costs draft quality for sequences that prefilled alongside
+    /// decoding rows, never correctness: verification rejects what the
+    /// blind draft proposes.
+    bool NeedsPrefillFill(int phase) const
+    {
+        const auto& d = data_.at(phase);
+        if (!mtp_predictor_ || d.rows.empty()) {
+            return false;
+        }
+        for (size_t i = 0; i < d.rows.size(); ++i) {
+            if (d.autoregres[i] || d.num_drafts[i] != 0) {
                 return false;
             }
         }
@@ -621,6 +651,7 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
 
     d.uids.resize(rc.size());
     d.seq_lens.resize(rc.size());
+    d.input_lens.resize(rc.size());
     d.rows.resize(rc.size());
     d.num_drafts.resize(rc.size());
 
@@ -649,7 +680,8 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
         // rows -- decode rows carry their length forward on the device -- so it
         // cannot be read here as a host-side length. The MTP draft needs these
         // to know how much slack each row has left in its last KV block.
-        d.seq_lens[i] = c.history_len + c.inflight_input_len + c.input_len;
+        d.seq_lens[i]   = c.history_len + c.inflight_input_len + c.input_len;
+        d.input_lens[i] = c.input_len;
         if (TM_UNLIKELY(!c.autoregres)) {
             d.sequence_length_host[i] = c.history_len + c.inflight_input_len + c.input_len;
         }
@@ -758,6 +790,14 @@ void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
     unified_decoder_->Run(BatchOp::kPrepare, phase, env);
     generation_->Run(BatchOp::kPrepare, phase, env);
     output_processor_->Run(BatchOp::kPrepare, phase, env);
+
+    // Ask the decoder for the full hidden states when this step will fill
+    // the draft's KV slot for prompt positions. The decoder produces
+    // `full_hidden_states` only when this key exists; output_processor may
+    // already have produced it for a user request, hence the guard.
+    if (NeedsPrefillFill(phase) && !env.try_("output_hidden_states")) {
+        env.produce("output_hidden_states", Tensor{});
+    }
 
     // Build the draft's decode-shaped plan, in the draft's own phase.
     //
@@ -872,6 +912,27 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     }
 
     unified_decoder_->Forward(phase, env, weights_.layers_list());
+
+    // Fill the draft layer's KV slot for this chunk's prompt positions.
+    //
+    // Without this the draft attends over uninitialized KV for every prompt
+    // position: the MTP layer used to run only inside decode-time Draft(),
+    // so nothing ever wrote its slot for the prompt. Junk at seq_len 1108,
+    // plausible at 85 -- run 20260827_092923. The upstream head is trained
+    // teacher-forced over the full sequence, and vLLM's proposer does this
+    // same prefill pass; without it acceptance at long context is zero.
+    //
+    // BEFORE OutputHiddenStatesAndLogits, which consumes full_hidden_states
+    // when a user requested hidden output. Reading env.at here fails loudly
+    // if the decoder did not produce it, rather than silently skipping the
+    // fill and reintroducing the blind-draft failure as a quality mystery.
+    if (NeedsPrefillFill(phase)) {
+        mtp_predictor_->PrefillFill(phase,
+                                    env.at("full_hidden_states"),
+                                    env.at("input_ids").buffer(),
+                                    d.input_lens.data(),
+                                    (int)d.rows.size());
+    }
 
     // env.at("batch").data<BatchData*>()[0]->Notify();
 

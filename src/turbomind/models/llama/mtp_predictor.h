@@ -94,6 +94,37 @@ public:
                       const int*          block_counts,
                       TensorMap&          env);
 
+    /// Fill the draft layer's KV slot for the prompt positions of a prefill
+    /// chunk. Runs against the TARGET's phase plan, not the draft's: the
+    /// chunk shape (q_len per row, k_len, block pointers) is exactly the plan
+    /// the target's own forward just used, and the KV slot routing comes from
+    /// the MTP attention weight's cache_block_offset, not from the phase.
+    ///
+    /// Why this exists: the draft attends over its own KV slot with
+    /// cu_k_len = the full sequence length, but nothing wrote that slot for
+    /// prompt positions -- the MTP layer ran only inside decode-time Draft().
+    /// At seq_len 1108 the draft attended over ~1100 positions of
+    /// uninitialized KV and produced junk; at seq_len 85 it produced
+    /// plausible drafts and one acceptance. Run 20260827_092923.
+    ///
+    /// The entry convention must match Draft(): entry at position p is
+    /// f(embed(token[p]), hidden[p-1]), RoPE position p. Draft() writes the
+    /// sampled token's entry at position S with the tip hidden state, which
+    /// is this same convention at p = S. A per-row shift assembles the
+    /// hidden half: position p takes the target hidden of p-1, and each
+    /// row's first chunk position takes zeros, because its predecessor
+    /// hidden lives in the previous chunk (or nowhere, at p = 0). One
+    /// degraded entry per chunk per row, against hundreds filled.
+    ///
+    /// Only the KV write matters. K and V are projections of this layer's
+    /// INPUT, so the pipeline stops after the attention call: no FFN, no
+    /// final norm, no lm_head, output discarded.
+    void PrefillFill(int                 target_phase,
+                     const Tensor&       full_hidden_states,
+                     const Buffer_<int>& input_ids,
+                     const int*          input_lens,
+                     int                 batch_size);
+
     /// Build the draft's attention plan for batch phase `phase`.
     ///
     /// Runs against attn_phase_base_ + phase, never the target's slot: the

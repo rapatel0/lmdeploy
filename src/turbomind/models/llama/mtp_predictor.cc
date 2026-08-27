@@ -183,6 +183,91 @@ Tensor MTPPredictor::Project(const Tensor& embedding, const Tensor& hidden_state
     return projected;
 }
 
+void MTPPredictor::PrefillFill(int                 target_phase,
+                               const Tensor&       full_hidden_states,
+                               const Buffer_<int>& input_ids,
+                               const int*          input_lens,
+                               int                 batch_size)
+{
+    const auto stream    = core::Context::stream().handle();
+    const int  token_num = (int)input_ids.size();
+
+    TM_CHECK_GT(batch_size, 0);
+    TM_CHECK_EQ((int)full_hidden_states.shape(0), token_num)
+        << "MTP PrefillFill: hidden rows must match the submitted tokens";
+
+    // Entry convention, shared with Draft(): the entry at position p is
+    // f(embed(token[p]), hidden[p-1]). Draft() writes the sampled token's
+    // entry from the tip hidden state -- that is exactly p = S. Here the
+    // chunk supplies token[p] directly and hidden[p-1] is the PREVIOUS row
+    // of the target's full hidden states, so the hidden half is the chunk
+    // shifted down by one row, per row of the batch.
+    //
+    // Each row's first chunk position has no predecessor hidden in this
+    // forward -- it lives in the previous chunk, or nowhere at p = 0. It
+    // gets zeros. One degraded entry per chunk per row, against hundreds
+    // filled with the trained convention; the alternative of stashing the
+    // last hidden row per sequence across chunks is bookkeeping this pass
+    // does not need to prove the mechanism.
+    Tensor embedding = embed_fn_(input_ids);
+
+    Tensor shifted{{token_num, hidden_units_}, dtype_, kDEVICE};
+    {
+        const size_t row_bytes = byte_size(dtype_, (size_t)hidden_units_);
+        char*        dst       = static_cast<char*>(shifted.raw_data());
+        const char*  src       = static_cast<const char*>(full_hidden_states.raw_data());
+        int          offset    = 0;
+        for (int i = 0; i < batch_size; ++i) {
+            const int len = input_lens[i];
+            TM_CHECK_GT(len, 0);
+            TM_CUDA_CHECK(cudaMemsetAsync(dst + (size_t)offset * row_bytes, 0, row_bytes, stream));
+            if (len > 1) {
+                TM_CUDA_CHECK(cudaMemcpyAsync(dst + (size_t)(offset + 1) * row_bytes,
+                                              src + (size_t)offset * row_bytes,
+                                              (size_t)(len - 1) * row_bytes,
+                                              cudaMemcpyDeviceToDevice,
+                                              stream));
+            }
+            offset += len;
+        }
+        TM_CHECK_EQ(offset, token_num) << "MTP PrefillFill: input_lens do not sum to the token count";
+    }
+
+    Tensor projected = Project(embedding, shifted, token_num);
+
+    // Norm, then attention against the TARGET's phase plan. The plan already
+    // describes this chunk's exact shape -- q_len per row, key lengths, block
+    // pointers -- because the target's forward just used it. What routes the
+    // KV write to the DRAFT's slot is the MTP attention weight: the cache
+    // offset is read from weights.cache_block_offset, stamped at
+    // registration. Phase selects the plan; the weight selects the slot.
+    //
+    // The pipeline stops here. K and V are projections of this layer's
+    // INPUT, so once the attention call has written them the FFN, the final
+    // norm and the lm_head would only compute an output nothing reads.
+    const auto& layer = *weights_.decoder_layer;
+
+    invokeRMSNorm(projected,
+                  projected,
+                  layer.attention_norm->weight,
+                  layer.attention_norm->norm_eps_,
+                  layer.attention_norm->zero_centered_,
+                  stream);
+    TM_CUDA_CHECK(cudaGetLastError());
+
+    attn_layer_.Forward({target_phase, projected, projected, layer.attention.get(), attn_index_});
+    TM_CUDA_CHECK(cudaGetLastError());
+
+    // A fault here must name this path, not surface later inside the target's
+    // next KV write with a filename that sends the search elsewhere. This is
+    // a prefill-rate cost on prompt chunks only, not on decode steps.
+    {
+        const auto err = cudaStreamSynchronize(stream);
+        TM_CHECK_EQ(err, cudaSuccess) << "MTP prefill fill faulted: " << cudaGetErrorString(err)
+                                      << " (batch=" << batch_size << " token_num=" << token_num << ")";
+    }
+}
+
 Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
 {
     // The executor's active stream; see the note in Project().
