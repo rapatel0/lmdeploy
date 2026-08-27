@@ -24,11 +24,35 @@ namespace turbomind {
 
 template<class T, int vec_size>
 __global__ void
-embeddingLookupKernel(T* dst, int dst_stride, const T* src, int src_stride, const int* ids, int num, int dim)
+embeddingLookupKernel(T* dst, int dst_stride, const T* src, int src_stride, const int* ids, int num, int dim, int vocab)
 {
     const int ti = blockIdx.x;
 
     const int64_t idx = ids[ti];
+
+    // Device-side guard, deliberately in the kernel rather than on the host.
+    //
+    // A host readback of `ids` plus a stream sync found every id in range and
+    // ALSO made the fault disappear -- the drain was load-bearing, so the host
+    // was provably looking at different bytes than the kernel reads at its own
+    // scheduled position in the stream. Only the kernel can report what it
+    // actually saw, and it must not crash doing so: printf the evidence, emit
+    // a zero row, and keep running. The near-never-taken branch does not
+    // perturb timing the way the sync did.
+    if (idx < 0 || idx >= vocab) {
+        if (threadIdx.x == 0) {
+            printf("[embeddingLookup] OUT OF RANGE: ids[%d] = %lld (vocab %d, num %d)\n",
+                   ti,
+                   static_cast<long long>(idx),
+                   vocab,
+                   num);
+        }
+        for (int di = threadIdx.x * vec_size; di < dim; di += blockDim.x * vec_size) {
+            Array<T, vec_size> zero{};
+            Store(&dst[ti * dst_stride + di], zero);
+        }
+        return;
+    }
 
     src += idx * src_stride;
     dst += ti * dst_stride;
@@ -68,7 +92,8 @@ void invokeEmbeddingLookup(Ref<Tensor>         out_,
                                                                        embedding_table.stride(0),
                                                                        token_ids.data(),
                                                                        num,
-                                                                       dim);
+                                                                       dim,
+                                                                       (int)embedding_table.shape(0));
     };
 
     if (byte_size(out.dtype()) == byte_size<uint16_t>()) {
