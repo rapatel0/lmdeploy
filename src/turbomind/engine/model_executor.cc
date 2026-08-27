@@ -132,10 +132,25 @@ struct ModelExecutor::Impl {
         // because input_len is K+1 rather than 1 -- yet this is exactly the
         // step that must draft again.
         //
-        // Gating this call on CanDraft would stop drafting after the first
+        // Gating this on `autoregres` alone would stop drafting after the first
         // verification, and speculation would run one cycle and then decay to
-        // ordinary decoding, quietly and with no error.
-        model_.Run(BatchOp::kDraft, d.phase, env);
+        // ordinary decoding, quietly and with no error. CanDraft therefore
+        // accepts a verification shape (input_len == 1 + num_drafts) as well as
+        // a one-token decode.
+        //
+        // It still has to be gated on something. A row can carry drafts from an
+        // earlier decode step and then be scheduled a real prefill chunk -- a
+        // resume, or a long prompt still being consumed. HasDraftsToVerify is
+        // true, so this path runs, and drafting there met a 248-token prefill
+        // plan with a 1-token draft:
+        //
+        //   Check failed: d.prefill.q_sum + d.decode.n == q_count (248 vs. 1)
+        //
+        // Skipping costs one step of speculation; the row drafts again once it
+        // is back to decoding.
+        if (model_.CanDraft(d.phase)) {
+            model_.Run(BatchOp::kDraft, d.phase, env);
+        }
 
         model_.Run(BatchOp::kUnprep, d.phase, env);
         copy.Run();
