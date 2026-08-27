@@ -176,6 +176,22 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
     }
 
     const size_t cache_block_byte_size = offset;
+
+    // Record what each layer's KV region costs and where the last one ends.
+    //
+    // The prefill KV write faults with an illegal access while every
+    // block-COUNT check passes, so the remaining suspect is the byte offset
+    // WITHIN a block. cache_block_offset accumulates per layer, and the MTP
+    // layer is appended last -- if the registry reserved a size that excludes
+    // it, every target layer would still fit and only the final region would
+    // run past the end.
+    //
+    // This states the sizes so that hypothesis is confirmed or dismissed from
+    // the log rather than argued from the source.
+    TM_LOG_INFO("[kv] block layout: {} layers, {} bytes/block, last layer offset {}",
+                weights.size(),
+                cache_block_byte_size,
+                weights.empty() ? size_t{0} : weights.back()->cache_block_offset);
     prefix_cache_offset_               = registry.prefix().Register(cache_block_byte_size, /*alignment=*/1);
 
     const auto max_block_num = engine.max_batch_size * cdiv(engine.session_len, engine.cache_block_seq_len);
