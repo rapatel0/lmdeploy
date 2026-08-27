@@ -99,6 +99,45 @@ Commit: `f3d9b3719a65`
 Artifact:
 `/localpool/lmdeploy-v100-next/results/20260827_215413-specverify-f3d9b3719a65`
 
+### GPU-utilization attribution
+
+A matched K=0/K=1/K=4 rerun sampled all four V100s every 100 ms over each
+complete benchmark arm, including model setup and warm-up:
+
+| Depth | Decode | Mean GPU utilization | Polls with all GPUs >=90% |
+| ---: | ---: | ---: | ---: |
+| K=0 | 55.19 tok/s | 40.7% | 32.6% |
+| K=1 | 29.57 tok/s | 51.4% | 44.9% |
+| K=4 | 16.00 tok/s | 64.6% | 60.2% |
+
+K=4 had 97% median utilization on every GPU while producing the lowest
+throughput. Deeper speculation therefore increases useful hardware occupancy
+but spends it on draft and verification work that almost never commits. GPU
+starvation is not the cause of the speculative slowdown. GPU 0 was moderately
+busier in the shorter K=0/K=1 arms, but all four ranks reached 100% and K=4 was
+balanced at a 97% median.
+
+Artifact:
+`/localpool/lmdeploy-v100-next/results/20260827_231421-gpuutil-cc6bd020cab1`
+
+### Why the SGLang DFlash2 result is different
+
+The SGLang V100 result of 136.6 tok/s versus its 58.2 tok/s target-only
+baseline (2.35x) is not this MTP configuration. It uses a dedicated five-layer
+DFlash2 drafter, a block of one anchor plus seven proposals, E5M2 target KV,
+CUDA graphs for both selector and draft, and overlap-plan-stream execution. It
+committed 3.77 tokens per step on the 1K workload.
+
+Most importantly, SGLang's target verifier runs GDN/Mamba with state updates
+disabled, retains every per-step intermediate convolution and recurrent state,
+and then uses a fused gather/scatter to publish the state at each request's
+last accepted step. It can retain a partial accepted prefix. TurboMind's
+current implementation has only the pre-verification snapshot, so a rejection
+must discard the whole speculative run and perform an ordinary replay.
+
+Reference:
+`sglang-V100/benchmark/qwen38_27b_fp8_dflash2_e5m2_v100_20260821/README.md`
+
 ## Why exact MTP cannot pay on this path
 
 For this recurrent model, a partial draft prefix cannot be retained after a
