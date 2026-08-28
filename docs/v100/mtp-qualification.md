@@ -10,6 +10,43 @@ Model: `/models/Qwen3.8-27B-FP8`
 
 Do not enable TurboMind MTP by default. Keep `num_draft_tokens=0`.
 
+### Latest reopening result: faster, but strict forced-rejection parity still fails
+
+Commit `07430e524449` fixed a stale draft-position frontier. `k_offsets` had
+continued to describe the pre-sampling or full K-wide verifier input after
+`sequence_length_` moved to the committed frontier. Rebuilding the prefix sum
+immediately before accepted-token repair and proposal generation raised K=4
+commit length from about 2.20 to 2.35.
+
+The corrected K=0..7 sweep selected K=4:
+
+| Depth | Decode | Ratio vs K=0 |
+| ---: | ---: | ---: |
+| K=0 | 54.88 tok/s | 1.000x |
+| K=3 | 57.01 tok/s | 1.039x |
+| K=4 | 58.19 tok/s | 1.060x |
+| K=5 | 54.43 tok/s | 0.992x |
+
+A three-trial gate reproduced 57.94 tok/s versus 55.16 tok/s target-only
+(1.050x) with 2.35 committed tokens per verification forward. Normal K=4
+matched the target-only numerical envelope on all five rows.
+
+Qualification nevertheless remains rejected. With every draft forcibly
+rejected, K=4 consistently selected the other side of the known row-2,
+position-3 FP16 near-tie and fell outside eight fresh K=0 replicas. K=1 forced
+rejection matched. This localizes the remaining strict-parity failure to the
+K+1 verifier-shaped numerical path rather than accepted-prefix publication.
+The target-only runtime has previously selected both sides of this near-tie,
+but the eight-run control did not reproduce the K=4 continuation, so the gate
+must fail rather than waive it as nondeterminism.
+
+Artifacts:
+
+- sweep: `/results/20260828_072606-mtp-depth-sweep-07430e524449`;
+- normal/performance gate: `/results/20260828_074352-specverify-3bb06153cffb`;
+- eight-run forced-rejection envelope:
+  `/results/20260828_075437-mtp-forced-identity-5dba2af578a7`.
+
 TurboMind now retains accepted draft prefixes for the recurrent Gated DeltaNet
 (GDN) model. This removes the previous requirement for full K-token acceptance
 and more than doubles K=4 throughput. It still does not beat target-only decode:

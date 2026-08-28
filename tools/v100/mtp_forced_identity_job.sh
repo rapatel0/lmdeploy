@@ -22,7 +22,10 @@ export TM_MTP_FROZEN_KV=0
 export TM_MTP_ACCEPTED_REPAIR=1
 export TM_MTP_SKIP_ATTN=0
 export TM_MTP_FORCE_REJECT=1
-python3 /src/tools/v100/verify_spec_identity.py \
+if ! python3 /src/tools/v100/verify_spec_identity.py \
     --model-dir "${MODEL_DIR}" --tp "${TP}" --num-draft-tokens 4 \
-    --baseline-replicas 8 --json-out "${RESULTS}/identity.json"
+    --baseline-replicas 8 --json-out "${RESULTS}/identity.json"; then
+    echo MTP_FORCED_IDENTITY_FAIL >&2
+    exit 6
+fi
 echo MTP_FORCED_IDENTITY_COMPLETE

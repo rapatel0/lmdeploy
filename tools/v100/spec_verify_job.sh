@@ -213,6 +213,10 @@ FAILED=0
     echo "FAIL: output differs between K=0 and K=${K}" >&2
     FAILED=1
 }
+[ "${FORCE_RC}" -ne 0 ] && {
+    echo "FAIL: forced-rejection K=${K} falls outside the K=0 numerical envelope" >&2
+    FAILED=1
+}
 [ "${ACC_SEEN}" -ne 1 ] && {
     echo "FAIL: engine never reported accept length" >&2
     FAILED=1
@@ -249,7 +253,7 @@ if [ "${ACC_SEEN}" -eq 1 ]; then
         }
     }' || FAILED=1
 fi
-for f in bench_k0.json "bench_k${K}.json" identity.json; do
+for f in bench_k0.json "bench_k${K}.json" identity.json identity_force_reject.json; do
     [ -s "${RESULTS}/${f}" ] || {
         echo "FAIL: missing ${f}" >&2
         FAILED=1
