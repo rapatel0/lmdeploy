@@ -2,8 +2,13 @@
 
 #include "src/turbomind/models/llama/dflash_predictor.h"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -201,6 +206,38 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
         prediction_hidden, block_hidden, weights_.block_size, core::Context::stream().handle());
 
     Tensor logits = logits_fn_(prediction_hidden);
+    static const bool trace_selector = [] {
+        const char* value = std::getenv("TM_DFLASH_TRACE_SELECTOR");
+        return value && value[0] == '1';
+    }();
+    if (TM_UNLIKELY(trace_selector)) {
+        Tensor hidden_host{{1, hidden_units_}, kHalf, kCPU};
+        Tensor logits_host{{1, logits.shape(1)}, kHalf, kCPU};
+        Copy(prediction_hidden.slice(0, 1), hidden_host);
+        Copy(logits.slice(0, 1), logits_host);
+        core::Context::stream().Sync();
+        auto report = [](const char* name, const Tensor& host) {
+            const auto* data = (const __half*)host.raw_data();
+            ssize_t finite = 0;
+            ssize_t nan = 0;
+            float minimum = std::numeric_limits<float>::infinity();
+            float maximum = -std::numeric_limits<float>::infinity();
+            for (ssize_t i = 0; i < host.size(); ++i) {
+                const float value = __half2float(data[i]);
+                if (std::isfinite(value)) {
+                    ++finite;
+                    minimum = std::min(minimum, value);
+                    maximum = std::max(maximum, value);
+                }
+                else {
+                    nan += std::isnan(value);
+                }
+            }
+            TM_LOG_INFO("[DFlash2] selector {} finite={} nan={} range=[{},{}]", name, finite, nan, minimum, maximum);
+        };
+        report("hidden", hidden_host);
+        report("logits", logits_host);
+    }
     Buffer_<int> candidate_ids{(ssize_t)rows * selector->top_k, kDEVICE};
     Tensor unary_scores{{rows, selector->top_k}, kFloat32, kDEVICE};
     invokeDFlashTopK16(candidate_ids,

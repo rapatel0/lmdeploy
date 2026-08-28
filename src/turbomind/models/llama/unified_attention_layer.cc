@@ -532,7 +532,7 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
                 // bounded separately, in MTPPredictor::Draft, against the same
                 // block count -- adding num_drafts here would assert on a
                 // length no kernel writes, which is exactly what it did.
-                const int draft_extra = engine_param_.num_draft_tokens > 0 && d.draft_block_size > 1 ?
+                const int draft_extra = !is_warm_up_ && engine_param_.num_draft_tokens > 0 && d.draft_block_size > 1 ?
                                             d.draft_block_size :
                                             0;
                 const int k_len_row = c.history_len + c.inflight_input_len + c.input_len + draft_extra;
@@ -562,7 +562,7 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
         // first considered -- cu_k_len drives the real iteration, k_max only
         // sizes the split-K grid, so the cost is parallelism in the rare case
         // where the extra keys cross a CTA_S boundary.
-        const int draft_extra = engine_param_.num_draft_tokens > 0 && d.draft_block_size > 1 ?
+        const int draft_extra = !is_warm_up_ && engine_param_.num_draft_tokens > 0 && d.draft_block_size > 1 ?
                                     d.draft_block_size :
                                     0;
         const int k_len = c.history_len + c.inflight_input_len + c.input_len + draft_extra;
