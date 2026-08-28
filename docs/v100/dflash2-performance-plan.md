@@ -52,8 +52,8 @@ Done when one report attributes at least 95% of cycle wall time.
 
 ### A1. Remove host barriers
 
-- Confirm the active rollback two-barrier versus one-barrier experiment.
-- Keep one rollback barrier only if the five-trial result improves cycle time.
+- Treat the rollback barrier merge as closed.
+- It changed normalized cycle time from 43.11 to 43.13 ms and provided no gain.
 - Replace the host sequence-limit check with a device predicate.
 - Keep proposal IDs in device memory through verification setup.
 - Keep accepted lengths, bonus IDs, and published lengths in device memory.
@@ -223,14 +223,13 @@ A6 remains optional until the graph and attention work reaches its measured limi
 
 ## Immediate execution queue
 
-1. Finish the rollback synchronization A/B and retain only the winner.
-2. Produce one NVTX cycle report with host and GPU phase times.
-3. Remove the candidate-ID and sequence-limit host reads.
-4. Add persistent buffers for the draft and selector path.
-5. Capture the first draft-and-selector CUDA graph.
-6. Capture first-block tensors from both runtimes.
-7. Fix the earliest acceptance mismatch.
-8. Start direct paged verification attention after graph replay works.
+1. Produce one NVTX cycle report with host and GPU phase times.
+2. Remove the candidate-ID and sequence-limit host reads.
+3. Add persistent buffers for the draft and selector path.
+4. Capture the first draft-and-selector CUDA graph.
+5. Capture first-block tensors from both runtimes.
+6. Fix the earliest acceptance mismatch.
+7. Start direct paged verification attention after graph replay works.
 
 ## Stop conditions
 
