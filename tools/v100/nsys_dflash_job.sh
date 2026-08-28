@@ -65,7 +65,7 @@ for k in ${PROFILE_K_VALUES:-0 7}; do
         python3 /job/bench_decode.py "${args[@]}" || exit $?
 
     "${NSYS}" stats \
-        --report cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,osrt_sum \
+        --report nvtx_sum,cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,osrt_sum \
         --format csv \
         --output "${RESULTS}/k${k}_stats" \
         "${RESULTS}/k${k}.nsys-rep" >"${RESULTS}/k${k}_stats.log" 2>&1 || {
