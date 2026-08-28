@@ -34,6 +34,7 @@ add_library(models STATIC
         llama/llama_utils.cu
         llama/mla_utils.cu
         llama/GatedDeltaNetLayer.cc
+        llama/dflash_predictor.cc
         llama/mtp_predictor.cc
         llama/rejection_sampling.cu
         llama/gated_delta_net_kernels.cu)

@@ -30,4 +30,9 @@ grep -q '\[DFlash2\] target capture shape=.*layer_ids=\[5,19,33,47,61\].*nonzero
     echo "FAIL: target residual capture was absent or empty"
     exit 4
 }
+grep -q '\[DFlash2\] context projection shape=.*nonzero_bytes=[1-9]' "${RESULTS}/driver.log" || {
+    echo "FAIL: DFlash2 context projection was absent or empty"
+    exit 5
+}
 echo DFLASH_CAPTURE_PASS
+echo DFLASH_CONTEXT_PROJECTION_PASS

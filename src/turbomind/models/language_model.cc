@@ -29,7 +29,8 @@
 #include "src/turbomind/models/llama/llama_kernels.h"
 #include "src/turbomind/models/llama/llama_params.h"
 #include "src/turbomind/models/llama/llama_utils.h"
-#include "src/turbomind/models/llama/mtp_predictor.h"
+#include "src/turbomind/models/llama/dflash_predictor.h"
+#include "src/turbomind/models/llama/mtp_predictor.h"},{
 #include "src/turbomind/models/llama/rejection_sampling.h"
 #include "src/turbomind/models/llama/unified_decoder.h"
 #include "src/turbomind/models/dflash_weight.h"
@@ -163,9 +164,9 @@ struct LanguageModel::Impl {
     std::optional<InputProcessor>   input_processor_;
     std::unique_ptr<UnifiedDecoder> unified_decoder_;
 
-    /// Draft-token generator, present only when the checkpoint carries an MTP
-    /// layer and the decoder registered a KV slot for it.
-    std::unique_ptr<MTPPredictor> mtp_predictor_;
+    /// Draft-token generators. The selected algorithm owns exactly one path.
+    std::unique_ptr<MTPPredictor>    mtp_predictor_;
+    std::unique_ptr<DFlashPredictor> dflash_predictor_;
 
     /// Verification logits, held between Forward and kReject because the env
     /// map is rebuilt in between.
@@ -453,12 +454,14 @@ LanguageModel::Impl::Impl(
     // happened: K=0 aborted on a missing `finished` key.
     //
     // Speculation off must mean the speculative code does not run at all.
-    if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "dflash2") {
-        // Never fall through to the embedded MTP predictor: Qwen3.8 carries
-        // both weight families, and doing so silently benchmarks the wrong
-        // algorithm. This guard is removed when DFlashPredictor is wired.
+    if (engine.speculative_algorithm == "dflash2") {
         TM_CHECK(weights_.dflash) << "DFlash2 selected but separate draft weights are absent";
-        TM_CHECK(false) << "DFlash2 weights are loaded, but runtime draft execution is not implemented yet";
+        dflash_predictor_ = std::make_unique<DFlashPredictor>(*weights_.dflash, engine, ctx);
+        if (engine.num_draft_tokens > 0) {
+            // Never fall through to embedded MTP: Qwen3.8 carries both weight
+            // families. Proposal execution replaces this guard.
+            TM_CHECK(false) << "DFlash2 context projection is ready, but draft execution is not implemented yet";
+        }
     }
     else if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "mtp" && weights_.mtp
              && weights_.mtp->decoder_layer && unified_decoder_->mtp_attn_index() >= 0
@@ -1068,6 +1071,22 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             capture->shape(1),
                             layer_ids,
                             nonzero);
+
+                Tensor context = dflash_predictor_->ProjectContext(*capture);
+                Tensor context_host{{1, context.shape(1)}, context.dtype(), kCPU};
+                Copy(context.slice(0, 1), context_host);
+                core::Context::stream().Sync();
+                const ssize_t context_bytes = context_host.byte_size();
+                const char*   context_data  = (const char*)context_host.raw_data();
+                ssize_t       context_nonzero = 0;
+                for (ssize_t i = 0; i < context_bytes; ++i) {
+                    context_nonzero += context_data[i] != 0;
+                }
+                TM_LOG_INFO("[DFlash2] context projection shape=[{},{}] nonzero_bytes={}",
+                            context.shape(0),
+                            context.shape(1),
+                            context_nonzero);
+                env.produce("dflash_context_hidden", std::move(context));
                 capture_logged = true;
             }
         }
