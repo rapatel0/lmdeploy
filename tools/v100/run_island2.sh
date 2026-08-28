@@ -38,6 +38,8 @@ TM_MTP_AMBIGUOUS_REPLAY="${TM_MTP_AMBIGUOUS_REPLAY:-0}"
 TM_SPEC_TRACE="${TM_SPEC_TRACE:-0}"
 CUDA_LAUNCH_BLOCKING="${CUDA_LAUNCH_BLOCKING:-0}"
 CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-}"
+NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
+NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,GRAPH}"
 
 # Refuse to launch while a job of the same name is already active.
 #
@@ -84,9 +86,9 @@ done
 kubectl -n "$NS" create configmap "${JOB}-script" "${CM_ARGS[@]}" >/dev/null
 
 python3 - "$JOB" "$NS" "$IMAGE" "$ISLAND2" "$ISLAND1" "$TP" "$NUM_DRAFT_TOKENS" "$MODEL_DIR" \
-    "$TM_BATCH_COPY_DURING_API_CALL" "$TM_MTP_LOCAL_TOP1" "$TM_MTP_FROZEN_KV" "$TM_MTP_EAGLE_ROTATION" "$TM_MTP_FORCE_REJECT" "$TM_MTP_AMBIGUITY_MARGIN" "$TM_MTP_AMBIGUOUS_REPLAY" "$TM_SPEC_TRACE" "$CUDA_LAUNCH_BLOCKING" "$CUBLAS_WORKSPACE_CONFIG" <<'PY' | kubectl apply -f - >/dev/null
+    "$TM_BATCH_COPY_DURING_API_CALL" "$TM_MTP_LOCAL_TOP1" "$TM_MTP_FROZEN_KV" "$TM_MTP_EAGLE_ROTATION" "$TM_MTP_FORCE_REJECT" "$TM_MTP_AMBIGUITY_MARGIN" "$TM_MTP_AMBIGUOUS_REPLAY" "$TM_SPEC_TRACE" "$CUDA_LAUNCH_BLOCKING" "$CUBLAS_WORKSPACE_CONFIG" "$NCCL_DEBUG" "$NCCL_DEBUG_SUBSYS" <<'PY' | kubectl apply -f - >/dev/null
 import json, sys
-job, ns, image, island2, island1, tp, num_draft, model_dir, batch_copy_order, mtp_local_top1, mtp_frozen_kv, mtp_eagle_rotation, mtp_force_reject, mtp_ambiguity_margin, mtp_ambiguous_replay, spec_trace, launch_blocking, cublas_workspace = sys.argv[1:19]
+job, ns, image, island2, island1, tp, num_draft, model_dir, batch_copy_order, mtp_local_top1, mtp_frozen_kv, mtp_eagle_rotation, mtp_force_reject, mtp_ambiguity_margin, mtp_ambiguous_replay, spec_trace, launch_blocking, cublas_workspace, nccl_debug, nccl_debug_subsys = sys.argv[1:21]
 
 guard = r'''set -uo pipefail
 for BAD in $ISLAND1_UUIDS; do
@@ -96,6 +98,11 @@ for BAD in $ISLAND1_UUIDS; do
 done
 COUNT=$(nvidia-smi --query-gpu=uuid --format=csv,noheader | wc -l)
 [ "$COUNT" = "4" ] || { echo "FATAL: expected 4 GPUs, saw $COUNT"; exit 91; }
+TOPO_BAD=$(nvidia-smi topo -m | awk -v n="$COUNT" '
+  /^GPU[0-9]+/ { for (i=2; i<=n+1; ++i) if ($i != "X" && $i !~ /^NV[0-9]+$/) print $1 "->" (i-2) "=" $i }
+')
+[ -z "$TOPO_BAD" ] || { echo "FATAL: island-2 contains a non-NVLink GPU edge: $TOPO_BAD"; exit 93; }
+echo "NVLINK_TOPOLOGY_PASS: every visible GPU pair is NVLink-connected"
 USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk '{s+=$1} END{print s}')
 [ "$USED" -lt 2000 ] || { echo "FATAL: island 2 is not idle (${USED} MiB in use)"; exit 92; }
 echo "ISLAND_GUARD_PASS: 4 idle GPUs, no island-1 UUID visible"
@@ -140,6 +147,12 @@ manifest = {
                     {"name": "TM_SPEC_TRACE", "value": spec_trace},
                     {"name": "CUDA_LAUNCH_BLOCKING", "value": launch_blocking},
                     {"name": "CUBLAS_WORKSPACE_CONFIG", "value": cublas_workspace},
+                    {"name": "NCCL_P2P_DISABLE", "value": "0"},
+                    {"name": "NCCL_P2P_LEVEL", "value": "NVL"},
+                    {"name": "NCCL_P2P_DIRECT_DISABLE", "value": "0"},
+                    {"name": "NCCL_IB_DISABLE", "value": "1"},
+                    {"name": "NCCL_DEBUG", "value": nccl_debug},
+                    {"name": "NCCL_DEBUG_SUBSYS", "value": nccl_debug_subsys},
                 ],
                 # No nvidia.com/gpu request: the device plugin must not
                 # reassign devices out from under the UUID pin.
@@ -168,7 +181,7 @@ manifest = {
                 # "SUCCEEDED" with no readable output is not evidence of
                 # anything. Jobs copy their artifacts here.
                 {"name": "results", "hostPath": {"path": "/localpool/lmdeploy-v100-next/results", "type": "DirectoryOrCreate"}},
-                {"name": "nsys", "hostPath": {"path": "/localpool/lmdeploy-v100-next/nsys-cli", "type": "Directory"}},
+                {"name": "nsys", "hostPath": {"path": "/localpool/lmdeploy-v100-next/nsys-cli-2025.6.3", "type": "Directory"}},
                 {"name": "sglang-corpus", "hostPath": {"path": "/localpool/lmdeploy-v100-next/sglang-corpus", "type": "Directory"}},
             ]}}}}
 print(json.dumps(manifest))

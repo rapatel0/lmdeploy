@@ -261,6 +261,7 @@ def main() -> int:
         session_len=session_len,
         num_draft_tokens=args.num_draft_tokens,
         enable_prefix_caching=False,
+        communicator="nccl",
         async_=0,
         **speculative_options,
     )
