@@ -23,6 +23,9 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
                                    int        K,
                                    int        vocab_size,
                                    int        vocab_size_padded,
+                                   const int* eos_ids,
+                                   int        eos_ids_size,
+                                   const int* eos_enable_positions,
                                    float      ambiguity_margin)
 {
     const int b = blockIdx.x;
@@ -50,6 +53,12 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
     for (int pos = 0; pos <= K; ++pos) {
         const T* pos_logits = batch_logits + (size_t)pos * vocab_size_padded;
 
+        // Match the ordinary logits processor: EOS does not participate in
+        // argmax before min_new_tokens. Rollback-time EOS handling is too late,
+        // because the verifier already selected EOS instead of the canonical
+        // next-best token.
+        const bool eos_disabled = pos < eos_enable_positions[b];
+
         // Each thread finds local max over its strided elements
         float max_val = -1e30f;
         // INT_MAX for the same reason as the padding lanes below: a thread
@@ -59,6 +68,15 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
         int max_idx = INT_MAX;
         // Strict `>` here already prefers the lower index, since i increases.
         for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
+            bool skip = false;
+            if (eos_disabled) {
+                for (int e = 0; e < eos_ids_size; ++e) {
+                    skip |= i == eos_ids[b * eos_ids_size + e];
+                }
+            }
+            if (skip) {
+                continue;
+            }
             float val = static_cast<float>(pos_logits[i]);
             if (val > max_val) {
                 max_val = val;
@@ -137,7 +155,13 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
         // one-token path instead of replaying every zero-accept verification.
         bool tied = false;
         for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
-            if (i != s_argmax_token
+            bool skip = false;
+            if (eos_disabled) {
+                for (int e = 0; e < eos_ids_size; ++e) {
+                    skip |= i == eos_ids[b * eos_ids_size + e];
+                }
+            }
+            if (!skip && i != s_argmax_token
                 && static_cast<float>(pos_logits[i]) >= s_argmax_value - ambiguity_margin) {
                 tied = true;
                 break;
@@ -194,6 +218,9 @@ RejectionResult GreedyReject(const void*  verification_logits,
                               int          K,
                               int          vocab_size,
                               int          vocab_size_padded,
+                              const int*   eos_ids,
+                              int          eos_ids_size,
+                              const int*   eos_enable_positions,
                               float        ambiguity_margin,
                               DataType     dtype,
                               cudaStream_t stream)
@@ -215,19 +242,49 @@ RejectionResult GreedyReject(const void*  verification_logits,
     int* d_bonus_ambiguous = result.bonus_ambiguous.data();
 
     if (dtype == DataType::kFloat16) {
-        GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const half*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded, ambiguity_margin);
+        GreedyRejectKernel<<<grid, block, 0, stream>>>(d_num_accepted,
+                                                       d_bonus_tokens,
+                                                       d_bonus_ambiguous,
+                                                       (const half*)verification_logits,
+                                                       draft_tokens,
+                                                       K,
+                                                       vocab_size,
+                                                       vocab_size_padded,
+                                                       eos_ids,
+                                                       eos_ids_size,
+                                                       eos_enable_positions,
+                                                       ambiguity_margin);
     }
 #ifdef ENABLE_BF16
     else if (dtype == DataType::kBfloat16) {
-        GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const __nv_bfloat16*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded, ambiguity_margin);
+        GreedyRejectKernel<<<grid, block, 0, stream>>>(d_num_accepted,
+                                                       d_bonus_tokens,
+                                                       d_bonus_ambiguous,
+                                                       (const __nv_bfloat16*)verification_logits,
+                                                       draft_tokens,
+                                                       K,
+                                                       vocab_size,
+                                                       vocab_size_padded,
+                                                       eos_ids,
+                                                       eos_ids_size,
+                                                       eos_enable_positions,
+                                                       ambiguity_margin);
     }
 #endif
     else {
         // Fallback: treat as float
-        GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const float*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded, ambiguity_margin);
+        GreedyRejectKernel<<<grid, block, 0, stream>>>(d_num_accepted,
+                                                       d_bonus_tokens,
+                                                       d_bonus_ambiguous,
+                                                       (const float*)verification_logits,
+                                                       draft_tokens,
+                                                       K,
+                                                       vocab_size,
+                                                       vocab_size_padded,
+                                                       eos_ids,
+                                                       eos_ids_size,
+                                                       eos_enable_positions,
+                                                       ambiguity_margin);
     }
 
     return result;

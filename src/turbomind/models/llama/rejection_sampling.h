@@ -28,6 +28,9 @@ struct RejectionResult {
 /// @param K                    number of draft tokens per request
 /// @param vocab_size           real vocabulary size; argmax searches only this far
 /// @param vocab_size_padded    row stride of the logits, >= vocab_size
+/// @param eos_ids              [batch, eos_ids_size] EOS token IDs, padded with -1
+/// @param eos_ids_size         row stride of eos_ids
+/// @param eos_enable_positions [batch] first verification position where EOS is valid
 /// @param dtype                data type of logits (kFloat16, kBfloat16, or kFloat32)
 /// @param stream               CUDA stream
 ///
@@ -43,6 +46,9 @@ RejectionResult GreedyReject(const void*  verification_logits,
                              int          K,
                              int          vocab_size,
                              int          vocab_size_padded,
+                             const int*   eos_ids,
+                             int          eos_ids_size,
+                             const int*   eos_enable_positions,
                              float        ambiguity_margin,
                              DataType     dtype,
                              cudaStream_t stream);

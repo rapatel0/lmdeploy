@@ -30,7 +30,7 @@
 #include "src/turbomind/models/llama/llama_params.h"
 #include "src/turbomind/models/llama/llama_utils.h"
 #include "src/turbomind/models/llama/dflash_predictor.h"
-#include "src/turbomind/models/llama/mtp_predictor.h"},{
+#include "src/turbomind/models/llama/mtp_predictor.h"
 #include "src/turbomind/models/llama/rejection_sampling.h"
 #include "src/turbomind/models/llama/unified_decoder.h"
 #include "src/turbomind/models/dflash_weight.h"
@@ -1631,12 +1631,39 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     const float ambiguity_margin = configured_ambiguity_margin >= 0.f ?
                                        configured_ambiguity_margin :
                                        (dflash_predictor_ ? 0.0625f : 0.f);
+
+    // Ordinary decoding masks every EOS ID until min_new_tokens. Verification
+    // must use the same candidate set before it compares target and draft
+    // tokens. Handling EOS during rollback cannot recover the next-best token
+    // that the canonical sampler selected instead.
+    int eos_ids_size = 1;
+    for (const auto* row : d.rows) {
+        eos_ids_size = std::max(eos_ids_size, (int)row->gen_cfg.eos_ids.size());
+    }
+    Buffer_<int> eos_ids_host{bsz * eos_ids_size, kCPU};
+    Buffer_<int> eos_enable_positions_host{bsz, kCPU};
+    std::fill(eos_ids_host.data(), eos_ids_host.data() + eos_ids_host.size(), -1);
+    for (int i = 0; i < bsz; ++i) {
+        const auto& c = *d.rows[i];
+        std::copy(c.gen_cfg.eos_ids.begin(),
+                  c.gen_cfg.eos_ids.end(),
+                  eos_ids_host.data() + i * eos_ids_size);
+        eos_enable_positions_host[i] = c.prompt_len + c.gen_cfg.min_new_tokens - c.seq_len - 1;
+    }
+    Buffer_<int> eos_ids{bsz * eos_ids_size, kDEVICE};
+    Buffer_<int> eos_enable_positions{bsz, kDEVICE};
+    Copy(eos_ids_host, eos_ids);
+    Copy(eos_enable_positions_host, eos_enable_positions);
+
     auto result = GreedyReject(verify_logits_.raw_data(),
                                drafts.data(),
                                bsz,
                                K,
                                weights_.vocab_size,  // argmax searches only the real vocabulary
                                vocab_stride,         // rows are strided by the padded size
+                               eos_ids.data(),
+                               eos_ids_size,
+                               eos_enable_positions.data(),
                                ambiguity_margin,
                                weights_.data_type,
                                st);
