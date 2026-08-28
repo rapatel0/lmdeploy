@@ -230,8 +230,18 @@ __global__ void ChunkedGdrKernel(T*             out,
                         PRAGMA_UNROLL
                         for (int v_idx = 0; v_idx < tile_v; ++v_idx) {
                             if (value_base + v_idx < D) {
-                                snapshot[(offset_k * tile_k + k_idx) * D + value_base + v_idx] =
-                                    StateT(vec_S[v_iter][k_idx][v_idx]);
+                                // A normal decode stores StateT after every
+                                // token and reloads it for the next forward.
+                                // Verification processes several positions in
+                                // one chunk, so retaining the FP32 accumulator
+                                // here would make both later logits and saved
+                                // frontiers differ from sequential target
+                                // decoding. Round-trip through StateT at every
+                                // captured frontier to preserve exact recurrent
+                                // semantics across the speculative block.
+                                const StateT rounded = StateT(vec_S[v_iter][k_idx][v_idx]);
+                                snapshot[(offset_k * tile_k + k_idx) * D + value_base + v_idx] = rounded;
+                                vec_S[v_iter][k_idx][v_idx] = float(rounded);
                             }
                         }
                     }
