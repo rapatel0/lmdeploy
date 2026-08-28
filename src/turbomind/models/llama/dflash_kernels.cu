@@ -4,10 +4,17 @@
 
 #include <cuda_fp16.h>
 #include <math_constants.h>
+#if CUDART_VERSION >= 11000
+#include <cub/cub.cuh>
+#else
+#include "3rdparty/cub/cub.cuh"
+#endif
 
 #include <climits>
+#include <cstdlib>
 
 #include "src/turbomind/core/check.h"
+#include "src/turbomind/kernels/reduce_kernel_utils.cuh"
 #include "src/turbomind/utils/cuda_utils.h"
 
 namespace turbomind {
@@ -158,7 +165,7 @@ __global__ void DFlashResidualRMSNormHalf(__half*       output,
     }
 }
 
-__global__ void DFlashTopK16Half(int* ids, float* scores, const __half* logits, int rows, int vocab, int token_id_offset, float multiplier, float softcap)
+__global__ void DFlashTopK16HalfLegacy(int* ids, float* scores, const __half* logits, int rows, int vocab, int token_id_offset, float multiplier, float softcap)
 {
     const int row = blockIdx.x;
     if (row >= rows) {
@@ -231,6 +238,45 @@ __global__ void DFlashTopK16Half(int* ids, float* scores, const __half* logits, 
             ++cursors[best_lane];
             ids[row * 16 + rank] = best_id + token_id_offset;
             scores[row * 16 + rank] = best_score;
+        }
+    }
+}
+
+__global__ void DFlashTopK16HalfCub(int*          ids,
+                                     float*        scores,
+                                     const __half* logits,
+                                     int           rows,
+                                     int           vocab,
+                                     int           token_id_offset,
+                                     float         multiplier,
+                                     float         softcap)
+{
+    constexpr int kThreads = 256;
+    constexpr int kTopK = 16;
+    const int row = blockIdx.x;
+    if (row >= rows) {
+        return;
+    }
+
+    TopK<float, kTopK> partial;
+    partial.init();
+    for (int token = threadIdx.x; token < vocab; token += kThreads) {
+        float score = __half2float(logits[row * vocab + token]) * multiplier;
+        if (softcap > 0.f) {
+            score = tanhf(score / softcap) * softcap;
+        }
+        partial.insert(score, token);
+    }
+
+    using BlockReduce = cub::BlockReduce<TopK<float, kTopK>, kThreads>;
+    __shared__ typename BlockReduce::TempStorage storage;
+    const TopK<float, kTopK> total =
+        BlockReduce(storage).Reduce(partial, reduce_topk_op<float, kTopK>);
+    if (threadIdx.x == 0) {
+#pragma unroll
+        for (int rank = 0; rank < kTopK; ++rank) {
+            ids[row * kTopK + rank] = total.p[rank] + token_id_offset;
+            scores[row * kTopK + rank] = total.u[rank];
         }
     }
 }
@@ -522,14 +568,30 @@ void invokeDFlashTopK16(Buffer_<int>& ids,
     TM_CHECK_EQ(scores.shape(1), 16);
     TM_CHECK_EQ(ids.size(), logits.shape(0) * 16);
     TM_CHECK_EQ(valid_vocab, logits.shape(1));
-    DFlashTopK16Half<<<logits.shape(0), 256, 0, stream>>>(ids.data(),
-                                                         scores.data<float>(),
-                                                         (const __half*)logits.raw_data(),
-                                                         logits.shape(0),
-                                                         valid_vocab,
-                                                         token_id_offset,
-                                                         output_multiplier,
-                                                         softcap);
+    static const bool cub_topk = [] {
+        const char* value = std::getenv("TM_DFLASH_CUB_TOPK");
+        return value && value[0] == '1';
+    }();
+    if (cub_topk) {
+        DFlashTopK16HalfCub<<<logits.shape(0), 256, 0, stream>>>(ids.data(),
+                                                                scores.data<float>(),
+                                                                (const __half*)logits.raw_data(),
+                                                                logits.shape(0),
+                                                                valid_vocab,
+                                                                token_id_offset,
+                                                                output_multiplier,
+                                                                softcap);
+    }
+    else {
+        DFlashTopK16HalfLegacy<<<logits.shape(0), 256, 0, stream>>>(ids.data(),
+                                                                   scores.data<float>(),
+                                                                   (const __half*)logits.raw_data(),
+                                                                   logits.shape(0),
+                                                                   valid_vocab,
+                                                                   token_id_offset,
+                                                                   output_multiplier,
+                                                                   softcap);
+    }
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
