@@ -3,6 +3,7 @@
 #include "src/turbomind/models/llama/dflash_kernels.h"
 
 #include <cuda_fp16.h>
+#include <math_constants.h>
 
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/utils/cuda_utils.h"
