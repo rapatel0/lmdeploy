@@ -23,6 +23,7 @@ unchecked number is meaningless.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import statistics
 import sys
@@ -78,6 +79,11 @@ def main() -> int:
         help="MTP draft depth K. 0 disables drafting and gives the baseline.",
     )
     parser.add_argument("--json-out", default="")
+    parser.add_argument(
+        "--cuda-profiler-range",
+        action="store_true",
+        help="bracket the first measured request with cudaProfilerStart/Stop for nsys",
+    )
     parser.add_argument(
         "--require-mtp",
         action="store_true",
@@ -203,11 +209,38 @@ def main() -> int:
     prefill_tok_s = encoded_input / ttft_s if ttft_s > 0 else 0.0
     print(f"  TTFT {ttft_s * 1000:.1f} ms -> prefill {prefill_tok_s:.1f} tok/s", flush=True)
 
+    def disabled_profiler() -> int:
+        return 0
+
+    profiler_enabled = False
+    cuda_profiler_start = disabled_profiler
+    cuda_profiler_stop = disabled_profiler
+    if args.cuda_profiler_range:
+        for library in ("libcudart.so", "libcudart.so.12"):
+            try:
+                cudart = ctypes.CDLL(library)
+            except OSError:
+                continue
+            cuda_profiler_start = cudart.cudaProfilerStart
+            cuda_profiler_stop = cudart.cudaProfilerStop
+            profiler_enabled = True
+            break
+        if not profiler_enabled:
+            print("FAIL: --cuda-profiler-range could not load libcudart", file=sys.stderr)
+            return 2
+
     rows = []
     for trial in range(1, args.trials + 1):
+        profile_this_trial = profiler_enabled and trial == 1
+        if profile_this_trial and cuda_profiler_start() != 0:
+            print("FAIL: cudaProfilerStart failed", file=sys.stderr)
+            return 2
         start = time.perf_counter()
         out = pipe([prompt], gen_config=gen_config)[0]
         elapsed = time.perf_counter() - start
+        if profile_this_trial and cuda_profiler_stop() != 0:
+            print("FAIL: cudaProfilerStop failed", file=sys.stderr)
+            return 2
 
         produced = len(out.token_ids) if out.token_ids else 0
         degenerate = is_degenerate(out.text or "")
