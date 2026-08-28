@@ -25,7 +25,25 @@ command -v sglang >/dev/null 2>&1 || {
 }
 python3 - <<'PY'
 import importlib.metadata
+from pathlib import Path
+
 print("sglang", importlib.metadata.version("sglang"))
+# This V100 branch accidentally dropped the local used by every non-DFlash
+# worker in SpeculativeAlgorithm.create_worker (present in its parent commit).
+# Patch only that one missing assignment so the same-checkpoint control can
+# reach the native NEXTN worker; do not alter model or kernel behavior.
+p = Path("/opt/sglang/python/sglang/srt/speculative/spec_info.py")
+s = p.read_text()
+needle = '        ), "Cannot create worker for NONE speculative algorithm."\n\n        if self.is_dflash():'
+replacement = (
+    '        ), "Cannot create worker for NONE speculative algorithm."\n\n'
+    '        enable_overlap = not server_args.disable_overlap_schedule\n\n'
+    '        if self.is_dflash():'
+)
+if needle in s:
+    p.write_text(s.replace(needle, replacement, 1))
+elif "enable_overlap = not server_args.disable_overlap_schedule" not in s:
+    raise RuntimeError("could not patch missing create_worker enable_overlap")
 PY
 
 wait_for_server() {
@@ -88,6 +106,7 @@ run_arm() {
         --max-total-tokens 16384 \
         --max-running-requests 1 \
         --disable-radix-cache \
+        --disable-overlap-schedule \
         --chunked-prefill-size 8192 \
         --mamba-full-memory-ratio 0.1 \
         --mamba-scheduler-strategy no_buffer \
