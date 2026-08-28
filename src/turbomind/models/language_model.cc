@@ -1066,7 +1066,10 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         unified_decoder_->SnapshotGDNState(phase);
     }
 
-    unified_decoder_->Forward(phase, env, weights_.layers_list());
+    {
+        NvtxScope scope(HasDraftsToVerify(phase) ? "targetVerify" : "targetDecode");
+        unified_decoder_->Forward(phase, env, weights_.layers_list());
+    }
 
     if (dflash_predictor_ && env.try_("dflash_target_hidden") && !unified_decoder_->is_warm_up()) {
         Tensor context = dflash_predictor_->ProjectContext(env.at("dflash_target_hidden"));
@@ -1325,6 +1328,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
 void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
 {
+    NvtxScope scope("dflashDraftAndSelect");
     auto&     d   = data_.at(phase);
     const int bsz = (int)d.rows.size();
     const int K   = engine_param_.num_draft_tokens;
@@ -1557,6 +1561,7 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
 
 void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
 {
+    NvtxScope scope("speculativeReject");
     TM_CHECK(mtp_predictor_ || dflash_predictor_);
 
     auto&      d   = data_.at(phase);
@@ -1781,6 +1786,7 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
 
 void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
 {
+    NvtxScope scope("speculativeRollback");
     auto&     d   = data_.at(phase);
     const int bsz = (int)d.rows.size();
 
