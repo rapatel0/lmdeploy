@@ -198,7 +198,17 @@ SGLang deliberately interprets every DFlash `sliding_attention` layer as decoder
 
 The checkpoint is the generic DFlash2 architecture, not Laguna: its 81 tensor keys contain no `aux_hidden_norms` or `g_proj`. Thus Laguna-specific missing weights are not an active issue for this model.
 
-The loader now validates `layer_types`, configures homogeneous sliding layers as causal/windowed and homogeneous full layers as encoder-only, and rejects unsupported mixed policies instead of silently flattening them. A legacy-policy A/B and exact audited identity gate are required before closing this defect.
+The loader now validates `layer_types`, configures homogeneous sliding layers as causal/windowed and homogeneous full layers as encoder-only, and rejects unsupported mixed policies instead of silently flattening them. The audited A/B showed that this correctness fix is not an acceptance driver: raw commit was 2.077 with the legacy policy and 2.033 with the corrected policy, while decode was 47.22 versus 47.34 tok/s. The corrected policy passed exact audited identity.
+
+## Confirmed draft RoPE defect
+
+`UnifiedAttentionLayer` initialized one global RoPE configuration from `weights[0]` and used it for every target and DFlash attention layer. The target and draft contracts differ materially:
+
+- target: head dimension 256, partial rotary factor 0.25, multimodal/interleaved RoPE;
+- draft: head dimension 128, full standard RoPE;
+- both use theta 10,000,000, but dimension and layout are not interchangeable.
+
+Consequently all five DFlash layers used target RoPE rather than the draft checkpoint's own `AttentionWeight::rope`. The implementation now builds one `RopeKernelParam` per attention weight and selects it by attention layer ID. A legacy-global versus per-layer A/B and exact audited identity gate are required.
 
 ## Acceptance gap
 

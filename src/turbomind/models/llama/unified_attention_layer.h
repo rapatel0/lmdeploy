@@ -96,7 +96,8 @@ private:
 
     RNG rng_;
 
-    RopeKernelParam rope_param_{};
+    RopeKernelParam              rope_param_{};
+    std::vector<RopeKernelParam> rope_params_;
 
     std::vector<std::shared_ptr<AttentionData>> data_;
 

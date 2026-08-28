@@ -34,11 +34,9 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - The checkpoint is generic `DFlash2DraftModel`, not Laguna.
   - Its 81 tensors contain no `aux_hidden_norms` or `g_proj`; the generic loader is the correct architecture.
 
-- [ ] **Load attention type and window per draft layer.**
-  - Classification: confirmed high-impact loader defect.
-  - The published checkpoint has five `sliding_attention` layers and `is_causal=false`. SGLang deliberately runs those layers as causal decoder attention; LMDeploy incorrectly copied the top-level false flag and ran them non-causally.
-  - The loader now configures homogeneous sliding/full policies correctly and rejects unsupported mixtures. A legacy-policy A/B and audited identity gate are running.
-  - Done when: corrected attention materially improves or is falsified, and every loaded layer's effective contract is recorded.
+- [x] **Load attention type and window per draft layer.**
+  - The loader now configures homogeneous sliding/full policies correctly and rejects unsupported mixtures.
+  - The corrected policy passed exact audited identity but did not improve acceptance: raw commit 2.033 corrected versus 2.077 legacy.
 
 - [ ] **Move TP all-reduces before output grouped convolution and W2 row-scale restoration.**
   - Classification: confirmed TP4 operation-order mismatch.
@@ -71,11 +69,11 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Compare every interaction score and top-two edge margin from shared tensors; inspect SGLang's generated kernel before changing LMDeploy.
   - Done when: generated arithmetic is proven equivalent or LMDeploy matches the observed narrowing points.
 
-- [ ] **Validate draft RoPE ownership and post-RoPE K parity.**
-  - Classification: potentially catastrophic configuration hypothesis.
-  - Confirm draft layers do not inherit target-model RoPE metadata accidentally.
-  - Compare target versus draft base, scaling, rotary layout/dimension, and post-RoPE K near position 1000 and across all eight proposal positions.
-  - Done when: each draft layer demonstrably uses the draft checkpoint's RoPE contract.
+- [ ] **Fix draft RoPE ownership and validate post-RoPE K parity.**
+  - Classification: confirmed configuration defect.
+  - All DFlash layers inherited one target-global RoPE parameter: target head dimension 256 with partial multimodal RoPE, versus draft head dimension 128 with full standard RoPE.
+  - Per-layer RopeKernelParam selection is implemented behind an A/B control; benchmark and exact audited identity are next.
+  - Done when: each draft layer uses its checkpoint RoPE contract, identity passes, and acceptance impact is recorded.
 
 - [ ] **Run isolated grouped-convolution arithmetic parity.**
   - Classification: lower-priority rounding hypothesis; indexing already appears aligned.
