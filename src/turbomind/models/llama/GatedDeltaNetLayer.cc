@@ -158,21 +158,31 @@ GatedDeltaNetLayer::GatedDeltaNetLayer(std::vector<DeltaNetWeight*> weights,
 
     // Speculative rollback snapshot.
     //
-    // Only allocated when speculation is on, because it is not small: one
-    // sequence's conv state plus every recurrent block, times max_batch_size.
-    // A single copy is affordable; keeping one per drafted token would not be,
-    // which is why the design restores and replays rather than selecting an
-    // intermediate state.
+    // Only allocated when speculation is on, because one slot contains a
+    // sequence's conv state plus every recurrent block. Base slots cover exact
+    // rollback; bounded extra slots retain per-position state for partial
+    // acceptance without scaling that cost across the full maximum batch.
     const bool trace_state = [] {
         const char* s = std::getenv("TM_GDN_TRACE_STATE");
         return s && s[0] == '1';
     }();
     if (engine.num_draft_tokens > 0 || trace_state) {
         snapshot_bytes_ = conv_total_bytes_ + size_t(num_blocks_) * block_bytes_;
-        snapshot_       = Buffer_<uint8_t>{core::ssize_t(snapshot_bytes_) * engine.max_batch_size, kDEVICE};
-        TM_LOG_INFO("[GDN] speculative snapshot enabled: {} bytes/sequence, {} MB total",
+
+        // Keep one pre-forward slot for every possible row. Additionally keep
+        // every intermediate verifier state for a bounded number of active
+        // rows, enabling DFlash partial-prefix commit without multiplying the
+        // allocation by (K+2)*max_batch_size. Concurrency-one is the V100
+        // performance target; larger active batches fall back to exact
+        // all-or-nothing restoration unless explicitly provisioned later.
+        const int partial_rows = engine.num_draft_tokens > 0 ? std::min(engine.max_batch_size, 1) : 0;
+        const size_t snapshot_slots = size_t(engine.max_batch_size)
+                                      + size_t(partial_rows) * (engine.num_draft_tokens + 1);
+        snapshot_ = Buffer_<uint8_t>{core::ssize_t(snapshot_bytes_ * snapshot_slots), kDEVICE};
+        TM_LOG_INFO("[GDN] speculative snapshot enabled: {} bytes/slot, {} slots, {} MB total",
                     snapshot_bytes_,
-                    snapshot_bytes_ * size_t(engine.max_batch_size) / (1024 * 1024));
+                    snapshot_slots,
+                    snapshot_bytes_ * snapshot_slots / (1024 * 1024));
     }
 
     const size_t prefix_bytes = registry.prefix().accumulation_bytes();
