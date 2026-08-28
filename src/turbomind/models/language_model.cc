@@ -1172,6 +1172,17 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
     // The MTP KV slot was already seeded in Setup, which is the only place the
     // `requests` tensor it needs is available.
 
+    // Rollback has just replaced sequence_length_ with the COMMITTED frontier,
+    // but k_offsets was built before verification and still describes the full
+    // K-wide verifier input. Rebuild it before either accepted-token repair or
+    // the next proposal. Rewinding a stale verifier frontier by the accepted
+    // count lands partial accepts among rejected-tail positions; the resulting
+    // draft KV is internally consistent but attached to the wrong tokens.
+    {
+        Buffer_<int> k_offsets = env.at("k_offsets").buffer();
+        PrefixSum(sequence_length_.front().data<int>(), bsz, k_offsets.data(), core::Context::stream().handle());
+    }
+
     // Draft from the accepted tip.
     //
     // On a verification step hidden_states is [bsz*(K+1), hidden], not
