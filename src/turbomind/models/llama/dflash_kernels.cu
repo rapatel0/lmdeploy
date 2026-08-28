@@ -6,6 +6,7 @@
 #include <math_constants.h>
 
 #include <climits>
+#include <cstdlib>
 
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/utils/cuda_utils.h"
@@ -346,7 +347,8 @@ __global__ void DFlashGroupedConvHalf(__half*       output,
                                       int           block_size,
                                       int           taps,
                                       int           group_size,
-                                      int           groups)
+                                      int           groups,
+                                      bool          fp16_steps)
 {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= token_num * hidden) {
@@ -364,8 +366,18 @@ __global__ void DFlashGroupedConvHalf(__half*       output,
         }
         const int base_index  = (side * taps + tap) * hidden + channel;
         const int delta_index = ((token * 2 + side) * taps + tap) * groups + group;
-        const float coefficient = __half2float(base[base_index]) + __half2float(delta[delta_index]);
-        value += coefficient * __half2float(input[(token - tap) * hidden + channel]);
+        float coefficient = __half2float(base[base_index]) + __half2float(delta[delta_index]);
+        if (fp16_steps) {
+            coefficient = __half2float(__float2half_rn(coefficient));
+        }
+        float product = coefficient * __half2float(input[(token - tap) * hidden + channel]);
+        if (fp16_steps) {
+            product = __half2float(__float2half_rn(product));
+            value = __half2float(__float2half_rn(value + product));
+        }
+        else {
+            value += product;
+        }
     }
     output[index] = __float2half_rn(value);
 }
@@ -630,6 +642,10 @@ void invokeDFlashGroupedConv(Tensor&       output,
 
     constexpr int threads = 256;
     const int     blocks  = (token_num * hidden + threads - 1) / threads;
+    static const bool fp16_steps = [] {
+        const char* value = std::getenv("TM_DFLASH_CONV_FP16_STEPS");
+        return value && value[0] == '1';
+    }();
     DFlashGroupedConvHalf<<<blocks, threads, 0, stream>>>((__half*)output.raw_data(),
                                                           (const __half*)input.raw_data(),
                                                           (const __half*)delta.raw_data(),
@@ -640,7 +656,8 @@ void invokeDFlashGroupedConv(Tensor&       output,
                                                           block_size,
                                                           taps,
                                                           group_size,
-                                                          groups);
+                                                          groups,
+                                                          fp16_steps);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
