@@ -21,6 +21,19 @@ void invokeDFlashCastToFloat(Tensor& output, const Tensor& input, cudaStream_t s
 /// was trained with BF16 residual/norm boundaries, which affect draft quality.
 void invokeDFlashRoundBFloat16(Tensor& value, cudaStream_t stream);
 
+void invokeDFlashScale(Tensor& value, float scale, cudaStream_t stream);
+
+/// Reproduce Laguna's overflow-safe SM70 SwiGLU path. gate_up is the W13
+/// projection of an input divided by 32; output is dynamically row-scaled for
+/// W2 and row_scales records the factor restored after W2.
+void invokeDFlashLagunaSilu(Tensor&       output,
+                            Tensor&       row_scales,
+                            const Tensor& gate_up,
+                            float         gate_up_scale,
+                            cudaStream_t  stream);
+
+void invokeDFlashScaleRows(Tensor& value, const Tensor& row_scales, float scale, cudaStream_t stream);
+
 void invokeDFlashResidualRMSNorm(Tensor&       output,
                                  Tensor&       residual,
                                  const Tensor& reduced,
@@ -28,6 +41,7 @@ void invokeDFlashResidualRMSNorm(Tensor&       output,
                                  const Tensor& weight,
                                  float         eps,
                                  bool          zero_centered,
+                                 float         reduced_scale,
                                  cudaStream_t  stream);
 
 void invokeDFlashTopK16(Buffer_<int>& ids,

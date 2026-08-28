@@ -147,6 +147,8 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden) const
                   weights_.hidden_norm->norm_eps_,
                   weights_.hidden_norm->zero_centered_,
                   core::Context::stream().handle());
+    // SGLang's SM70 compatibility path rounds hidden_norm through BF16.
+    invokeDFlashRoundBFloat16(normalized, core::Context::stream().handle());
     TM_CUDA_CHECK(cudaGetLastError());
     return normalized;
 }
@@ -322,7 +324,14 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     invokeDFlashRoundBFloat16(hidden, stream);
     report("block.initial_norm", hidden);
 
-    auto residual_norm = [&](Tensor& value, Tensor& res, const Tensor& bias, const NormWeight& norm) {
+    constexpr float kResidualScale = 256.f;
+    constexpr float kGateUpScale   = 32.f;
+
+    auto residual_norm = [&](Tensor& value,
+                             Tensor& res,
+                             const Tensor& bias,
+                             const NormWeight& norm,
+                             float reduced_scale) {
         Tensor reduced{value.shape(), kFloat32, kDEVICE};
         invokeDFlashCastToFloat(reduced, value, stream);
         if (ctx_.comm.d_comm) {
@@ -333,8 +342,15 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                                            ctx_.comm.d_tp_group,
                                            stream);
         }
-        invokeDFlashResidualRMSNorm(
-            value, res, reduced, bias, norm.weight, norm.norm_eps_, norm.zero_centered_, stream);
+        invokeDFlashResidualRMSNorm(value,
+                                    res,
+                                    reduced,
+                                    bias,
+                                    norm.weight,
+                                    norm.norm_eps_,
+                                    norm.zero_centered_,
+                                    reduced_scale,
+                                    stream);
     };
 
     for (int i = 0; i < (int)attention_indices_.size(); ++i) {
@@ -353,21 +369,41 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                             attention_indices_[i]});
         report("layer" + std::to_string(i) + ".attention_raw", attn_output);
         attn_output = FinishGroupedConv(attn_output, attn_input.delta, *attn_conv);
+        // Laguna transports wide projection branches divided by 256 on SM70,
+        // then restores that exact power-of-two scale inside residual+norm.
+        invokeDFlashScale(attn_output, 1.f / kResidualScale, stream);
         report("layer" + std::to_string(i) + ".attention_finish", attn_output);
-        residual_norm(attn_output, residual, layer->attention->wo->bias, *layer->ffn_norm);
+        residual_norm(attn_output, residual, layer->attention->wo->bias, *layer->ffn_norm, kResidualScale);
         report("layer" + std::to_string(i) + ".attention_residual_norm", attn_output);
         hidden = std::move(attn_output);
 
         auto mlp_input = PrepareGroupedConv(hidden, *mlp_conv);
         report("layer" + std::to_string(i) + ".mlp_prepare", mlp_input.output);
-        ffn_layer_->forward({mlp_input.output, mlp_input.output, layer->feed_forward.get(), attention_indices_[i]});
+
+        // Match SGLang's Laguna SM70 MLP exactly: shrink W13's input, restore
+        // gate/up in FP32 with BF16 rounding, dynamically scale SwiGLU by row
+        // for W2, then transport W2's result divided by the residual scale.
+        auto& mlp = *TM_CHECK_NOTNULL(layer->feed_forward.get());
+        auto* fused = TM_CHECK_NOTNULL(mlp.w1w3.get());
+        TM_CHECK(fused->weight) << "DFlash2 Laguna path requires fused gate/up weights";
+        TM_CHECK(!mlp.is_fused_silu) << "DFlash2 Laguna path requires unfused SwiGLU activation";
+        invokeDFlashScale(mlp_input.output, 1.f / kGateUpScale, stream);
+        Tensor gate_up;
+        linear_.Forward(mlp_input.output, *fused, gate_up);
+        TM_CHECK_EQ(gate_up.shape(1), 2 * mlp.inter_size);
+        Tensor activated{{token_num, mlp.inter_size}, dtype_, kDEVICE};
+        Tensor activation_scales{{token_num}, kFloat32, kDEVICE};
+        invokeDFlashLagunaSilu(activated, activation_scales, gate_up, kGateUpScale, stream);
+        linear_.Forward(activated, *mlp.w2, mlp_input.output);
+        invokeDFlashScaleRows(mlp_input.output, activation_scales, 1.f / kResidualScale, stream);
+
         report("layer" + std::to_string(i) + ".mlp_raw", mlp_input.output);
         Tensor mlp_output = FinishGroupedConv(mlp_input.output, mlp_input.delta, *mlp_conv);
         report("layer" + std::to_string(i) + ".mlp_finish", mlp_output);
 
         const NormWeight& output_norm =
             i + 1 < (int)attention_indices_.size() ? *weights_.layer(i + 1)->attention_norm : *weights_.final_norm;
-        residual_norm(mlp_output, residual, {}, output_norm);
+        residual_norm(mlp_output, residual, {}, output_norm, kResidualScale);
         report("layer" + std::to_string(i) + ".mlp_residual_norm", mlp_output);
         hidden = std::move(mlp_output);
     }
