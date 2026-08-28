@@ -4,29 +4,44 @@
 
 #include <cuda_runtime.h>
 
+#include <utility>
+
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/kernels/norm/rms_norm.h"
 #include "src/turbomind/models/dflash_weight.h"
 #include "src/turbomind/models/linear_weight.h"
 #include "src/turbomind/models/llama/LlamaLinear.h"
 #include "src/turbomind/models/llama/dflash_kernels.h"
+#include "src/turbomind/models/llama/unified_attention_layer.h"
 #include "src/turbomind/models/norm_weight.h"
 #include "src/turbomind/utils/cuda_utils.h"
 
 namespace turbomind {
 
-DFlashPredictor::DFlashPredictor(const DFlashWeight& weights, const EngineParam& engine, const Context& ctx):
+DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
+                                 UnifiedAttentionLayer& attention,
+                                 std::vector<int>        attention_indices,
+                                 int                     attention_phase_base,
+                                 const EngineParam&      engine,
+                                 const Context&          ctx):
     weights_(weights),
     hidden_units_(weights.fc ? weights.fc->output_dim : 0),
     num_context_features_(weights.num_context_features),
     dtype_(engine.data_type),
-    linear_(*ctx.linear)
+    linear_(*ctx.linear),
+    attention_(attention),
+    attention_indices_(std::move(attention_indices)),
+    attention_phase_base_(attention_phase_base)
 {
     TM_CHECK(weights_.fc) << "DFlash2 context projection is missing";
     TM_CHECK(weights_.hidden_norm) << "DFlash2 hidden_norm is missing";
     TM_CHECK_GT(hidden_units_, 0);
     TM_CHECK_GT(num_context_features_, 0);
     TM_CHECK_EQ(weights_.fc->input_dim, hidden_units_ * num_context_features_);
+    if (engine.num_draft_tokens > 0) {
+        TM_CHECK_EQ(attention_indices_.size(), 5);
+        TM_CHECK_GE(attention_phase_base_, 0);
+    }
     TM_LOG_INFO("[DFlash2] context projector ready: features={} input={} hidden={}",
                 num_context_features_,
                 weights_.fc->input_dim,

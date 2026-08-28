@@ -1,6 +1,8 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 #pragma once
 
+#include <vector>
+
 #include "src/turbomind/core/core.h"
 #include "src/turbomind/models/llama/context.h"
 #include "src/turbomind/models/llama/llama_params.h"
@@ -10,6 +12,7 @@ namespace turbomind {
 class DFlashConvWeight;
 class DFlashWeight;
 class LlamaLinear;
+class UnifiedAttentionLayer;
 
 /// Runtime for the separate five-layer DFlash2 draft.
 ///
@@ -17,7 +20,12 @@ class LlamaLinear;
 /// prompt KV materialization, the parallel draft block, and candidate choice.
 class DFlashPredictor {
 public:
-    DFlashPredictor(const DFlashWeight& weights, const EngineParam& engine, const Context& ctx);
+    DFlashPredictor(const DFlashWeight&        weights,
+                    UnifiedAttentionLayer&    attention,
+                    std::vector<int>           attention_indices,
+                    int                        attention_phase_base,
+                    const EngineParam&         engine,
+                    const Context&             ctx);
     ~DFlashPredictor();
 
     /// Project [tokens, context_features * hidden] target residuals to the
@@ -31,8 +39,11 @@ private:
     const DFlashWeight& weights_;
     int                 hidden_units_{};
     int                 num_context_features_{};
-    DataType            dtype_{};
-    LlamaLinear&        linear_;
+    DataType              dtype_{};
+    LlamaLinear&          linear_;
+    UnifiedAttentionLayer& attention_;
+    std::vector<int>       attention_indices_;
+    int                    attention_phase_base_{-1};
 };
 
 }  // namespace turbomind

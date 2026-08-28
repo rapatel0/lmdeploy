@@ -456,7 +456,12 @@ LanguageModel::Impl::Impl(
     // Speculation off must mean the speculative code does not run at all.
     if (engine.speculative_algorithm == "dflash2") {
         TM_CHECK(weights_.dflash) << "DFlash2 selected but separate draft weights are absent";
-        dflash_predictor_ = std::make_unique<DFlashPredictor>(*weights_.dflash, engine, ctx);
+        dflash_predictor_ = std::make_unique<DFlashPredictor>(*weights_.dflash,
+                                                              *TM_CHECK_NOTNULL(unified_decoder_->attn_layer()),
+                                                              unified_decoder_->dflash_attn_indices(),
+                                                              unified_decoder_->dflash_phase(0),
+                                                              engine,
+                                                              ctx);
         if (engine.num_draft_tokens > 0) {
             // Never fall through to embedded MTP: Qwen3.8 carries both weight
             // families. Proposal execution replaces this guard.

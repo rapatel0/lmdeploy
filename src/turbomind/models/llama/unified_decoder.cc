@@ -95,7 +95,8 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
     // because that version indexes the cache by layer number. Here the
     // registry owns allocation, so the slot is obtained by participating in
     // registration instead.
-    if (model_weight.mtp && model_weight.mtp->decoder_layer) {
+    if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "mtp" && model_weight.mtp
+        && model_weight.mtp->decoder_layer) {
         auto* mtp_layer = model_weight.mtp->decoder_layer.get();
         if (mtp_layer->attention) {
             attn_weights.push_back(mtp_layer->attention.get());
@@ -106,6 +107,21 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
                         mtp_attn_index_,
                         (int)attn_weights.size());
         }
+    }
+
+    if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "dflash2" && model_weight.dflash
+        && model_weight.dflash->layers) {
+        for (int i = 0; i < (int)model_weight.dflash->layers->size(); ++i) {
+            auto* layer = model_weight.dflash->layer(i);
+            TM_CHECK(layer && layer->attention) << "DFlash2 layer " << i << " has no attention weights";
+            attn_weights.push_back(layer->attention.get());
+            dflash_attn_indices_.push_back(static_cast<int>(attn_weights.size()) - 1);
+        }
+        TM_CHECK_EQ(dflash_attn_indices_.size(), 5) << "published DFlash2 checkpoint requires five layers";
+        TM_LOG_INFO("[DFlash2] registered {} dedicated KV slots at attention indices {}..{}",
+                    dflash_attn_indices_.size(),
+                    dflash_attn_indices_.front(),
+                    dflash_attn_indices_.back());
     }
 
     if (!moe_weights.empty()) {
@@ -141,12 +157,17 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
         // That is why the draft saw the target's K+1 shape: not a lost marker,
         // but the NEXT batch's Setup landing in the slot before the current
         // batch finished with it.
-        mtp_phase_base_ = engine.num_draft_tokens > 0 ? phases : -1;
-        attn_layer_     = std::make_unique<UnifiedAttentionLayer>(attn_weights,  //
-                                                              registry,
-                                                              engine,
-                                                              ctx,
-                                                              mtp_phase_base_ >= 0 ? 2 * phases : phases);
+        int attention_phases = phases;
+        if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "mtp" && mtp_attn_index_ >= 0) {
+            mtp_phase_base_ = attention_phases;
+            attention_phases += phases;
+        }
+        if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "dflash2"
+            && !dflash_attn_indices_.empty()) {
+            dflash_phase_base_ = attention_phases;
+            attention_phases += phases;
+        }
+        attn_layer_ = std::make_unique<UnifiedAttentionLayer>(attn_weights, registry, engine, ctx, attention_phases);
     }
 
     if (!gdn_weights.empty()) {

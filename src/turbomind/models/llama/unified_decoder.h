@@ -87,7 +87,17 @@ public:
         return mtp_attn_index_;
     }
 
-    /// The attention layer instance, shared with MTPPredictor.
+    int dflash_phase(int phase) const noexcept
+    {
+        return dflash_phase_base_ < 0 ? -1 : dflash_phase_base_ + phase;
+    }
+
+    const std::vector<int>& dflash_attn_indices() const noexcept
+    {
+        return dflash_attn_indices_;
+    }
+
+    /// The attention layer instance, shared with speculative predictors.
     ///
     /// The draft must use this instance rather than its own: the KV slots were
     /// registered here as one block, and only this object knows the resulting
@@ -119,7 +129,8 @@ private:
     /// The draft layer is appended after the target's layers, so it receives
     /// its own `cache_block_offset` and therefore its own KV space.
     /// MTPPredictor needs this index to address that slot.
-    int mtp_attn_index_{-1};
+    int              mtp_attn_index_{-1};
+    std::vector<int> dflash_attn_indices_;
 
     // Post-layer residual boundaries consumed by the DFlash2 context
     // projection, in checkpoint order.
@@ -130,6 +141,7 @@ private:
     std::unique_ptr<UnifiedAttentionLayer> attn_layer_;
     std::unique_ptr<GatedDeltaNetLayer>    linear_attn_layer_;
     int                                    mtp_phase_base_{-1};
+    int                                    dflash_phase_base_{-1};
     std::unique_ptr<LlamaFfnLayer>         ffn_layer_;
     std::unique_ptr<MoeFfnLayer>           moe_ffn_layer_;
 
