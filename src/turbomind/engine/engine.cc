@@ -818,7 +818,12 @@ void Engine::Impl::Update(BatchData& b, std::vector<Signal>& signals)
             }
             if (generating[j]) {
                 c.token_ids[c.seq_len] = output_ids[j];
-                c.seq_len              = sequence_length[j];
+                // Multi-token speculative publication must obey the same hard
+                // request boundary as ordinary decode even if a module reports
+                // one position past it. The per-layer-RoPE path exposed this
+                // latent bug by ending on a larger accepted prefix: the first
+                // max_new_tokens IDs were exact, followed by one extra token.
+                c.seq_len = std::min(sequence_length[j], c.max_seq_len);
                 if (int new_tokens = c.seq_len - c.tokens.size(); TM_LIKELY(new_tokens)) {
                     c.tokens.insert(c.tokens.end(), c.token_ids + c.seq_len - new_tokens, c.token_ids + c.seq_len);
                 }
