@@ -22,7 +22,8 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
                                    const int* draft_tokens,   // [batch, K]
                                    int        K,
                                    int        vocab_size,
-                                   int        vocab_size_padded)
+                                   int        vocab_size_padded,
+                                   float      ambiguity_margin)
 {
     const int b = blockIdx.x;
 
@@ -135,7 +136,8 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
         // one-token path instead of replaying every zero-accept verification.
         bool tied = false;
         for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
-            if (i != s_argmax_token && static_cast<float>(pos_logits[i]) == s_argmax_value) {
+            if (i != s_argmax_token
+                && static_cast<float>(pos_logits[i]) >= s_argmax_value - ambiguity_margin) {
                 tied = true;
                 break;
             }
@@ -186,6 +188,7 @@ RejectionResult GreedyReject(const void*  verification_logits,
                               int          K,
                               int          vocab_size,
                               int          vocab_size_padded,
+                              float        ambiguity_margin,
                               DataType     dtype,
                               cudaStream_t stream)
 {
@@ -207,18 +210,18 @@ RejectionResult GreedyReject(const void*  verification_logits,
 
     if (dtype == DataType::kFloat16) {
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const half*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
+            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const half*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded, ambiguity_margin);
     }
 #ifdef ENABLE_BF16
     else if (dtype == DataType::kBfloat16) {
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const __nv_bfloat16*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
+            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const __nv_bfloat16*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded, ambiguity_margin);
     }
 #endif
     else {
         // Fallback: treat as float
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const float*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
+            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const float*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded, ambiguity_margin);
     }
 
     return result;

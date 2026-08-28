@@ -43,6 +43,7 @@ RejectionResult GreedyReject(const void*  verification_logits,
                              int          K,
                              int          vocab_size,
                              int          vocab_size_padded,
+                             float        ambiguity_margin,
                              DataType     dtype,
                              cudaStream_t stream);
 

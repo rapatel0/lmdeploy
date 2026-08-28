@@ -1402,12 +1402,17 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
         Copy(rejected, drafts);
     }
 
+    static const float ambiguity_margin = [] {
+        const char* s = std::getenv("TM_MTP_AMBIGUITY_MARGIN");
+        return s ? std::max(0.f, (float)std::atof(s)) : 0.f;
+    }();
     auto result = GreedyReject(verify_logits_.raw_data(),
                                drafts.data(),
                                bsz,
                                K,
                                weights_.vocab_size,  // argmax searches only the real vocabulary
                                vocab_stride,         // rows are strided by the padded size
+                               ambiguity_margin,
                                weights_.data_type,
                                st);
 
