@@ -1795,12 +1795,14 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     no_bonus_.assign(bsz, 0);
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
+    Buffer_<int> tip_ids{bsz, kCPU};
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
     // Unprep, and Unprep is what copies the live buffer into d.sequence_length,
     // so reading d here would give the PREVIOUS step's lengths.
     Copy(sequence_length_.front().buffer().slice(0, bsz), seq_lens);
     Copy(autoreg_ids_.slice(0, bsz), out_ids);
     core::Context::stream().Sync();
+    std::copy_n(out_ids.data(), bsz, tip_ids.data());
 
     for (int i = 0; i < bsz; ++i) {
         auto& c = *d.rows[i];
@@ -1971,6 +1973,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             // commit overwrites the slot. Harmless on that path, load-
             // bearing on the input path.
             out_ids[i] = c.token_ids[base - 1];
+            tip_ids[i] = out_ids[i];
 
             // Rewind the published length to the base. THE leak, measured.
             //
@@ -2031,6 +2034,15 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // n is at least one and the first draft remains the correct first
         // committed token.
         out_ids[i] = n > 0 ? c.draft_tokens[0] : bonus[i];
+
+        // autoreg_ids conditions the next draft (or the next ordinary decode
+        // when the request is too close to its limit to draft again). It must
+        // carry the LAST committed token, whereas Generation::Rollback keeps
+        // its separate output_ids buffer on the FIRST token for Engine::Update.
+        // Conflating those roles only surfaced at the request tail: kDraft
+        // normally hid the stale first token, but when its budget reached zero
+        // the next decode re-fed D0 instead of the verifier bonus.
+        tip_ids[i] = no_bonus_[i] ? c.draft_tokens[n - 1] : bonus[i];
 
         // The KV entries for the rejected tail stay allocated but are logically
         // dead: the next forward starts at this length and overwrites them.
@@ -2168,10 +2180,11 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // Rollback means this write cannot race the read.
     Copy(seq_lens, sequence_length_.front().buffer().slice(0, bsz));
 
-    // The token Engine::Update writes at token_ids[base] for each row. Unprep
-    // copies this buffer out, so writing it is enough; producing the key again
-    // would abort.
-    Copy(out_ids, autoreg_ids_.slice(0, bsz));
+    // Generation::Rollback owns the separate output_ids buffer fetched by
+    // Engine::Update and leaves it on the first committed token. autoreg_ids_
+    // instead owns the conditioning tip for kDraft / the next decode, so keep
+    // it on the final committed token.
+    Copy(tip_ids, autoreg_ids_.slice(0, bsz));
 
     // Tokens committed per verification forward -- the quantity that decides
     // whether speculation pays for itself.
