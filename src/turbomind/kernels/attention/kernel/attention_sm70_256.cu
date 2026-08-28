@@ -11,23 +11,29 @@
 namespace turbomind::attention {
 
 constexpr int kHeadDim = 256;
-constexpr int kCTA_Q   = 64;
-constexpr int kCTA_S   = 64;
 constexpr int kWARP_Q  = 16;
 constexpr int kStages  = 2;
 
-template<class T, bool Causal = true>
+template<class T, int CTA_Q, int CTA_S, bool Causal = true>
 using KT = AttentionUniversal<
     arch::Sm70,
-    Mainloop<arch::Sm70, Impl<MMA_884, T, T, 1, kCTA_Q, kCTA_S, 1, kWARP_Q, kCTA_S, kHeadDim, kStages>>,
-    LinearIteratorFactory<T, kCTA_S, kHeadDim>,
+    Mainloop<arch::Sm70, Impl<MMA_884, T, T, 1, CTA_Q, CTA_S, 1, kWARP_Q, CTA_S, kHeadDim, kStages>>,
+    LinearIteratorFactory<T, CTA_S, kHeadDim>,
     AttentionCtaMap,
     Causal>;
 
 namespace {
 Registrar reg([](Collector& c) {
-    c.add<KT<half>>();
-    c.add<KT<half, false>>();
+    c.add<KT<half, 64, 64>>();
+    c.add<KT<half, 64, 64, false>>();
+    c.add<KT<half, 32, 64>>();
+    c.add<KT<half, 32, 64, false>>();
+    c.add<KT<half, 16, 64>>();
+    c.add<KT<half, 16, 64, false>>();
+    c.add<KT<half, 32, 32>>();
+    c.add<KT<half, 32, 32, false>>();
+    c.add<KT<half, 16, 32>>();
+    c.add<KT<half, 16, 32, false>>();
 });
 }
 
