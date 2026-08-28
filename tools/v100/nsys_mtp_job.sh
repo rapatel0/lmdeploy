@@ -16,11 +16,15 @@ finish() {
 trap finish EXIT
 
 cat /src/SOURCE_STAMP
-command -v nsys >/dev/null 2>&1 || {
-    echo "FAIL: nsys is not installed in the job image" >&2
+NSYS="$(command -v nsys 2>/dev/null || true)"
+if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then
+    NSYS=/opt/nsys/nsys
+fi
+if [ -z "${NSYS}" ]; then
+    echo "FAIL: nsys is not installed in the job image or staged at /opt/nsys" >&2
     exit 2
-}
-nsys --version
+fi
+"${NSYS}" --version
 
 if ! bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1; then
     echo "FAIL: build" >&2
@@ -40,7 +44,7 @@ for k in 0 1 4; do
     if [ "${k}" -gt 0 ]; then
         args+=(--require-mtp)
     fi
-    nsys profile \
+    "${NSYS}" profile \
         --force-overwrite=true \
         --trace=cuda,nvtx,osrt \
         --cuda-memory-usage=true \
@@ -49,14 +53,14 @@ for k in 0 1 4; do
         --output="${RESULTS}/k${k}" \
         python3 /job/bench_decode.py "${args[@]}" || exit $?
 
-    nsys stats \
+    "${NSYS}" stats \
         --report cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,osrt_sum \
         --format csv \
         --output "${RESULTS}/k${k}_stats" \
         "${RESULTS}/k${k}.nsys-rep" >"${RESULTS}/k${k}_stats.log" 2>&1 || {
-            echo "WARN: nsys stats failed for K=${k}"
-            tail -40 "${RESULTS}/k${k}_stats.log"
-        }
+        echo "WARN: nsys stats failed for K=${k}"
+        tail -40 "${RESULTS}/k${k}_stats.log"
+    }
 done
 
 python3 - "${RESULTS}" <<'PY'

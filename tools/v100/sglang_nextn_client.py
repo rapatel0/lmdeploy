@@ -88,9 +88,7 @@ def run_request(
         raise RuntimeError(f"unexpected final SGLang metadata: {meta!r}")
     completion_tokens = as_int(meta.get("completion_tokens"))
     if completion_tokens != output_tokens:
-        raise RuntimeError(
-            f"expected {output_tokens} completion tokens, received {completion_tokens}"
-        )
+        raise RuntimeError(f"expected {output_tokens} completion tokens, received {completion_tokens}")
     decode_seconds = finished - first_at
     return {
         "prompt_tokens": as_int(meta.get("prompt_tokens"), len(input_ids)),
@@ -134,9 +132,7 @@ def main() -> int:
     summary = {
         "input_tokens": args.input_tokens,
         "output_tokens": args.output_tokens,
-        "mean_decode_tok_s": round(
-            statistics.mean(as_float(row["decode_tok_s"]) for row in trials), 3
-        ),
+        "mean_decode_tok_s": round(statistics.mean(as_float(row["decode_tok_s"]) for row in trials), 3),
         "avg_spec_accept_length": accept_length,
         "trials": trials,
         "server_info": server_info,
