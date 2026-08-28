@@ -29,8 +29,8 @@ run_arm() {
     local name=$1 pinned=$2 combined=$3
     echo "=== ${name}: PINNED=${pinned} COMBINED=${combined} ==="
     TM_DFLASH_PINNED_STAGING="${pinned}" \
-    TM_DFLASH_COMBINE_ROLLBACK_SYNCS="${combined}" \
-    python3 /job/bench_decode.py \
+        TM_DFLASH_COMBINE_ROLLBACK_SYNCS="${combined}" \
+        python3 /job/bench_decode.py \
         --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
         --num-draft-tokens 7 --speculative-algorithm dflash2 \
         --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
@@ -48,7 +48,7 @@ run_arm pinned_combined 1 1
 
 echo "=== pinned combined exact identity ==="
 TM_DFLASH_PINNED_STAGING=1 TM_DFLASH_COMBINE_ROLLBACK_SYNCS=1 \
-python3 /job/verify_dflash_audited.py \
+    python3 /job/verify_dflash_audited.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
     --corpus /sglang-corpus --tp "${TP:-4}" --input-tokens 1000 --output-tokens 256 \
@@ -58,8 +58,8 @@ grep -q '^DFLASH_AUDITED_IDENTITY_PASS$' "${RESULTS}/identity.log"
 echo "=== first-real-block parity trace smoke ==="
 mkdir -p "${RESULTS}/parity"
 TM_DFLASH_PINNED_STAGING=1 TM_DFLASH_COMBINE_ROLLBACK_SYNCS=1 \
-TM_DFLASH_PARITY_DIR="${RESULTS}/parity" \
-python3 /job/bench_decode.py \
+    TM_DFLASH_PARITY_DIR="${RESULTS}/parity" \
+    python3 /job/bench_decode.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
     --num-draft-tokens 7 --speculative-algorithm dflash2 \
     --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
