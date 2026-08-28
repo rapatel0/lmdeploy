@@ -464,6 +464,9 @@ LanguageModel::Impl::Impl(
                                                               ctx,
                                                               [this](const Buffer_<int>& ids) {
                                                                   return LookupEmbedding(ids, symm_buf_);
+                                                              },
+                                                              [this](const Tensor& hidden) {
+                                                                  return PostEmbedding(hidden, symm_buf_);
                                                               });
         if (engine.num_draft_tokens > 0) {
             // Never fall through to embedded MTP: Qwen3.8 carries both weight
@@ -1136,6 +1139,17 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             draft_hidden.shape(0),
                             draft_hidden.shape(1),
                             draft_nonzero);
+
+                Buffer_<int> candidates = dflash_predictor_->SelectCandidates(draft_hidden, anchors);
+                Buffer_<int> host_candidates{candidates.size(), kCPU};
+                core::Copy(candidates, candidates.size(), host_candidates);
+                core::Context::stream().Sync();
+                std::string candidate_text;
+                for (int i = 0; i < host_candidates.size(); ++i) {
+                    candidate_text += std::to_string(host_candidates[i]);
+                    candidate_text += i + 1 < host_candidates.size() ? "," : "";
+                }
+                TM_LOG_INFO("[DFlash2] greedy candidates=[{}]", candidate_text);
                 env.produce("dflash_context_hidden", std::move(context));
                 capture_logged = true;
             }

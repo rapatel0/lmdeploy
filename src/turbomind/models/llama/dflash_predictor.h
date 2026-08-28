@@ -23,7 +23,8 @@ class UnifiedAttentionLayer;
 /// prompt KV materialization, the parallel draft block, and candidate choice.
 class DFlashPredictor {
 public:
-    using EmbedFn = std::function<Tensor(const Buffer_<int>&)>;
+    using EmbedFn  = std::function<Tensor(const Buffer_<int>&)>;
+    using LogitsFn = std::function<Tensor(const Tensor&)>;
 
     DFlashPredictor(const DFlashWeight&        weights,
                     UnifiedAttentionLayer&    attention,
@@ -31,7 +32,8 @@ public:
                     int                        attention_phase_base,
                     const EngineParam&         engine,
                     const Context&             ctx,
-                    EmbedFn                    embed);
+                    EmbedFn                    embed,
+                    LogitsFn                   logits);
     ~DFlashPredictor();
 
     void SetupAttention(int phase, TensorMap& env);
@@ -58,6 +60,8 @@ public:
     /// Build [anchor, mask x 7] per row and execute one parallel draft block.
     Tensor DraftBlock(const Buffer_<int>& anchors, int phase, TensorMap& env) const;
 
+    Buffer_<int> SelectCandidates(const Tensor& block_hidden, const Buffer_<int>& anchors) const;
+
     /// Temporary correctness path: run full attention for each draft layer on
     /// projected target context, preserving its K/V in dedicated cache slots.
     void MaterializeContextKV(int target_phase, const Tensor& context) const;
@@ -74,6 +78,7 @@ private:
     const Context&         ctx_;
     std::unique_ptr<LlamaFfnLayer> ffn_layer_;
     EmbedFn                        embed_fn_;
+    LogitsFn                       logits_fn_;
 };
 
 }  // namespace turbomind

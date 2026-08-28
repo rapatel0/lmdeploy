@@ -13,6 +13,27 @@ void invokeBuildDFlashBlock(Buffer_<int>&       output,
                             int                 mask_token_id,
                             cudaStream_t        stream);
 
+void invokeGatherDFlashPredictions(Tensor& output, const Tensor& block_hidden, int block_size, cudaStream_t stream);
+
+void invokeDFlashTopK16(Buffer_<int>& ids,
+                        Tensor&       scores,
+                        const Tensor& logits,
+                        int           valid_vocab,
+                        float         output_multiplier,
+                        float         softcap,
+                        cudaStream_t  stream);
+
+void invokeDFlashGreedySelector(Buffer_<int>&       output,
+                                 const Buffer_<int>& anchors,
+                                 const Buffer_<int>& candidate_ids,
+                                 const Tensor&       unary_scores,
+                                 const Tensor&       selector_hidden,
+                                 const Tensor&       predecessor_codebook,
+                                 const Tensor&       successor_codebook,
+                                 int                 slots,
+                                 int                 top_k,
+                                 cudaStream_t        stream);
+
 /// Apply one side of DFlash2's dynamic grouped depthwise convolution.
 ///
 /// input/output: [token_num, hidden]

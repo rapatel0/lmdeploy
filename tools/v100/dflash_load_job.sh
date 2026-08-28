@@ -46,8 +46,13 @@ grep -q '\[DFlash2\] five-layer draft shape=.*nonzero_bytes=[1-9]' "${RESULTS}/d
     echo "FAIL: DFlash2 five-layer draft did not complete"
     exit 8
 }
+grep -Eq '\[DFlash2\] greedy candidates=\[([0-9]+,){6}[0-9]+\]' "${RESULTS}/driver.log" || {
+    echo "FAIL: DFlash2 candidate selector did not emit seven tokens"
+    exit 9
+}
 echo DFLASH_CAPTURE_PASS
 echo DFLASH_CONTEXT_PROJECTION_PASS
 echo DFLASH_CONTEXT_KV_PASS
 echo DFLASH_GROUPED_CONV_PASS
 echo DFLASH_FIVE_LAYER_PASS
+echo DFLASH_SELECTOR_PASS

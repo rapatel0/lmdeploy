@@ -28,7 +28,8 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                                  int                     attention_phase_base,
                                  const EngineParam&      engine,
                                  const Context&          ctx,
-                                 EmbedFn                 embed):
+                                 EmbedFn                 embed,
+                                 LogitsFn                logits):
     weights_(weights),
     hidden_units_(weights.fc ? weights.fc->output_dim : 0),
     num_context_features_(weights.num_context_features),
@@ -38,9 +39,11 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
     attention_indices_(std::move(attention_indices)),
     attention_phase_base_(attention_phase_base),
     ctx_(ctx),
-    embed_fn_(std::move(embed))
+    embed_fn_(std::move(embed)),
+    logits_fn_(std::move(logits))
 {
     TM_CHECK(embed_fn_) << "DFlash2 needs the target token embedding";
+    TM_CHECK(logits_fn_) << "DFlash2 needs the target lm_head";
     TM_CHECK(weights_.fc) << "DFlash2 context projection is missing";
     TM_CHECK(weights_.hidden_norm) << "DFlash2 hidden_norm is missing";
     TM_CHECK_GT(hidden_units_, 0);
@@ -183,6 +186,47 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
     hidden = RunDraftLayers(std::move(hidden), phase);
     AdvanceCuSeqLens(k_offsets.data(), batch_size, -weights_.block_size, core::Context::stream().handle());
     return hidden;
+}
+
+Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const Buffer_<int>& anchors) const
+{
+    auto* selector = TM_CHECK_NOTNULL(weights_.selector.get());
+    TM_CHECK(selector->hidden_projection);
+    const int batch_size = anchors.size();
+    const int slots      = weights_.block_size - 1;
+    const int rows       = batch_size * slots;
+
+    Tensor prediction_hidden{{rows, hidden_units_}, dtype_, kDEVICE};
+    invokeGatherDFlashPredictions(
+        prediction_hidden, block_hidden, weights_.block_size, core::Context::stream().handle());
+
+    Tensor logits = logits_fn_(prediction_hidden);
+    Buffer_<int> candidate_ids{(ssize_t)rows * selector->top_k, kDEVICE};
+    Tensor unary_scores{{rows, selector->top_k}, kFloat32, kDEVICE};
+    invokeDFlashTopK16(candidate_ids,
+                       unary_scores,
+                       logits,
+                       logits.shape(1),
+                       weights_.output_multiplier,
+                       weights_.final_logit_softcapping,
+                       core::Context::stream().handle());
+
+    Tensor selector_hidden{{rows, selector->state_rank}, dtype_, kDEVICE};
+    linear_.Forward(prediction_hidden, *selector->hidden_projection, selector_hidden);
+    TM_CUDA_CHECK(cudaGetLastError());
+
+    Buffer_<int> output{(ssize_t)rows, kDEVICE};
+    invokeDFlashGreedySelector(output,
+                               anchors,
+                               candidate_ids,
+                               unary_scores,
+                               selector_hidden,
+                               selector->predecessor_codebook,
+                               selector->successor_codebook,
+                               slots,
+                               selector->top_k,
+                               core::Context::stream().handle());
+    return output;
 }
 
 Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
