@@ -2165,6 +2165,15 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         // dead: the next forward starts at this length and overwrites them.
         // An EOS draft ends the sequence before the verifier's bonus.
         seq_lens[i] = base + n + (no_bonus_[i] ? 0 : 1);
+        // Generation is skipped on verification steps, so its ordinary length
+        // stop criterion cannot mark the row finished. A higher-acceptance
+        // DFlash block exposed the missing transition: the sequence reached
+        // max_seq_len exactly, drafted once more, and either published a 257th
+        // token or produced an empty terminal stream update after the engine's
+        // defensive clamp.
+        if (seq_lens[i] >= c.max_seq_len) {
+            eos_hit_[i] = true;  // shared finished/skip-draft publication path
+        }
 
         // The bonus token is the last one committed, so EOS there ends the
         // sequence without truncating anything.

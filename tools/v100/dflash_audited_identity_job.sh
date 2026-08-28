@@ -15,12 +15,19 @@ finish() {
 trap finish EXIT
 
 cat /src/SOURCE_STAMP
+bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || {
+    grep -aE 'error:|Error [0-9]+' "${RESULTS}/build.log" | head -80
+    exit 2
+}
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd /
 export TM_LOG_LEVEL=INFO
 export TM_DFLASH_CONTEXT_BF16_ROUND=0
 export TM_MTP_AMBIGUITY_MARGIN=0
+export TM_DFLASH_REDUCE_BEFORE_CONV=0
+export TM_DFLASH_LEGACY_ATTENTION_POLICY=0
+export TM_DFLASH_PER_LAYER_ROPE=1
 python3 /job/verify_dflash_audited.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
