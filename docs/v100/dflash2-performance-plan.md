@@ -41,19 +41,26 @@ Run both tracks in parallel after the baseline gate.
 
 ## Track A: cycle speed
 
-### A0. Freeze the measurement contract
+### A0. Freeze the measurement contract — complete
 
-- Record K=0 and K=7 results from the same commit and wheel.
-- Record commit length, cycle time, decode, inclusive throughput, and GPU utilization.
-- Record CUDA API time, synchronization count, allocation count, and NCCL time.
-- Add NVTX ranges for each host-controlled phase without full coverage.
+Commit `930baf48` produced matched K=0/K=7 Nsight profiles from one wheel.
 
-Done when one report attributes at least 95% of cycle wall time.
+The K=7 profile attributed about 96% of the 48.6 ms normalized cycle:
+
+- target verification: 15.02 ms;
+- rollback and outstanding GPU tail: 23.54 ms;
+- draft and selector: 7.40 ms;
+- rejection: 0.09 ms;
+- context KV: approximately 0.52 ms per verification.
+
+Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 
 ### A1. Remove host barriers
 
 - Treat the rollback barrier merge as closed.
 - It changed normalized cycle time from 43.11 to 43.13 ms and provided no gain.
+- First replace pageable speculative readbacks with persistent pinned per-phase staging.
+- Re-test the rollback barrier merge after pageable implicit synchronization is removed.
 - Replace the host sequence-limit check with a device predicate.
 - Keep proposal IDs in device memory through verification setup.
 - Keep accepted lengths, bonus IDs, and published lengths in device memory.

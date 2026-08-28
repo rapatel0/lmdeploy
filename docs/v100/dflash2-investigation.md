@@ -237,6 +237,23 @@ SGLang's V100 backend contains dedicated small-Q attention designs using Q16, KV
 
 The first single-build matrix appeared to show small cycle-cost improvements, but separate-process acceptance varied substantially. A longer five-trial confirmation falsified the apparent gain: Q64/KV64 achieved 60.74 tok/s at commit length 2.669, or 43.94 ms/verification step, while combined draft-Q16/KV32 plus target-Q32/KV32 achieved 57.43 tok/s at commit length 2.537, or 44.17 ms/step. The alternate policy passed audited identity but was 0.5% slower after acceptance normalization. Tile size alone is therefore not the missing optimization; SGLang's grouped heads, split-context scheduling, persistent buffers, and graph capture are the material architectural differences. The extra variants were removed. Artifacts: `/results/20260828_202608-dflash-attention-tile-446144af923c` and `/results/20260828_203751-dflash-attention-tile-confirm-e3aa21413e27`.
 
+## Current speculative-cycle attribution
+
+A matched K=0/K=7 Nsight Systems run at commit `930baf48` profiled the audited prompt from one wheel. K=7 decoded at 47.59 tok/s under profiler overhead with commit length 2.311, which implies 48.6 ms per verification cycle.
+
+| Host range | Average per rank |
+| --- | ---: |
+| `targetVerify` | 15.02 ms |
+| `speculativeRollback` | 23.54 ms |
+| `dflashDraftAndSelect` | 7.40 ms |
+| `speculativeReject` | 0.09 ms |
+
+Context-KV work adds approximately 0.52 ms per verification. Together these ranges explain about 96% of normalized cycle time. `speculativeRollback` includes outstanding target GPU work before its first host verdict read, so it is not independent computation.
+
+CUDA API attribution exposed the first host-control target. The K=7 capture issued 25,332 `cudaMemcpyAsync` calls that consumed 6.07 seconds of aggregate API time, or 59.1% of reported CUDA API time. It also issued 108,040 `cudaMallocFromPoolAsync` and 108,040 `cudaFreeAsync` calls. The speculative verdict, length, tip, and candidate readbacks use temporary pageable host buffers. Pageable asynchronous copies can block during host staging before the explicit stream synchronization.
+
+Commit `057db9a7` adds persistent per-phase pinned readback buffers and a three-arm pageable, pinned, and pinned-plus-combined synchronization experiment. The same build also validates exact identity and the first-block parity trace. Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
+
 ## Rollback barrier merge
 
 A five-trial A/B queued rollback verdict, published-length, and tip readbacks behind one barrier instead of two. The change did not improve acceptance-normalized cycle time: the legacy path took 43.11 ms per step and the combined path took 43.13 ms. Raw decode differed because separate processes followed different acceptance trajectories. The combined arm also hit the known audited position-220 near-tie. Since the normalized result showed no gain, the implementation and runtime flag were removed. Artifacts: `/results/20260828_205537-dflash-rollback-sync-e49a2f50daff`.
