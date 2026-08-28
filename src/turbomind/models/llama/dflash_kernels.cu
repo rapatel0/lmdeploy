@@ -5,6 +5,8 @@
 #include <cuda_fp16.h>
 #include <math_constants.h>
 
+#include <climits>
+
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/utils/cuda_utils.h"
 
@@ -162,51 +164,74 @@ __global__ void DFlashTopK16Half(int* ids, float* scores, const __half* logits, 
     if (row >= rows) {
         return;
     }
-    __shared__ float shared_scores[256];
-    __shared__ int   shared_ids[256];
-    __shared__ int   selected[16];
-
-    for (int rank = 0; rank < 16; ++rank) {
-        float best_score = -CUDART_INF_F;
-        int   best_id    = 0;
-        for (int token = threadIdx.x; token < vocab; token += blockDim.x) {
-            bool used = false;
-            for (int i = 0; i < rank; ++i) {
-                used = used || selected[i] == token;
-            }
-            if (used) {
-                continue;
-            }
-            float score = __half2float(logits[row * vocab + token]) * multiplier;
-            if (softcap > 0.f) {
-                score = tanhf(score / softcap) * softcap;
-            }
-            if (score > best_score || (score == best_score && token < best_id)) {
-                best_score = score;
-                best_id    = token;
+    // Read every vocabulary score once. The former implementation rescanned
+    // the entire shard for each of the 16 ranks, making this tiny selector a
+    // 1.58 ms/cycle kernel on V100. Each lane retains its own sorted top-16;
+    // lane zero then performs a deterministic 256-way merge.
+    float lane_scores[16];
+    int   lane_ids[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        lane_scores[i] = -CUDART_INF_F;
+        lane_ids[i] = INT_MAX;
+    }
+    for (int token = threadIdx.x; token < vocab; token += blockDim.x) {
+        float score = __half2float(logits[row * vocab + token]) * multiplier;
+        if (softcap > 0.f) {
+            score = tanhf(score / softcap) * softcap;
+        }
+        int insert = 16;
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+            if (insert == 16
+                && (score > lane_scores[i] || (score == lane_scores[i] && token < lane_ids[i]))) {
+                insert = i;
             }
         }
-        shared_scores[threadIdx.x] = best_score;
-        shared_ids[threadIdx.x]    = best_id;
-        __syncthreads();
-        for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-            if (threadIdx.x < stride) {
-                const float other_score = shared_scores[threadIdx.x + stride];
-                const int   other_id    = shared_ids[threadIdx.x + stride];
-                if (other_score > shared_scores[threadIdx.x]
-                    || (other_score == shared_scores[threadIdx.x] && other_id < shared_ids[threadIdx.x])) {
-                    shared_scores[threadIdx.x] = other_score;
-                    shared_ids[threadIdx.x]    = other_id;
+#pragma unroll
+        for (int i = 15; i > 0; --i) {
+            if (i > insert) {
+                lane_scores[i] = lane_scores[i - 1];
+                lane_ids[i] = lane_ids[i - 1];
+            }
+        }
+        if (insert < 16) {
+            lane_scores[insert] = score;
+            lane_ids[insert] = token;
+        }
+    }
+
+    __shared__ float shared_scores[256][16];
+    __shared__ int   shared_ids[256][16];
+    __shared__ int   cursors[256];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        shared_scores[threadIdx.x][i] = lane_scores[i];
+        shared_ids[threadIdx.x][i] = lane_ids[i];
+    }
+    cursors[threadIdx.x] = 0;
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        for (int rank = 0; rank < 16; ++rank) {
+            float best_score = -CUDART_INF_F;
+            int   best_id = INT_MAX;
+            int   best_lane = 0;
+            for (int lane = 0; lane < 256; ++lane) {
+                const int cursor = cursors[lane];
+                const float candidate_score = shared_scores[lane][cursor];
+                const int candidate_id = shared_ids[lane][cursor];
+                if (candidate_score > best_score
+                    || (candidate_score == best_score && candidate_id < best_id)) {
+                    best_score = candidate_score;
+                    best_id = candidate_id;
+                    best_lane = lane;
                 }
             }
-            __syncthreads();
+            ++cursors[best_lane];
+            ids[row * 16 + rank] = best_id + token_id_offset;
+            scores[row * 16 + rank] = best_score;
         }
-        if (threadIdx.x == 0) {
-            selected[rank]       = shared_ids[0];
-            ids[row * 16 + rank] = shared_ids[0] + token_id_offset;
-            scores[row * 16 + rank] = shared_scores[0];
-        }
-        __syncthreads();
     }
 }
 

@@ -34,8 +34,9 @@ WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | so
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd / || exit $?
 export TM_LOG_LEVEL=INFO
+export FT_NVTX=ON
 
-for k in 0 7; do
+for k in ${PROFILE_K_VALUES:-0 7}; do
     echo "=== profile DFlash K=${k} ==="
     args=(
         --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
