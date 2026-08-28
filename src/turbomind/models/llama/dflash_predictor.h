@@ -27,7 +27,7 @@ public:
     using EmbedFn = std::function<Tensor(const Buffer_<int>&, Tensor)>;
     using LogitsFn = std::function<Tensor(const Tensor&)>;
     using CandidatesFn =
-        std::function<void(Buffer_<int>&, Tensor&, const Tensor&, float, float)>;
+        std::function<void(Buffer_<int>&, Tensor&, const Tensor&, float, float, int)>;
 
     DFlashPredictor(const DFlashWeight&        weights,
                     UnifiedAttentionLayer&    attention,

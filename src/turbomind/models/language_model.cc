@@ -108,6 +108,14 @@ struct LanguageModel::Impl {
         // Trace-only pinned staging for the production selector candidates.
         Buffer_<int> spec_draft_candidates_host;
 
+        // Fixed per-phase local-top-k storage for the DFlash selector.
+        // These buffers remain empty when the persistent workspace is off.
+        Tensor         dflash_local_logits;
+        Buffer_<int>   dflash_local_ids;
+        Tensor         dflash_local_scores;
+        Buffer_<int>   dflash_gathered_ids;
+        Buffer_<float> dflash_gathered_scores;
+
         Buffer_<bool> autoregres;
         Buffer_<bool> generating;
 
@@ -290,7 +298,8 @@ struct LanguageModel::Impl {
                        Tensor&       scores,
                        const Tensor& features,
                        float         output_multiplier,
-                       float         softcap);
+                       float         softcap,
+                       int           phase);
 
     // Build the global per-token validity mask for this pass (see `token_mask_`).
     void BuildTokenMask(const bool* finished, const int* q_offsets, const BatchData& b);
@@ -459,8 +468,22 @@ LanguageModel::Impl::Impl(
     // again in GatedDeltaNetLayer when that fix moved the fault here-adjacent.
     // (finished_buf_ stays shared: it is a device-to-host fetch consumed
     // before the next Setup, the opposite direction and lifecycle.)
+    static const bool dflash_persistent_workspace = [] {
+        const char* value = std::getenv("TM_DFLASH_PERSISTENT_WORKSPACE");
+        return value && value[0] == '1';
+    }();
+    static const bool trace_dflash_workspace = [] {
+        const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");
+        return value && value[0] == '1';
+    }();
+    const bool allocate_dflash_selector = dflash_persistent_workspace
+                                          && engine.speculative_algorithm == "dflash2" && weights_.dflash;
+    const int dflash_selector_rows = allocate_dflash_selector ?
+                                         engine.max_batch_size * (weights_.dflash->block_size - 1) :
+                                         0;
+    const int local_vocab_size = weights_.output ? weights_.output->output_dim : 0;
     for (int i = 0; i < phases; ++i) {
-        auto& d                   = data_.emplace_back();
+        auto& d                      = data_.emplace_back();
         d.sequence_length_host       = {engine.max_batch_size, kCPUpinned};
         d.readonly_block_num_host    = {engine.max_batch_size, kCPUpinned};
         d.spec_draft_candidates_host = {engine.max_batch_size * Sequence::kMaxDraftTokens, kCPUpinned};
@@ -469,6 +492,27 @@ LanguageModel::Impl::Impl(
         d.finished           = empty_like(finished_buf_, kDEVICE);
         d.autoregres         = {engine.max_batch_size, kCPU};
         d.generating         = {engine.max_batch_size, kCPU};
+        if (allocate_dflash_selector) {
+            TM_CHECK_GT(dflash_selector_rows, 0);
+            TM_CHECK_GT(local_vocab_size, 0);
+            d.dflash_local_logits = {{dflash_selector_rows, local_vocab_size}, weights_.data_type, kDEVICE};
+            if (tp_size_ > 1) {
+                d.dflash_local_ids       = {(ssize_t)dflash_selector_rows * 16, kDEVICE};
+                d.dflash_local_scores    = {{dflash_selector_rows, 16}, kFloat32, kDEVICE};
+                d.dflash_gathered_ids    = {(ssize_t)tp_size_ * dflash_selector_rows * 16, kDEVICE};
+                d.dflash_gathered_scores = {(ssize_t)tp_size_ * dflash_selector_rows * 16, kDEVICE};
+            }
+            if (trace_dflash_workspace) {
+                TM_LOG_INFO("[DFlash2] selector workspace phase={} logits={} local_ids={} local_scores={} "
+                            "gathered_ids={} gathered_scores={}",
+                            i,
+                            (uintptr_t)d.dflash_local_logits.raw_data(),
+                            (uintptr_t)d.dflash_local_ids.raw_data(),
+                            (uintptr_t)d.dflash_local_scores.raw_data(),
+                            (uintptr_t)d.dflash_gathered_ids.raw_data(),
+                            (uintptr_t)d.dflash_gathered_scores.raw_data());
+            }
+        }
     }
 
     input_processor_.emplace(engine, weights_.hidden_units, weights_.data_type, phases);
@@ -507,8 +551,10 @@ LanguageModel::Impl::Impl(
                                                                      Tensor&       scores,
                                                                      const Tensor& hidden,
                                                                      float         multiplier,
-                                                                     float         softcap) {
-                                                                  DraftTopK16(ids, scores, hidden, multiplier, softcap);
+                                                                     float         softcap,
+                                                                     int           phase) {
+                                                                  DraftTopK16(
+                                                                      ids, scores, hidden, multiplier, softcap, phase);
                                                               });
         if (engine.num_draft_tokens > 0) {
             TM_CHECK_EQ(engine.num_draft_tokens, weights_.dflash->block_size - 1);
@@ -763,16 +809,24 @@ void LanguageModel::Impl::DraftTopK16(Buffer_<int>& out,
                                       Tensor&       scores,
                                       const Tensor& features,
                                       float         output_multiplier,
-                                      float         softcap)
+                                      float         softcap,
+                                      int           phase)
 {
-    const auto st = core::Context::stream().handle();
-    const int rows = features.shape(0);
-    const int local_vocab_size = weights_.output->output_dim;
-    const int token_id_offset = tp_rank_ * local_vocab_size;
-    const int valid_vocab = std::min(local_vocab_size, weights_.vocab_size - token_id_offset);
+    const auto st               = core::Context::stream().handle();
+    const int  rows             = features.shape(0);
+    const int  local_vocab_size = weights_.output->output_dim;
+    const int  token_id_offset  = tp_rank_ * local_vocab_size;
+    const int  valid_vocab      = std::min(local_vocab_size, weights_.vocab_size - token_id_offset);
     TM_CHECK_GT(valid_vocab, 0);
 
-    Tensor local_logits{{rows, local_vocab_size}, weights_.data_type, kDEVICE};
+    auto&  d = data_.at(phase);
+    Tensor local_logits = d.dflash_local_logits ? d.dflash_local_logits.slice(0, rows) :
+                                                  Tensor{{rows, local_vocab_size}, weights_.data_type, kDEVICE};
+    TM_CHECK_EQ(local_logits.ndim(), 2);
+    TM_CHECK_EQ(local_logits.shape(0), rows);
+    TM_CHECK_EQ(local_logits.shape(1), local_vocab_size);
+    TM_CHECK_EQ(local_logits.dtype(), weights_.data_type);
+    TM_CHECK_EQ(local_logits.device().type, kDEVICE);
     TM_SCOPE_CALL(linear_.Forward(features, *weights_.output, local_logits));
     if (tp_size_ == 1) {
         invokeDFlashTopK16(out,
@@ -786,12 +840,31 @@ void LanguageModel::Impl::DraftTopK16(Buffer_<int>& out,
         return;
     }
 
-    Buffer_<int> local_ids{(ssize_t)rows * 16, kDEVICE};
-    Tensor local_scores{{rows, 16}, kFloat32, kDEVICE};
+    Buffer_<int> local_ids = d.dflash_local_ids ? d.dflash_local_ids.slice(0, (ssize_t)rows * 16) :
+                                                  Buffer_<int>{(ssize_t)rows * 16, kDEVICE};
+    Tensor local_scores = d.dflash_local_scores ? d.dflash_local_scores.slice(0, rows) :
+                                                  Tensor{{rows, 16}, kFloat32, kDEVICE};
+    TM_CHECK_EQ(local_ids.size(), (ssize_t)rows * 16);
+    TM_CHECK_EQ(local_ids.device().type, kDEVICE);
+    TM_CHECK_EQ(local_scores.ndim(), 2);
+    TM_CHECK_EQ(local_scores.shape(0), rows);
+    TM_CHECK_EQ(local_scores.shape(1), 16);
+    TM_CHECK_EQ(local_scores.dtype(), kFloat32);
+    TM_CHECK_EQ(local_scores.device().type, kDEVICE);
     invokeDFlashTopK16(local_ids, local_scores, local_logits, valid_vocab, token_id_offset, 1.f, 0.f, st);
 
-    Buffer_<int> gathered_ids{(ssize_t)tp_size_ * rows * 16, kDEVICE};
-    Tensor gathered_scores{{tp_size_, rows, 16}, kFloat32, kDEVICE};
+    const ssize_t gathered_size = (ssize_t)tp_size_ * rows * 16;
+    Buffer_<int> gathered_ids = d.dflash_gathered_ids ? d.dflash_gathered_ids.slice(0, gathered_size) :
+                                                        Buffer_<int>{gathered_size, kDEVICE};
+    Buffer_<float> gathered_scores_buffer = d.dflash_gathered_scores ?
+                                                 d.dflash_gathered_scores.slice(0, gathered_size) :
+                                                 Buffer_<float>{gathered_size, kDEVICE};
+    Tensor gathered_scores{gathered_scores_buffer, {tp_size_, rows, 16}};
+    TM_CHECK_EQ(gathered_ids.size(), gathered_size);
+    TM_CHECK_EQ(gathered_ids.device().type, kDEVICE);
+    TM_CHECK_EQ(gathered_scores.size(), gathered_size);
+    TM_CHECK_EQ(gathered_scores.dtype(), kFloat32);
+    TM_CHECK_EQ(gathered_scores.device().type, kDEVICE);
     comm_.d_comm->AllGather(
         local_ids.data(), gathered_ids.data(), local_ids.size(), kInt32, comm_.d_tp_group, st);
     comm_.d_comm->AllGather(local_scores.raw_data(),

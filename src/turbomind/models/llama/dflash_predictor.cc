@@ -692,7 +692,8 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor&       block_hidden,
                        unary_scores,
                        prediction_hidden,
                        weights_.output_multiplier,
-                       weights_.final_logit_softcapping);
+                       weights_.final_logit_softcapping,
+                       phase);
     }
     else {
         Tensor logits = logits_fn_(prediction_hidden);
