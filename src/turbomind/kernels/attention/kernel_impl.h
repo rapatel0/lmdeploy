@@ -44,15 +44,11 @@ public:
         if constexpr (kIsDecoding) {
             desc_.kv_quant = kv_quant_from_type<typename K::Tkv>();
             desc_.qh       = K::CTA_H;
-            desc_.q_tile   = 1;
-            desc_.kv_tile  = K::CTA_S;
             desc_.causal   = true;
         }
         else {
             desc_.kv_quant = 0;
             desc_.qh       = 1;
-            desc_.q_tile   = K::CTA_Q;
-            desc_.kv_tile  = K::CTA_S;
         }
 
         auto func               = &attention_kernel<K>;

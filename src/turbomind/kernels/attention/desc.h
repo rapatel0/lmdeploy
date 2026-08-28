@@ -49,8 +49,6 @@ struct KernelDesc {
     DataType       data_type;
     int            kv_quant;  // 0=none, 8=int8, 4=int4
     int            qh;        // query heads per CTA (1 for prefill)
-    int            q_tile;    // query rows per CTA for prefill
-    int            kv_tile;   // key/value rows per CTA iteration
     bool           causal{true};
 };
 
@@ -76,11 +74,8 @@ inline std::string to_string(const KernelDesc& d)
             ss << "_kvint4";
         ss << "_qh" << d.qh;
     }
-    else {
-        ss << "_q" << d.q_tile << "_kv" << d.kv_tile;
-        if (!d.causal) {
-            ss << "_noncausal";
-        }
+    else if (!d.causal) {
+        ss << "_noncausal";
     }
     return ss.str();
 }

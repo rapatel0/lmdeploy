@@ -88,11 +88,10 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 ## P1: speculative cycle cost
 
-- [ ] **Tune SM70 small-Q attention tiles for the verifier and draft.**
+- [x] **Tune SM70 small-Q attention tiles for the verifier and draft.**
   - Fresh Nsight attribution: target head-dim-256 verification attention is 11.9% of K=7 GPU time; all draft head-dim-128 attention is 1.2%.
-  - First matrix: draft Q16/KV32 improved normalized cycle time about 1%; target Q32/KV32 improved it about 0.7%; target Q16/KV32 regressed about 3%.
-  - A five-trial confirmation now compares Q64/KV64 against the combined draft-Q16/target-Q32 policy and runs audited identity.
-  - SGLang/TileLang guidance: V100 uses synchronous staging, shape-specific tiles, and split/context geometry rather than Ampere-style pipelines.
+  - The first matrix suggested about 1% normalized cycle gains, but the five-trial confirmation falsified them: Q64/KV64 took 43.94 ms/step versus 44.17 ms/step for combined draft-Q16/target-Q32.
+  - The alternate kernels were removed; Q64/KV64 remains the default. Tile size alone does not reproduce SGLang's grouped/split attention design.
 
 - [ ] **Capture fixed-shape target verification and draft execution in CUDA graphs.**
   - Nsight shows substantial target submission/synchronization time around the eight-token verification shape.

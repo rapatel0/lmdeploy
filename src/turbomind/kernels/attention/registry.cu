@@ -2,7 +2,6 @@
 
 #include "src/turbomind/kernels/attention/registry.h"
 
-#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <tuple>
@@ -58,33 +57,7 @@ const Kernel* Registry::Find(const AttnDesc& desc) const
     const int threshold = static_cast<int>(kMaxWasteRatio * desc.query_group_sz);
 
     const Kernel*             best = nullptr;
-    const Kernel*             prefill_fallback = nullptr;
     std::tuple<int, int, int> cost{};
-
-    static const int sm70_128_q_tile = [] {
-        const char* value = std::getenv("TM_ATTENTION_SM70_128_CTA_Q");
-        if (!value) {
-            return 64;
-        }
-        const int tile = std::atoi(value);
-        return tile == 16 || tile == 32 || tile == 64 ? tile : 64;
-    }();
-    static const int sm70_128_kv_tile = [] {
-        const char* value = std::getenv("TM_ATTENTION_SM70_128_CTA_KV");
-        return value && std::atoi(value) == 32 ? 32 : 64;
-    }();
-    static const int sm70_256_q_tile = [] {
-        const char* value = std::getenv("TM_ATTENTION_SM70_256_CTA_Q");
-        if (!value) {
-            return 64;
-        }
-        const int tile = std::atoi(value);
-        return tile == 16 || tile == 32 || tile == 64 ? tile : 64;
-    }();
-    static const int sm70_256_kv_tile = [] {
-        const char* value = std::getenv("TM_ATTENTION_SM70_256_CTA_KV");
-        return value && std::atoi(value) == 32 ? 32 : 64;
-    }();
 
     for (const auto* k : ptrs_) {
         const auto& d = k->desc();
@@ -102,24 +75,11 @@ const Kernel* Registry::Find(const AttnDesc& desc) const
                 cost = v;
             }
         }
-        else {
-            if (!prefill_fallback) {
-                prefill_fallback = k;
-            }
-            if (arch_ == 700) {
-                if (desc.head_dim == 128 && d.q_tile == sm70_128_q_tile && d.kv_tile == sm70_128_kv_tile) {
-                    return k;
-                }
-                if (desc.head_dim == 256 && d.q_tile == sm70_256_q_tile && d.kv_tile == sm70_256_kv_tile) {
-                    return k;
-                }
-            }
-            if (arch_ != 700 || (desc.head_dim != 128 && desc.head_dim != 256)) {
-                return k;
-            }
+        else {  // attention, return on first match
+            return k;
         }
     }
-    return desc.mode == AttnDesc::kPrefill ? prefill_fallback : best;
+    return best;
 }
 
 Registry& Registry::instance()
