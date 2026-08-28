@@ -1046,23 +1046,30 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             const char*   bytes         = (const char*)host.raw_data();
             std::string   nonzero;
             std::string   layer_ids;
+            bool          complete = true;
             for (size_t feature = 0; feature < weights_.dflash->target_layer_ids.size(); ++feature) {
                 ssize_t count = 0;
                 for (ssize_t i = 0; i < feature_bytes; ++i) {
                     count += bytes[feature * feature_bytes + i] != 0;
                 }
+                complete = complete && count > 0;
                 nonzero += std::to_string(count);
                 layer_ids += std::to_string(weights_.dflash->target_layer_ids[feature]);
                 const char* separator = feature + 1 < weights_.dflash->target_layer_ids.size() ? "," : "";
                 nonzero += separator;
                 layer_ids += separator;
             }
-            TM_LOG_INFO("[DFlash2] target capture shape=[{},{}] layer_ids=[{}] nonzero_bytes=[{}]",
-                        capture->shape(0),
-                        capture->shape(1),
-                        layer_ids,
-                        nonzero);
-            capture_logged = true;
+            // Warm-up executes only tune_layer_num layers, so its intentionally
+            // incomplete capture remains zero. Wait for the first full target
+            // forward before publishing the one-shot diagnostic.
+            if (complete) {
+                TM_LOG_INFO("[DFlash2] target capture shape=[{},{}] layer_ids=[{}] nonzero_bytes=[{}]",
+                            capture->shape(0),
+                            capture->shape(1),
+                            layer_ids,
+                            nonzero);
+                capture_logged = true;
+            }
         }
     }
 
