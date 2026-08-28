@@ -164,10 +164,13 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
         attention_.Forward({target_phase, context, discarded, layer->attention.get(), attention_indices_[i]});
         TM_CUDA_CHECK(cudaGetLastError());
     }
-    TM_LOG_INFO("[DFlash2] materialized context KV: tokens={} layers={} phase={}",
-                context.shape(0),
-                attention_indices_.size(),
-                target_phase);
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true)) {
+        TM_LOG_INFO("[DFlash2] materialized context KV: tokens={} layers={} phase={}",
+                    context.shape(0),
+                    attention_indices_.size(),
+                    target_phase);
+    }
 }
 
 DFlashPredictor::ConvState DFlashPredictor::PrepareGroupedConv(const Tensor& input,

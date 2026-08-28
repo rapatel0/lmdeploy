@@ -1652,7 +1652,11 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     //                        or wrong conditioning tip in kDraft)
     // Each row also prints the ids the forward actually submitted, so the
     // bonus-vs-draft window placement is visible in the same line.
-    if (TM_UNLIKELY(reject_dumps_ < 6)) {
+    static const bool dump_rejections = [] {
+        const char* value = std::getenv("TM_SPEC_REJECT_DUMP");
+        return value && value[0] == '1';
+    }();
+    if (TM_UNLIKELY(dump_rejections && reject_dumps_ < 6)) {
         ++reject_dumps_;
         // The target argmax per position is not returned by GreedyReject, so
         // recompute it here on the host for the dump. Cost is irrelevant: six

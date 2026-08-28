@@ -23,7 +23,6 @@ WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | so
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd / || exit $?
 export TM_LOG_LEVEL=INFO
-export TM_DFLASH_TRACE_SELECTOR=1
 python3 /job/verify_dflash_runtime.py \
     --model "${MODEL}" \
     --draft-model "${DRAFT_MODEL}" \
