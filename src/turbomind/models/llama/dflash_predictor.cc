@@ -231,6 +231,7 @@ struct DFlashPredictor::ParityTrace {
                                              "TM_DFLASH_CUB_TOPK",
                                              "TM_DFLASH_SELECTOR_GRAPH",
                                              "TM_DFLASH_PAGED_Q8",
+                                             "TM_DFLASH_EXACT_TIE_REPLAY",
                                              "TM_DFLASH_REDUCE_BEFORE_CONV",
                                              "TM_DFLASH_CONTEXT_BF16_ROUND",
                                              "TM_DFLASH_LEGACY_ATTENTION_POLICY",
@@ -780,7 +781,11 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor&       block_hidden,
         return SelectCandidatesImpl(block_hidden, anchors, phase);
     }
 
-    cudaError_t status = cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+    // Each TP rank is driven by a separate executor thread. Thread-local mode
+    // lets one rank instantiate its completed graph while peers finish capture;
+    // global mode made those host-side instantiate calls illegal and poisoned
+    // the in-flight NCCL capture on the other ranks.
+    cudaError_t status = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
     if (status != cudaSuccess) {
         graph.disabled = true;
         TM_LOG_WARNING("[DFlash2] selector graph capture disabled at begin: {}", cudaGetErrorString(status));

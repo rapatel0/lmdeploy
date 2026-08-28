@@ -2075,7 +2075,11 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             const char* s = std::getenv("TM_MTP_AMBIGUOUS_REPLAY");
             return s && s[0] == '1';
         }();
-        const bool replay_ambiguous = dflash_predictor_ || ambiguous_replay;
+        static const bool dflash_exact_tie_replay = [] {
+            const char* s = std::getenv("TM_DFLASH_EXACT_TIE_REPLAY");
+            return !s || s[0] != '0';
+        }();
+        const bool replay_ambiguous = (dflash_predictor_ && dflash_exact_tie_replay) || ambiguous_replay;
         const bool replay_bonus = (n == 0 && zero_accept_replay) || (replay_ambiguous && ambiguous[i]);
         const int raw_commit = n + (no_bonus_[i] ? 0 : 1);
         spec_raw_accepted_ += n;
