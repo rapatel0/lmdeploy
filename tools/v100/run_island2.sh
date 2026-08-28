@@ -30,6 +30,7 @@ NUM_DRAFT_TOKENS="${NUM_DRAFT_TOKENS:-4}"
 MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
 TM_BATCH_COPY_DURING_API_CALL="${TM_BATCH_COPY_DURING_API_CALL:-0}"
 TM_MTP_LOCAL_TOP1="${TM_MTP_LOCAL_TOP1:-0}"
+TM_DFLASH_LOCAL_TOPK="${TM_DFLASH_LOCAL_TOPK:-0}"
 TM_MTP_FROZEN_KV="${TM_MTP_FROZEN_KV:-0}"
 TM_MTP_EAGLE_ROTATION="${TM_MTP_EAGLE_ROTATION:-0}"
 TM_MTP_FORCE_REJECT="${TM_MTP_FORCE_REJECT:-0}"
@@ -86,9 +87,9 @@ done
 kubectl -n "$NS" create configmap "${JOB}-script" "${CM_ARGS[@]}" >/dev/null
 
 python3 - "$JOB" "$NS" "$IMAGE" "$ISLAND2" "$ISLAND1" "$TP" "$NUM_DRAFT_TOKENS" "$MODEL_DIR" \
-    "$TM_BATCH_COPY_DURING_API_CALL" "$TM_MTP_LOCAL_TOP1" "$TM_MTP_FROZEN_KV" "$TM_MTP_EAGLE_ROTATION" "$TM_MTP_FORCE_REJECT" "$TM_MTP_AMBIGUITY_MARGIN" "$TM_MTP_AMBIGUOUS_REPLAY" "$TM_SPEC_TRACE" "$CUDA_LAUNCH_BLOCKING" "$CUBLAS_WORKSPACE_CONFIG" "$NCCL_DEBUG" "$NCCL_DEBUG_SUBSYS" <<'PY' | kubectl apply -f - >/dev/null
+    "$TM_BATCH_COPY_DURING_API_CALL" "$TM_MTP_LOCAL_TOP1" "$TM_DFLASH_LOCAL_TOPK" "$TM_MTP_FROZEN_KV" "$TM_MTP_EAGLE_ROTATION" "$TM_MTP_FORCE_REJECT" "$TM_MTP_AMBIGUITY_MARGIN" "$TM_MTP_AMBIGUOUS_REPLAY" "$TM_SPEC_TRACE" "$CUDA_LAUNCH_BLOCKING" "$CUBLAS_WORKSPACE_CONFIG" "$NCCL_DEBUG" "$NCCL_DEBUG_SUBSYS" <<'PY' | kubectl apply -f - >/dev/null
 import json, sys
-job, ns, image, island2, island1, tp, num_draft, model_dir, batch_copy_order, mtp_local_top1, mtp_frozen_kv, mtp_eagle_rotation, mtp_force_reject, mtp_ambiguity_margin, mtp_ambiguous_replay, spec_trace, launch_blocking, cublas_workspace, nccl_debug, nccl_debug_subsys = sys.argv[1:21]
+job, ns, image, island2, island1, tp, num_draft, model_dir, batch_copy_order, mtp_local_top1, dflash_local_topk, mtp_frozen_kv, mtp_eagle_rotation, mtp_force_reject, mtp_ambiguity_margin, mtp_ambiguous_replay, spec_trace, launch_blocking, cublas_workspace, nccl_debug, nccl_debug_subsys = sys.argv[1:22]
 
 guard = r'''set -uo pipefail
 for BAD in $ISLAND1_UUIDS; do
@@ -139,6 +140,7 @@ manifest = {
                     {"name": "MODEL_DIR", "value": model_dir},
                     {"name": "TM_BATCH_COPY_DURING_API_CALL", "value": batch_copy_order},
                     {"name": "TM_MTP_LOCAL_TOP1", "value": mtp_local_top1},
+                    {"name": "TM_DFLASH_LOCAL_TOPK", "value": dflash_local_topk},
                     {"name": "TM_MTP_FROZEN_KV", "value": mtp_frozen_kv},
                     {"name": "TM_MTP_EAGLE_ROTATION", "value": mtp_eagle_rotation},
                     {"name": "TM_MTP_FORCE_REJECT", "value": mtp_force_reject},

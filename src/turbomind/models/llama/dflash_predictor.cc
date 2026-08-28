@@ -39,6 +39,15 @@ bool TraceDFlashSelector()
     return enabled;
 }
 
+bool UseLocalDFlashTopK()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_LOCAL_TOPK");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
 void ReportDFlashTensor(const std::string& name, const Tensor& value)
 {
     Tensor host{{1, value.shape(1)}, kHalf, kCPU};
@@ -80,7 +89,8 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                                  const EngineParam&      engine,
                                  const Context&          ctx,
                                  EmbedFn                 embed,
-                                 LogitsFn                logits):
+                                 LogitsFn                logits,
+                                 CandidatesFn            candidates):
     weights_(weights),
     hidden_units_(weights.fc ? weights.fc->output_dim : 0),
     num_context_features_(weights.num_context_features),
@@ -91,10 +101,12 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
     attention_phase_base_(attention_phase_base),
     ctx_(ctx),
     embed_fn_(std::move(embed)),
-    logits_fn_(std::move(logits))
+    logits_fn_(std::move(logits)),
+    candidates_fn_(std::move(candidates))
 {
     TM_CHECK(embed_fn_) << "DFlash2 needs the target token embedding";
     TM_CHECK(logits_fn_) << "DFlash2 needs the target lm_head";
+    TM_CHECK(candidates_fn_) << "DFlash2 needs the sharded target lm_head";
     TM_CHECK(weights_.fc) << "DFlash2 context projection is missing";
     TM_CHECK(weights_.hidden_norm) << "DFlash2 hidden_norm is missing";
     TM_CHECK_GT(hidden_units_, 0);
@@ -256,21 +268,31 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
     invokeGatherDFlashPredictions(
         prediction_hidden, block_hidden, weights_.block_size, core::Context::stream().handle());
 
-    Tensor logits = logits_fn_(prediction_hidden);
-    static std::atomic<bool> selector_reported{false};
-    if (TM_UNLIKELY(TraceDFlashSelector() && !selector_reported.exchange(true))) {
-        ReportDFlashTensor("selector.hidden", prediction_hidden);
-        ReportDFlashTensor("selector.logits", logits);
-    }
     Buffer_<int> candidate_ids{(ssize_t)rows * selector->top_k, kDEVICE};
     Tensor unary_scores{{rows, selector->top_k}, kFloat32, kDEVICE};
-    invokeDFlashTopK16(candidate_ids,
+    if (UseLocalDFlashTopK() && !TraceDFlashSelector()) {
+        candidates_fn_(candidate_ids,
                        unary_scores,
-                       logits,
-                       logits.shape(1),
+                       prediction_hidden,
                        weights_.output_multiplier,
-                       weights_.final_logit_softcapping,
-                       core::Context::stream().handle());
+                       weights_.final_logit_softcapping);
+    }
+    else {
+        Tensor logits = logits_fn_(prediction_hidden);
+        static std::atomic<bool> selector_reported{false};
+        if (TM_UNLIKELY(TraceDFlashSelector() && !selector_reported.exchange(true))) {
+            ReportDFlashTensor("selector.hidden", prediction_hidden);
+            ReportDFlashTensor("selector.logits", logits);
+        }
+        invokeDFlashTopK16(candidate_ids,
+                           unary_scores,
+                           logits,
+                           logits.shape(1),
+                           0,
+                           weights_.output_multiplier,
+                           weights_.final_logit_softcapping,
+                           core::Context::stream().handle());
+    }
 
     Tensor selector_hidden{{rows, selector->state_rank}, dtype_, kDEVICE};
     linear_.Forward(prediction_hidden, *selector->hidden_projection, selector_hidden);

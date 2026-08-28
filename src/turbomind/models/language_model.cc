@@ -29,6 +29,7 @@
 #include "src/turbomind/models/llama/llama_kernels.h"
 #include "src/turbomind/models/llama/llama_params.h"
 #include "src/turbomind/models/llama/llama_utils.h"
+#include "src/turbomind/models/llama/dflash_kernels.h"
 #include "src/turbomind/models/llama/dflash_predictor.h"
 #include "src/turbomind/models/llama/mtp_predictor.h"
 #include "src/turbomind/models/llama/rejection_sampling.h"
@@ -272,6 +273,11 @@ struct LanguageModel::Impl {
     Tensor LookupEmbedding(const Buffer_<int>& input_ids, Buffer symm_buf);
     Tensor PostEmbedding(const Tensor& features, Buffer symm_buf);
     void   DraftTop1(Buffer_<int>& out, const Tensor& features);
+    void   DraftTopK16(Buffer_<int>& out,
+                       Tensor&       scores,
+                       const Tensor& features,
+                       float         output_multiplier,
+                       float         softcap);
 
     // Build the global per-token validity mask for this pass (see `token_mask_`).
     void BuildTokenMask(const bool* finished, const int* q_offsets, const BatchData& b);
@@ -481,6 +487,13 @@ LanguageModel::Impl::Impl(
                                                               },
                                                               [this](const Tensor& hidden) {
                                                                   return PostEmbedding(hidden, symm_buf_);
+                                                              },
+                                                              [this](Buffer_<int>& ids,
+                                                                     Tensor&       scores,
+                                                                     const Tensor& hidden,
+                                                                     float         multiplier,
+                                                                     float         softcap) {
+                                                                  DraftTopK16(ids, scores, hidden, multiplier, softcap);
                                                               });
         if (engine.num_draft_tokens > 0) {
             TM_CHECK_EQ(engine.num_draft_tokens, weights_.dflash->block_size - 1);
@@ -724,6 +737,52 @@ void LanguageModel::Impl::DraftTop1(Buffer_<int>& out, const Tensor& features)
                             st);
     TM_CUDA_CHECK(cudaGetLastError());
     invokeGlobalArgmax(out, gathered_candidates, rows, tp_size_, st);
+}
+
+void LanguageModel::Impl::DraftTopK16(Buffer_<int>& out,
+                                      Tensor&       scores,
+                                      const Tensor& features,
+                                      float         output_multiplier,
+                                      float         softcap)
+{
+    const auto st = core::Context::stream().handle();
+    const int rows = features.shape(0);
+    const int local_vocab_size = weights_.output->output_dim;
+    const int token_id_offset = tp_rank_ * local_vocab_size;
+    const int valid_vocab = std::min(local_vocab_size, weights_.vocab_size - token_id_offset);
+    TM_CHECK_GT(valid_vocab, 0);
+
+    Tensor local_logits{{rows, local_vocab_size}, weights_.data_type, kDEVICE};
+    TM_SCOPE_CALL(linear_.Forward(features, *weights_.output, local_logits));
+    if (tp_size_ == 1) {
+        invokeDFlashTopK16(out,
+                           scores,
+                           local_logits,
+                           valid_vocab,
+                           token_id_offset,
+                           output_multiplier,
+                           softcap,
+                           st);
+        return;
+    }
+
+    Buffer_<int> local_ids{(ssize_t)rows * 16, kDEVICE};
+    Tensor local_scores{{rows, 16}, kFloat32, kDEVICE};
+    invokeDFlashTopK16(local_ids, local_scores, local_logits, valid_vocab, token_id_offset, 1.f, 0.f, st);
+
+    Buffer_<int> gathered_ids{(ssize_t)tp_size_ * rows * 16, kDEVICE};
+    Tensor gathered_scores{{tp_size_, rows, 16}, kFloat32, kDEVICE};
+    comm_.d_comm->AllGather(
+        local_ids.data(), gathered_ids.data(), local_ids.size(), kInt32, comm_.d_tp_group, st);
+    comm_.d_comm->AllGather(local_scores.raw_data(),
+                            gathered_scores.raw_data(),
+                            local_scores.size(),
+                            kFloat32,
+                            comm_.d_tp_group,
+                            st);
+    TM_CUDA_CHECK(cudaGetLastError());
+    invokeDFlashMergeTopK16(
+        out, scores, gathered_ids, gathered_scores, tp_size_, output_multiplier, softcap, st);
 }
 
 void LanguageModel::Impl::Setup(int phase, TensorMap& env)

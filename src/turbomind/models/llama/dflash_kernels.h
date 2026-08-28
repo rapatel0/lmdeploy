@@ -48,9 +48,19 @@ void invokeDFlashTopK16(Buffer_<int>& ids,
                         Tensor&       scores,
                         const Tensor& logits,
                         int           valid_vocab,
+                        int           token_id_offset,
                         float         output_multiplier,
                         float         softcap,
                         cudaStream_t  stream);
+
+void invokeDFlashMergeTopK16(Buffer_<int>&       ids,
+                             Tensor&             scores,
+                             const Buffer_<int>& gathered_ids,
+                             const Tensor&       gathered_scores,
+                             int                 tp_size,
+                             float               output_multiplier,
+                             float               softcap,
+                             cudaStream_t        stream);
 
 void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                  const Buffer_<int>& anchors,

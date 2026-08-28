@@ -156,7 +156,7 @@ __global__ void DFlashResidualRMSNormHalf(__half*       output,
     }
 }
 
-__global__ void DFlashTopK16Half(int* ids, float* scores, const __half* logits, int rows, int vocab, float multiplier, float softcap)
+__global__ void DFlashTopK16Half(int* ids, float* scores, const __half* logits, int rows, int vocab, int token_id_offset, float multiplier, float softcap)
 {
     const int row = blockIdx.x;
     if (row >= rows) {
@@ -203,10 +203,56 @@ __global__ void DFlashTopK16Half(int* ids, float* scores, const __half* logits, 
         }
         if (threadIdx.x == 0) {
             selected[rank]       = shared_ids[0];
-            ids[row * 16 + rank] = shared_ids[0];
+            ids[row * 16 + rank] = shared_ids[0] + token_id_offset;
             scores[row * 16 + rank] = shared_scores[0];
         }
         __syncthreads();
+    }
+}
+
+__global__ void DFlashMergeTopK16Kernel(int*         ids,
+                                        float*       scores,
+                                        const int*   gathered_ids,
+                                        const float* gathered_scores,
+                                        int          rows,
+                                        int          tp_size,
+                                        float        multiplier,
+                                        float        softcap)
+{
+    const int row = blockIdx.x;
+    if (row >= rows || threadIdx.x != 0) {
+        return;
+    }
+    const int width = tp_size * 16;
+    bool used[64]{};
+    for (int rank = 0; rank < 16; ++rank) {
+        float best_score = -CUDART_INF_F;
+        int   best_id = 0;
+        int   best_index = 0;
+        for (int i = 0; i < width; ++i) {
+            if (used[i]) {
+                continue;
+            }
+            const int source_rank = i / 16;
+            const int source_slot = i % 16;
+            const int index = (source_rank * rows + row) * 16 + source_slot;
+            const float score = gathered_scores[index];
+            const int token = gathered_ids[index];
+            if (score > best_score || (score == best_score && token < best_id)) {
+                best_score = score;
+                best_id = token;
+                best_index = i;
+            }
+        }
+        used[best_index] = true;
+        if (softcap > 0.f) {
+            best_score = tanhf(best_score * multiplier / softcap) * softcap;
+        }
+        else {
+            best_score *= multiplier;
+        }
+        ids[row * 16 + rank] = best_id;
+        scores[row * 16 + rank] = best_score;
     }
 }
 
@@ -422,6 +468,7 @@ void invokeDFlashTopK16(Buffer_<int>& ids,
                         Tensor&       scores,
                         const Tensor& logits,
                         int           valid_vocab,
+                        int           token_id_offset,
                         float         output_multiplier,
                         float         softcap,
                         cudaStream_t  stream)
@@ -439,8 +486,37 @@ void invokeDFlashTopK16(Buffer_<int>& ids,
                                                          (const __half*)logits.raw_data(),
                                                          logits.shape(0),
                                                          valid_vocab,
+                                                         token_id_offset,
                                                          output_multiplier,
                                                          softcap);
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
+void invokeDFlashMergeTopK16(Buffer_<int>&       ids,
+                             Tensor&             scores,
+                             const Buffer_<int>& gathered_ids,
+                             const Tensor&       gathered_scores,
+                             int                 tp_size,
+                             float               output_multiplier,
+                             float               softcap,
+                             cudaStream_t        stream)
+{
+    TM_CHECK_GT(tp_size, 0);
+    TM_CHECK_LE(tp_size, 4);
+    TM_CHECK_EQ(scores.dtype(), kFloat32);
+    TM_CHECK_EQ(gathered_scores.dtype(), kFloat32);
+    const int rows = scores.shape(0);
+    TM_CHECK_EQ(ids.size(), (ssize_t)rows * 16);
+    TM_CHECK_EQ(gathered_ids.size(), (ssize_t)tp_size * rows * 16);
+    TM_CHECK_EQ(gathered_scores.size(), (ssize_t)tp_size * rows * 16);
+    DFlashMergeTopK16Kernel<<<rows, 1, 0, stream>>>(ids.data(),
+                                                    scores.data<float>(),
+                                                    gathered_ids.data(),
+                                                    gathered_scores.data<float>(),
+                                                    rows,
+                                                    tp_size,
+                                                    output_multiplier,
+                                                    softcap);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
