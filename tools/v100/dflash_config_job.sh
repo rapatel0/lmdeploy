@@ -22,7 +22,7 @@ pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd /src || exit $?
 python3 - <<'PY' | tee "${RESULTS}/config-test.log"
 from lmdeploy.messages import TurbomindEngineConfig
-import _turbomind as tm
+from lmdeploy.turbomind.turbomind import _tm as tm
 
 cfg = TurbomindEngineConfig(
     num_draft_tokens=7,
