@@ -115,6 +115,7 @@ struct LanguageModel::Impl {
         Tensor         dflash_local_scores;
         Buffer_<int>   dflash_gathered_ids;
         Buffer_<float> dflash_gathered_scores;
+        Buffer_<int>   dflash_k_offsets;
 
         Buffer_<bool> autoregres;
         Buffer_<bool> generating;
@@ -495,6 +496,7 @@ LanguageModel::Impl::Impl(
         if (allocate_dflash_selector) {
             TM_CHECK_GT(dflash_selector_rows, 0);
             TM_CHECK_GT(local_vocab_size, 0);
+            d.dflash_k_offsets  = {engine.max_batch_size + 1, kDEVICE};
             d.dflash_local_logits = {{dflash_selector_rows, local_vocab_size}, weights_.data_type, kDEVICE};
             if (tp_size_ > 1) {
                 d.dflash_local_ids       = {(ssize_t)dflash_selector_rows * 16, kDEVICE};
@@ -503,9 +505,10 @@ LanguageModel::Impl::Impl(
                 d.dflash_gathered_scores = {(ssize_t)tp_size_ * dflash_selector_rows * 16, kDEVICE};
             }
             if (trace_dflash_workspace) {
-                TM_LOG_INFO("[DFlash2] selector workspace phase={} logits={} local_ids={} local_scores={} "
+                TM_LOG_INFO("[DFlash2] selector workspace phase={} k_offsets={} logits={} local_ids={} local_scores={} "
                             "gathered_ids={} gathered_scores={}",
                             i,
+                            (uintptr_t)d.dflash_k_offsets.raw_data(),
                             (uintptr_t)d.dflash_local_logits.raw_data(),
                             (uintptr_t)d.dflash_local_ids.raw_data(),
                             (uintptr_t)d.dflash_local_scores.raw_data(),
@@ -1008,7 +1011,8 @@ void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
         sequence_length_.Swap();
     }
 
-    Buffer_<int> k_offsets{b.bsz + 1, kDEVICE};
+    Buffer_<int> k_offsets = d.dflash_k_offsets ? d.dflash_k_offsets.slice(0, b.bsz + 1) :
+                                                  Buffer_<int>{b.bsz + 1, kDEVICE};
     // PrefixSum(sequence_length_.front().data<int>(), bsz, k_offsets.data(), core::Context::stream().handle());
 
     // Buffer_<int> k_offsets_tmp{k_offsets.size(), kCPU};
