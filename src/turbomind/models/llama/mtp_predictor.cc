@@ -312,22 +312,6 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
                                   cudaMemcpyDeviceToDevice,
                                   stream));
 
-    invokeRMSNorm(hidden,
-                  hidden,
-                  layer.attention_norm->weight,
-                  layer.attention_norm->norm_eps_,
-                  layer.attention_norm->zero_centered_,
-                  stream);
-    TM_CUDA_CHECK(cudaGetLastError());
-
-    // Passing the MTP layer's own AttentionWeight is what routes the keys and
-    // values into the MTP KV slot: the cache offset is read from
-    // `weights.cache_block_offset`, which registration stamped onto this very
-    // weight. `attn_index_` only names the layer for debug output.
-    // The draft's slot for THIS batch phase, not the target's slot.
-    attn_layer_.Forward({attn_phase_base_ + phase, hidden, hidden, layer.attention.get(), attn_index_});
-    TM_CUDA_CHECK(cudaGetLastError());
-
     // wo and w2 are row-parallel. Their outputs are partial sums, so applying
     // residual RMSNorm locally makes every TP rank normalize a different
     // hidden state. The target decoder performs this same fused all-reduce +
@@ -367,7 +351,38 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
         }
         TM_CUDA_CHECK(cudaGetLastError());
     };
-    residual_norm(hidden, residual, layer.attention->wo->bias, *layer.ffn_norm);
+
+    static const bool skip_attention = [] {
+        const char* value = std::getenv("TM_MTP_SKIP_ATTN");
+        return value && value[0] == '1';
+    }();
+    if (!skip_attention) {
+        invokeRMSNorm(hidden,
+                      hidden,
+                      layer.attention_norm->weight,
+                      layer.attention_norm->norm_eps_,
+                      layer.attention_norm->zero_centered_,
+                      stream);
+        TM_CUDA_CHECK(cudaGetLastError());
+
+        // Passing the MTP layer's own AttentionWeight is what routes the keys
+        // and values into the MTP KV slot. The draft uses its own phase slot.
+        attn_layer_.Forward({attn_phase_base_ + phase, hidden, hidden, layer.attention.get(), attn_index_});
+        TM_CUDA_CHECK(cudaGetLastError());
+        residual_norm(hidden, residual, layer.attention->wo->bias, *layer.ffn_norm);
+    }
+    else {
+        // Measured history truncation leaves every greedy draft unchanged.
+        // This arm tests whether the whole attention sublayer can be omitted,
+        // retaining only the residual stream and pre-FFN normalization.
+        invokeRMSNorm(hidden,
+                      residual,
+                      layer.ffn_norm->weight,
+                      layer.ffn_norm->norm_eps_,
+                      layer.ffn_norm->zero_centered_,
+                      stream);
+        TM_CUDA_CHECK(cudaGetLastError());
+    }
 
     ffn_layer_->forward({hidden, hidden, layer.feed_forward.get(), attn_index_});
     TM_CUDA_CHECK(cudaGetLastError());
