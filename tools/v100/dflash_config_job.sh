@@ -19,7 +19,9 @@ if ! bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1; then
 fi
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
-cd /src || exit $?
+# Do not run from /src: the source checkout shadows the freshly installed
+# wheel, including its lmdeploy/lib native extension directory.
+cd /tmp || exit $?
 python3 - <<'PY' | tee "${RESULTS}/config-test.log"
 from lmdeploy.messages import TurbomindEngineConfig
 from lmdeploy.turbomind.turbomind import _tm as tm
