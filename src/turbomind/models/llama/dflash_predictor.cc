@@ -300,9 +300,11 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     };
     report("block.embedding", hidden);
 
-    Tensor residual{hidden.shape(), dtype_, kDEVICE};
-    TM_CUDA_CHECK(cudaMemcpyAsync(
-        residual.raw_data(), hidden.raw_data(), hidden.byte_size(), cudaMemcpyDeviceToDevice, stream));
+    // DFlash2 was trained in BF16 and its unnormalized residual can exceed
+    // FP16's 65,504 limit on V100. Keep the residual and TP reduction in FP32,
+    // then emit the normalized activation in FP16 for GEMMs.
+    Tensor residual{hidden.shape(), kFloat32, kDEVICE};
+    invokeDFlashCastToFloat(residual, hidden, stream);
 
     auto* first_layer = TM_CHECK_NOTNULL(weights_.layer(0));
     invokeRMSNorm(hidden,
@@ -315,32 +317,18 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     report("block.initial_norm", hidden);
 
     auto residual_norm = [&](Tensor& value, Tensor& res, const Tensor& bias, const NormWeight& norm) {
+        Tensor reduced{value.shape(), kFloat32, kDEVICE};
+        invokeDFlashCastToFloat(reduced, value, stream);
         if (ctx_.comm.d_comm) {
-            ctx_.comm.d_comm->AllreduceResidualBiasRMSnorm(value.raw_data(),
-                                                           res.raw_data(),
-                                                           bias.data_or((void*)nullptr),
-                                                           norm.weight.raw_data(),
-                                                           norm.norm_eps_,
-                                                           norm.zero_centered_,
-                                                           hidden_units_,
-                                                           token_num,
-                                                           dtype_,
-                                                           ctx_.comm.d_tp_group,
-                                                           stream);
+            ctx_.comm.d_comm->AllReduceSum(reduced.raw_data(),
+                                           reduced.raw_data(),
+                                           reduced.size(),
+                                           kFloat32,
+                                           ctx_.comm.d_tp_group,
+                                           stream);
         }
-        else {
-            invokeResidualBiasRMSNorm(value.raw_data(),
-                                      res.raw_data(),
-                                      norm.weight.raw_data(),
-                                      bias.data_or((void*)nullptr),
-                                      dtype_,
-                                      hidden_units_,
-                                      token_num,
-                                      norm.norm_eps_,
-                                      norm.zero_centered_,
-                                      stream);
-        }
-        TM_CUDA_CHECK(cudaGetLastError());
+        invokeDFlashResidualRMSNorm(
+            value, res, reduced, bias, norm.weight, norm.norm_eps_, norm.zero_centered_, stream);
     };
 
     for (int i = 0; i < (int)attention_indices_.size(); ++i) {

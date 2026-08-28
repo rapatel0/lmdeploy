@@ -31,6 +31,48 @@ __global__ void GatherDFlashPredictionsHalf(__half* output, const __half* input,
     }
 }
 
+__global__ void DFlashCastToFloat(float* output, const __half* input, int count)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < count) {
+        output[index] = __half2float(input[index]);
+    }
+}
+
+__global__ void DFlashResidualRMSNormHalf(__half*       output,
+                                          float*        residual,
+                                          const float*  reduced,
+                                          const __half* bias,
+                                          const __half* weight,
+                                          int           hidden,
+                                          float         eps,
+                                          bool          zero_centered)
+{
+    const int token = blockIdx.x;
+    __shared__ float sums[256];
+    float sum = 0.f;
+    for (int channel = threadIdx.x; channel < hidden; channel += blockDim.x) {
+        const int index = token * hidden + channel;
+        const float value = residual[index] + reduced[index] + (bias ? __half2float(bias[channel]) : 0.f);
+        residual[index] = value;
+        sum += value * value;
+    }
+    sums[threadIdx.x] = sum;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            sums[threadIdx.x] += sums[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+    const float scale = rsqrtf(sums[0] / hidden + eps);
+    for (int channel = threadIdx.x; channel < hidden; channel += blockDim.x) {
+        const int index = token * hidden + channel;
+        const float gamma = __half2float(weight[channel]) + (zero_centered ? 1.f : 0.f);
+        output[index] = __float2half_rn(residual[index] * scale * gamma);
+    }
+}
+
 __global__ void DFlashTopK16Half(int* ids, float* scores, const __half* logits, int rows, int vocab, float multiplier, float softcap)
 {
     const int row = blockIdx.x;
@@ -192,6 +234,46 @@ void invokeGatherDFlashPredictions(Tensor& output, const Tensor& block_hidden, i
                                                                 count,
                                                                 output.shape(1),
                                                                 block_size);
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
+void invokeDFlashCastToFloat(Tensor& output, const Tensor& input, cudaStream_t stream)
+{
+    TM_CHECK_EQ(output.dtype(), kFloat32);
+    TM_CHECK_EQ(input.dtype(), kHalf);
+    TM_CHECK_EQ(output.size(), input.size());
+    constexpr int threads = 256;
+    const int blocks = (input.size() + threads - 1) / threads;
+    DFlashCastToFloat<<<blocks, threads, 0, stream>>>(
+        output.data<float>(), (const __half*)input.raw_data(), input.size());
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
+void invokeDFlashResidualRMSNorm(Tensor&       output,
+                                 Tensor&       residual,
+                                 const Tensor& reduced,
+                                 const Tensor& bias,
+                                 const Tensor& weight,
+                                 float         eps,
+                                 bool          zero_centered,
+                                 cudaStream_t  stream)
+{
+    TM_CHECK_EQ(output.dtype(), kHalf);
+    TM_CHECK_EQ(residual.dtype(), kFloat32);
+    TM_CHECK_EQ(reduced.dtype(), kFloat32);
+    TM_CHECK_EQ(weight.dtype(), kHalf);
+    TM_CHECK_EQ(output.ndim(), 2);
+    TM_CHECK_EQ(output.size(), residual.size());
+    TM_CHECK_EQ(output.size(), reduced.size());
+    TM_CHECK_EQ(output.shape(1), weight.size());
+    DFlashResidualRMSNormHalf<<<output.shape(0), 256, 0, stream>>>((__half*)output.raw_data(),
+                                                                  residual.data<float>(),
+                                                                  reduced.data<float>(),
+                                                                  (const __half*)bias.data_or((void*)nullptr),
+                                                                  (const __half*)weight.raw_data(),
+                                                                  output.shape(1),
+                                                                  eps,
+                                                                  zero_centered);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 

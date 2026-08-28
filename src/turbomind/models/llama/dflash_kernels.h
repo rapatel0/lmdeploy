@@ -15,6 +15,17 @@ void invokeBuildDFlashBlock(Buffer_<int>&       output,
 
 void invokeGatherDFlashPredictions(Tensor& output, const Tensor& block_hidden, int block_size, cudaStream_t stream);
 
+void invokeDFlashCastToFloat(Tensor& output, const Tensor& input, cudaStream_t stream);
+
+void invokeDFlashResidualRMSNorm(Tensor&       output,
+                                 Tensor&       residual,
+                                 const Tensor& reduced,
+                                 const Tensor& bias,
+                                 const Tensor& weight,
+                                 float         eps,
+                                 bool          zero_centered,
+                                 cudaStream_t  stream);
+
 void invokeDFlashTopK16(Buffer_<int>& ids,
                         Tensor&       scores,
                         const Tensor& logits,
