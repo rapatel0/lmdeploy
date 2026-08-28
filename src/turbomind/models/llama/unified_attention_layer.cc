@@ -918,8 +918,13 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                                        (int)weights.cache_block_offset,
                                                        engine_param_.cache_block_seq_len};
 
-        // prefill only
-        if (is_mla) {
+        // Prefill only. The direct paged path constructs its iterator from the
+        // block table above and must not dereference an intentionally empty
+        // flattened-KV tensor while assembling otherwise shared parameters.
+        if (use_dflash_paged_q8) {
+            params.linear_iter_params = LinearIteratorParams{nullptr, 0, 0};
+        }
+        else if (is_mla) {
             params.linear_iter_params = LinearIteratorParams{
                 tmp_kv.raw_data(),           // flattened KV
                 stat.k_sum * size_per_head,  // stride to next head
