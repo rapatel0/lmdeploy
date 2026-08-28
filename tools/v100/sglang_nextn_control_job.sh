@@ -78,7 +78,7 @@ run_arm() {
         --dtype float16 \
         --kv-cache-dtype fp8_e5m2 \
         --attention-backend flash_attn_v100 \
-        --linear-attn-prefill-backend tilelang \
+        --linear-attn-prefill-backend triton \
         --linear-attn-decode-backend triton \
         --tensor-parallel-size "${TP}" \
         --host 0.0.0.0 \
@@ -93,7 +93,6 @@ run_arm() {
         --mamba-scheduler-strategy extra_buffer \
         --cuda-graph-max-bs 1 \
         --cuda-graph-bs 1 \
-        --enable-nccl-nvls \
         --speculative-algorithm NEXTN \
         --speculative-num-steps "${k}" \
         --speculative-eagle-topk 1 \
