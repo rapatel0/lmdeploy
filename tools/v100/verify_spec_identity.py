@@ -44,6 +44,7 @@ CHILD = textwrap.dedent(
     model_dir, tp, k, max_new, out_path = sys.argv[1:6]
     tp, k, max_new = int(tp), int(k), int(max_new)
     prompts = json.load(open(sys.argv[6]))
+    serial = sys.argv[7] == "1"
 
     pipe = pipeline(
         model_dir,
@@ -64,7 +65,7 @@ CHILD = textwrap.dedent(
         top_k=1,
         do_sample=False,
     )
-    outs = pipe(prompts, gen_config=cfg)
+    outs = [pipe(prompt, gen_config=cfg) for prompt in prompts] if serial else pipe(prompts, gen_config=cfg)
     rows = [
         {
             "text": o.text or "",
@@ -79,7 +80,7 @@ CHILD = textwrap.dedent(
 ).strip()
 
 
-def run_config(model_dir: str, tp: int, k: int, max_new: int, tag: str) -> list[dict]:
+def run_config(model_dir: str, tp: int, k: int, max_new: int, tag: str, serial: bool = False) -> list[dict]:
     """Generate with num_draft_tokens=k in a fresh process."""
     prompts_path = f"/tmp/spec_prompts_{tag}.json"
     out_path = f"/tmp/spec_out_{tag}.json"
@@ -98,7 +99,17 @@ def run_config(model_dir: str, tp: int, k: int, max_new: int, tag: str) -> list[
         raise SystemExit(3) from None
 
     proc = subprocess.run(
-        [sys.executable, script, model_dir, str(tp), str(k), str(max_new), out_path, prompts_path],
+        [
+            sys.executable,
+            script,
+            model_dir,
+            str(tp),
+            str(k),
+            str(max_new),
+            out_path,
+            prompts_path,
+            "1" if serial else "0",
+        ],
         capture_output=True,
         text=True,
         timeout=1800,
@@ -147,6 +158,7 @@ def main() -> int:
     parser.add_argument("--max-new-tokens", type=int, default=192)
     parser.add_argument("--baseline-replicas", type=int, default=1)
     parser.add_argument("--skip-narrowing", action="store_true")
+    parser.add_argument("--serial", action="store_true", help="run each prompt as a batch of one")
     parser.add_argument("--json-out", default="")
     args = parser.parse_args()
 
@@ -155,13 +167,13 @@ def main() -> int:
 
     print(f"  baseline: num_draft_tokens=0 ({args.baseline_replicas} replica(s))", flush=True)
     baselines = [
-        run_config(args.model_dir, args.tp, 0, args.max_new_tokens, f"k0_{replica}")
+        run_config(args.model_dir, args.tp, 0, args.max_new_tokens, f"k0_{replica}", args.serial)
         for replica in range(args.baseline_replicas)
     ]
     base = baselines[0]
 
     print(f"  speculative: num_draft_tokens={args.num_draft_tokens}", flush=True)
-    spec = run_config(args.model_dir, args.tp, args.num_draft_tokens, args.max_new_tokens, "kn")
+    spec = run_config(args.model_dir, args.tp, args.num_draft_tokens, args.max_new_tokens, "kn", args.serial)
 
     if any(len(candidate) != len(spec) for candidate in baselines):
         print("FAIL: baseline/spec row counts differ", file=sys.stderr)
@@ -245,7 +257,7 @@ def main() -> int:
         # the K+1 block.
         print(file=sys.stderr)
         print("  narrowing: re-running at K=1", file=sys.stderr)
-        k1 = run_config(args.model_dir, args.tp, 1, args.max_new_tokens, "k1")
+        k1 = run_config(args.model_dir, args.tp, 1, args.max_new_tokens, "k1", args.serial)
         k1_same = all(
             any(candidate[i]["token_ids"] == row["token_ids"] for candidate in baselines) for i, row in enumerate(k1)
         )
