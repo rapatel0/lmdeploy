@@ -51,12 +51,30 @@ def build_prompt(tokenizer, target_tokens: int) -> str:
 
 
 SOURCE_SUFFIXES = {
-    ".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".md",
-    ".py", ".rs", ".sh", ".toml", ".yaml", ".yml",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cu",
+    ".cuh",
+    ".h",
+    ".hpp",
+    ".md",
+    ".py",
+    ".rs",
+    ".sh",
+    ".toml",
+    ".yaml",
+    ".yml",
 }
 EXCLUDED_PARTS = {
-    ".git", ".pytest_cache", "__pycache__", "build", "dist",
-    "node_modules", "target", "third_party",
+    ".git",
+    ".pytest_cache",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "target",
+    "third_party",
 }
 TASKS = [
     "Identify the most important correctness and reliability risks in this code and explain concrete fixes.",
@@ -88,12 +106,9 @@ def build_sglang_prompt(tokenizer, repo: Path, target_len: int) -> tuple[str, li
         total_chars += len(text)
         if total_chars >= 1_500_000:
             break
-    old_limit = tokenizer.model_max_length
-    tokenizer.model_max_length = 1_000_000_000
-    try:
-        corpus_ids = tokenizer.encode("".join(chunks), add_special_tokens=False)
-    finally:
-        tokenizer.model_max_length = old_limit
+    # LMDeploy's Tokenizer wrapper does not expose Hugging Face's
+    # model_max_length and does not truncate encode() at the model context.
+    corpus_ids = tokenizer.encode("".join(chunks), add_special_tokens=False)
     if len(corpus_ids) < 100_000:
         raise RuntimeError(f"SGLang source corpus is too small: {len(corpus_ids)} tokens")
 
@@ -101,16 +116,22 @@ def build_sglang_prompt(tokenizer, repo: Path, target_len: int) -> tuple[str, li
     placeholder = f"\nZXQCORPUSMARKER{nonce.upper()}QXZ\n"
     task = TASKS[stable_int(nonce) % len(TASKS)]
     messages = [
-        {"role": "system", "content": (
-            f"Benchmark session {nonce}. You are a coding agent performing "
-            "a careful repository review. Be precise and evidence-driven."
-        )},
-        {"role": "user", "content": (
-            "The following is a slice of a real software repository.\n"
-            f"{placeholder}\nTask: {task}\n"
-            "Write a technically detailed response of at least 350 words. "
-            "Use specific examples from the supplied code and do not stop early."
-        )},
+        {
+            "role": "system",
+            "content": (
+                f"Benchmark session {nonce}. You are a coding agent performing "
+                "a careful repository review. Be precise and evidence-driven."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "The following is a slice of a real software repository.\n"
+                f"{placeholder}\nTask: {task}\n"
+                "Write a technically detailed response of at least 350 words. "
+                "Use specific examples from the supplied code and do not stop early."
+            ),
+        },
     ]
     rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     prefix_text, suffix_text = rendered.split(placeholder)
@@ -118,10 +139,10 @@ def build_sglang_prompt(tokenizer, repo: Path, target_len: int) -> tuple[str, li
     suffix_ids = tokenizer.encode(suffix_text, add_special_tokens=False)
     body_len = target_len - len(prefix_ids) - len(suffix_ids)
     offset = stable_int(0, target_len, 1, 0) % len(corpus_ids)
-    body_ids = (corpus_ids + corpus_ids)[offset:offset + body_len]
+    body_ids = (corpus_ids + corpus_ids)[offset : offset + body_len]
     if len(body_ids) != body_len:
         repeats = (body_len + len(corpus_ids) - 1) // len(corpus_ids) + 1
-        body_ids = (corpus_ids * repeats)[offset:offset + body_len]
+        body_ids = (corpus_ids * repeats)[offset : offset + body_len]
     input_ids = prefix_ids + body_ids + suffix_ids
     token_hash = hashlib.sha256(b"".join(i.to_bytes(4, "little") for i in input_ids)).hexdigest()
     prompt = tokenizer.decode(input_ids, skip_special_tokens=False)
