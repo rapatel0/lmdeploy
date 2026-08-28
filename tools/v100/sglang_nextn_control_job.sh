@@ -90,7 +90,7 @@ run_arm() {
         --disable-radix-cache \
         --chunked-prefill-size 8192 \
         --mamba-full-memory-ratio 0.1 \
-        --mamba-scheduler-strategy extra_buffer \
+        --mamba-scheduler-strategy no_buffer \
         --cuda-graph-max-bs 1 \
         --cuda-graph-bs 1 \
         --speculative-algorithm NEXTN \

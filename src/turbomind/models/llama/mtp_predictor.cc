@@ -479,12 +479,22 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     // indexes block_ptrs_ with no bounds check, so walking past the last
     // allocated block reads another sequence's pointer, silently. So the cap
     // stays; it is now derived from how many blocks the row actually owns.
+    static const bool frozen_kv = [] {
+        const char* value = std::getenv("TM_MTP_FROZEN_KV");
+        return value && value[0] == '1';
+    }();
+
     const int block_len  = block_seq_len_;
     int       max_extend = num_draft_tokens;
     if (block_len > 0 && block_counts) {
         for (int i = 0; i < batch_size; ++i) {
             const int capacity = block_counts[i] * block_len;
-            max_extend         = std::min(max_extend, capacity - seq_lens[i]);
+            const int slack    = capacity - seq_lens[i];
+            // SGLang's NEXTN worker keeps the committed KV prefix frozen while
+            // walking the proposal chain. Every draft then reuses one scratch
+            // position instead of appending speculative K/V that training did
+            // not commit. Keep this as an A/B flag until acceptance proves it.
+            max_extend = std::min(max_extend, frozen_kv ? (slack > 0 ? num_draft_tokens : 0) : slack);
         }
         max_extend = std::max(max_extend, 0);
     }
@@ -544,7 +554,9 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
     // bound fails here with the numbers attached instead of in a kernel.
     if (block_len > 0 && block_counts) {
         for (int i = 0; i < batch_size; ++i) {
-            const int reach    = seq_lens[i] + std::min(num_draft_tokens, max_extend);
+            const int reach = seq_lens[i]
+                              + (frozen_kv ? (max_extend > 0 ? 1 : 0)
+                                           : std::min(num_draft_tokens, max_extend));
             const int capacity = block_counts[i] * block_len;
             TM_CHECK_LE(reach, capacity)
                 << "MTP draft row " << i << " would reach key length " << reach << " but owns "
@@ -583,9 +595,9 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
 
     for (int step = 0; step < effective_drafts; ++step) {
         // Step 0 advances too, placing the sampled token at L instead of L-1.
-        {
-            // Steps 1.. attend to the tokens the previous steps produced, so
-            // each row's key length grows by one per step.
+        // The frozen-KV control deliberately reuses that scratch position on
+        // later steps, matching SGLang NEXTN's proposal walk.
+        if (step == 0 || !frozen_kv) {
             AdvanceCuSeqLens(k_offsets.data(), batch_size, 1, stream);
             ++advanced;
         }
