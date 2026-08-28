@@ -28,6 +28,9 @@ public:
                     const Context&             ctx);
     ~DFlashPredictor();
 
+    void SetupAttention(int phase, TensorMap& env);
+    void PrepareAttention(int phase, TensorMap& env);
+
     /// Project [tokens, context_features * hidden] target residuals to the
     /// draft hidden width, then apply hidden_norm.
     Tensor ProjectContext(const Tensor& target_hidden) const;

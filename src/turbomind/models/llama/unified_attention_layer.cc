@@ -134,6 +134,7 @@ struct AttentionData {
     /// kPrepare. Length is the batch size, not the token count.
     Buffer_<bool> decode_token_mask;
     bool          decode_shape{false};
+    int           draft_block_size{0};
     /// Row 0's draft count at Setup. Diagnostics only: a prompt's final chunk
     /// can be as short as a verification forward, so token counts alone do not
     /// identify the call.
@@ -254,8 +255,8 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
         auto& d               = data_.emplace_back(std::make_shared<AttentionData>());
         d->block_ptrs         = {max_blocks + 16, kDEVICE};
         d->block_ptrs_offsets = {bsz + 1, kDEVICE};
-        d->decode_q_offsets   = {bsz + 1, kDEVICE};
-        d->decode_token_mask  = {bsz, kDEVICE};
+        d->decode_q_offsets  = {bsz + 1, kDEVICE};
+        d->decode_token_mask = {(ssize_t)bsz * std::max(1, engine.num_draft_tokens + 1), kDEVICE};
         // Host staging is per phase for the same reason the device buffers
         // are: a copy enqueued from one phase's Setup may not have executed
         // when another phase's Setup runs on the host. See AttentionData.
@@ -272,10 +273,11 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
     // because rows that finished this step are excluded from drafting upstream
     // by skip_draft. Fill it once here rather than rebuilding it per step.
     {
-        Buffer_<bool> ones{bsz, kCPUpinned};
-        std::fill_n(ones.data(), bsz, true);
+        const int mask_size = bsz * std::max(1, engine.num_draft_tokens + 1);
+        Buffer_<bool> ones{mask_size, kCPUpinned};
+        std::fill_n(ones.data(), mask_size, true);
         for (auto& d : data_) {
-            core::Copy(ones, bsz, d->decode_token_mask);
+            core::Copy(ones, mask_size, d->decode_token_mask);
         }
     }
 
@@ -453,7 +455,10 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     // target's plan, but the draft still needs its OWN shape rather than a copy
     // of the target's.
     const bool decode_shape = env.try_("attn_decode_shape") != nullptr;
-    d.decode_shape          = decode_shape;
+    auto*      block_shape  = env.try_("attn_draft_block_size");
+    TM_CHECK(!(decode_shape && block_shape)) << "only one speculative attention shape can be active";
+    d.draft_block_size = decode_shape ? 1 : (block_shape ? block_shape->data<int>()[0] : 0);
+    d.decode_shape     = d.draft_block_size > 0;
 
     // Row 0's draft count, so a diagnostic can say what kind of call it is
     // looking at instead of inferring it from token counts. A prompt's final
@@ -469,7 +474,7 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
         TM_LOG_INFO("[attn] first Setup on phase {}: bsz={} decode_shape={} input_len[0]={}",
                     phase,
                     bsz,
-                    (int)decode_shape,
+                    d.draft_block_size,
                     bsz > 0 ? rc[0]->input_len : -1);
     }
 
@@ -480,16 +485,19 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
     // query tensor directly in attention_universal, so the draft cannot borrow
     // the target's offsets: those describe input_len, which is K+1 on a
     // verification step.
-    if (decode_shape) {
+    if (d.decode_shape) {
         for (int i = 0; i <= bsz; ++i) {
-            d.decode_q_offsets_host[i] = i;
+            d.decode_q_offsets_host[i] = i * d.draft_block_size;
         }
         copy(d.decode_q_offsets_host, bsz + 1, d.decode_q_offsets);
     }
 
-    d.decode.n = decode_shape ?
+    d.decode.n = d.draft_block_size == 1 ?
                      bsz :
                      std::find_if(rc.begin(), rc.end(), [](auto r) { return r->input_len > 1; }) - rc.begin();
+    if (d.draft_block_size > 1) {
+        d.decode.n = 0;
+    }
     d.prefill.n = bsz - d.decode.n;
 
     // d.dbg_offset = d.dbg_size = 0;
@@ -521,7 +529,8 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
                 // bounded separately, in MTPPredictor::Draft, against the same
                 // block count -- adding num_drafts here would assert on a
                 // length no kernel writes, which is exactly what it did.
-                const int k_len_row = c.history_len + c.inflight_input_len + c.input_len;
+                const int k_len_row = c.history_len + c.inflight_input_len + c.input_len
+                                      + (d.draft_block_size > 1 ? d.draft_block_size : 0);
                 const int need = (k_len_row + bs - 1) / bs;
                 TM_CHECK_LE(need, (int)c.block_ids.size())
                     << "row " << i << " needs " << need << " KV blocks for " << k_len_row
@@ -531,7 +540,7 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
             }
         }
 
-        const int q_len = decode_shape ? 1 : c.input_len;
+        const int q_len = d.decode_shape ? d.draft_block_size : c.input_len;
 
         // NOT widened by num_drafts, though the draft does walk that far.
         //
@@ -548,7 +557,8 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
         // first considered -- cu_k_len drives the real iteration, k_max only
         // sizes the split-K grid, so the cost is parallelism in the rare case
         // where the extra keys cross a CTA_S boundary.
-        const int k_len = c.history_len + c.inflight_input_len + c.input_len;
+        const int k_len = c.history_len + c.inflight_input_len + c.input_len
+                          + (d.draft_block_size > 1 ? d.draft_block_size : 0);
 
         auto& s = i < d.decode.n ? d.decode : d.prefill;
         s.q_sum += q_len;

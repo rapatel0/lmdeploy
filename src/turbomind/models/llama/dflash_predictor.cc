@@ -51,6 +51,22 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
 
 DFlashPredictor::~DFlashPredictor() = default;
 
+void DFlashPredictor::SetupAttention(int phase, TensorMap& env)
+{
+    TM_CHECK_GE(attention_phase_base_, 0);
+    Buffer_<int> block_size{1, kCPU};
+    block_size[0] = weights_.block_size;
+    env.produce("attn_draft_block_size", std::move(block_size));
+    attention_.Run(BatchOp::kSetup, attention_phase_base_ + phase, env);
+    env.consume("attn_draft_block_size");
+}
+
+void DFlashPredictor::PrepareAttention(int phase, TensorMap& env)
+{
+    TM_CHECK_GE(attention_phase_base_, 0);
+    attention_.Run(BatchOp::kPrepare, attention_phase_base_ + phase, env);
+}
+
 Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden) const
 {
     TM_CHECK_EQ(target_hidden.ndim(), 2);
