@@ -189,8 +189,12 @@ struct LanguageModel::Impl {
     /// than derived as mtp_accepted_/K: that division is only valid while
     /// acceptance is all-or-nothing, which holds for a model with recurrent
     /// state and would silently produce nonsense on one without it.
-    size_t mtp_full_accepts_ = 0;
-    size_t mtp_steps_        = 0;
+    size_t mtp_full_accepts_          = 0;
+    size_t mtp_steps_                 = 0;
+    size_t spec_raw_accepted_         = 0;
+    size_t spec_raw_committed_        = 0;
+    size_t spec_ambiguous_steps_      = 0;
+    size_t spec_ambiguity_discarded_  = 0;
 
     /// Bounded draft-vs-target alignment dumps in RejectDrafts.
     int reject_dumps_ = 0;
@@ -260,12 +264,18 @@ struct LanguageModel::Impl {
     ~Impl()
     {
         if (mtp_steps_ != 0) {
-            TM_LOG_INFO("[spec] final accept length {:.3f} over {} verification steps "
-                        "({} committed, {} accepted drafts, {} full accepts)",
+            TM_LOG_INFO("[spec] final commit length {:.3f}, raw {:.3f} over {} verification steps "
+                        "({} committed, {} raw committed, {} accepted drafts, {} raw accepted drafts, "
+                        "{} ambiguous steps, {} tokens discarded by ambiguity, {} full accepts)",
                         (double)mtp_committed_ / (double)mtp_steps_,
+                        (double)spec_raw_committed_ / (double)mtp_steps_,
                         mtp_steps_,
                         mtp_committed_,
+                        spec_raw_committed_,
                         mtp_accepted_,
+                        spec_raw_accepted_,
+                        spec_ambiguous_steps_,
+                        spec_ambiguity_discarded_,
                         mtp_full_accepts_);
         }
     }
@@ -1975,6 +1985,13 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         }();
         const bool replay_ambiguous = dflash_predictor_ || ambiguous_replay;
         const bool replay_bonus = (n == 0 && zero_accept_replay) || (replay_ambiguous && ambiguous[i]);
+        const int raw_commit = n + (no_bonus_[i] ? 0 : 1);
+        spec_raw_accepted_ += n;
+        spec_raw_committed_ += raw_commit;
+        spec_ambiguous_steps_ += ambiguous[i] != 0;
+        if (replay_bonus && ambiguous[i]) {
+            spec_ambiguity_discarded_ += raw_commit;
+        }
         if (gdn_rollback_) {
             if (has_intermediate_gdn && replay_bonus) {
                 // A K+1 verifier forward is numerically close to, but not
@@ -2304,10 +2321,16 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // verification forward including the rejected ones.
     if (mtp_steps_ >= 64 && mtp_steps_ % 64 == 0) {
         TM_LOG_INFO("[MTP] accept length {:.2f} tokens/step over {} steps "
-                    "({} committed, {} full accepts)",
+                    "(raw length {:.2f}, {} committed, {} raw committed, {} raw accepted drafts, "
+                    "{} ambiguous steps, {} tokens discarded by ambiguity, {} full accepts)",
                     (double)mtp_committed_ / (double)mtp_steps_,
                     mtp_steps_,
+                    (double)spec_raw_committed_ / (double)mtp_steps_,
                     mtp_committed_,
+                    spec_raw_committed_,
+                    spec_raw_accepted_,
+                    spec_ambiguous_steps_,
+                    spec_ambiguity_discarded_,
                     mtp_full_accepts_);
     }
 }

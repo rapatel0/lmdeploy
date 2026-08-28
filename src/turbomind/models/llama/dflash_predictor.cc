@@ -159,9 +159,17 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden) const
                   weights_.hidden_norm->norm_eps_,
                   weights_.hidden_norm->zero_centered_,
                   core::Context::stream().handle());
-    // SGLang's SM70 compatibility path rounds hidden_norm through BF16.
-    invokeDFlashRoundBFloat16(normalized, core::Context::stream().handle());
-    TM_CUDA_CHECK(cudaGetLastError());
+    // SGLang configures this boundary with scaled_residual_stream=False,
+    // which uses ordinary FP16 RMSNorm and does not apply Laguna's BF16
+    // residual-stream rounding. Keep the old behavior only as an A/B control.
+    static const bool context_bf16_round = [] {
+        const char* value = std::getenv("TM_DFLASH_CONTEXT_BF16_ROUND");
+        return value && value[0] == '1';
+    }();
+    if (context_bf16_round) {
+        invokeDFlashRoundBFloat16(normalized, core::Context::stream().handle());
+        TM_CUDA_CHECK(cudaGetLastError());
+    }
     return normalized;
 }
 
