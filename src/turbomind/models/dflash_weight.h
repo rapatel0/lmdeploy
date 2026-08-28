@@ -59,6 +59,7 @@ struct DFlashWeightConfig: ModuleConfig {
 
 namespace turbomind {
 
+class DecoderLayerWeight;
 class LinearWeight;
 class NormWeight;
 
@@ -134,6 +135,10 @@ public:
 #define DFLASH_WEIGHT_PARAMS(X)
 
     TM_MODULE_DECLARE(DFlashWeight, DFLASH_WEIGHT_CHILDREN, DFLASH_WEIGHT_PARAMS)
+
+    DecoderLayerWeight* layer(int index) const;
+    DFlashConvWeight*   attention_conv(int index) const;
+    DFlashConvWeight*   mlp_conv(int index) const;
 
     int              block_size{};
     int              draft_window{};

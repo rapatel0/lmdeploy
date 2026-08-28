@@ -9,6 +9,7 @@
 #include "src/turbomind/models/dflash_weight.h"
 #include "src/turbomind/models/linear_weight.h"
 #include "src/turbomind/models/llama/LlamaLinear.h"
+#include "src/turbomind/models/llama/dflash_kernels.h"
 #include "src/turbomind/models/norm_weight.h"
 #include "src/turbomind/utils/cuda_utils.h"
 
@@ -54,6 +55,30 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden) const
                   core::Context::stream().handle());
     TM_CUDA_CHECK(cudaGetLastError());
     return normalized;
+}
+
+Tensor DFlashPredictor::ApplyGroupedConv(const Tensor& input, const DFlashConvWeight& weights, int side) const
+{
+    TM_CHECK(weights.kernel_projection) << "DFlash2 convolution projection is missing";
+    TM_CHECK(weights.base_kernel) << "DFlash2 base kernel is missing";
+    TM_CHECK_EQ(input.ndim(), 2);
+    TM_CHECK_EQ(input.shape(1), hidden_units_);
+
+    Tensor delta{{input.shape(0), weights.kernel_projection->output_dim}, dtype_, kDEVICE};
+    linear_.Forward(input, *weights.kernel_projection, delta);
+    TM_CUDA_CHECK(cudaGetLastError());
+
+    Tensor output{input.shape(), dtype_, kDEVICE};
+    invokeDFlashGroupedConv(output,
+                            input,
+                            delta,
+                            weights.base_kernel,
+                            side,
+                            weights_.block_size,
+                            weights.taps,
+                            weights.group_size,
+                            core::Context::stream().handle());
+    return output;
 }
 
 }  // namespace turbomind

@@ -1086,6 +1086,21 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             context.shape(0),
                             context.shape(1),
                             context_nonzero);
+
+                auto* first_conv = TM_CHECK_NOTNULL(weights_.dflash->attention_conv(0));
+                Tensor convolved = dflash_predictor_->ApplyGroupedConv(context, *first_conv, 0);
+                Tensor convolved_host{{1, convolved.shape(1)}, convolved.dtype(), kCPU};
+                Copy(convolved.slice(0, 1), convolved_host);
+                core::Context::stream().Sync();
+                const char* convolved_data = (const char*)convolved_host.raw_data();
+                ssize_t     convolved_nonzero = 0;
+                for (ssize_t i = 0; i < convolved_host.byte_size(); ++i) {
+                    convolved_nonzero += convolved_data[i] != 0;
+                }
+                TM_LOG_INFO("[DFlash2] grouped convolution shape=[{},{}] nonzero_bytes={}",
+                            convolved.shape(0),
+                            convolved.shape(1),
+                            convolved_nonzero);
                 env.produce("dflash_context_hidden", std::move(context));
                 capture_logged = true;
             }

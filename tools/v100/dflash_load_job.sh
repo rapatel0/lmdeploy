@@ -34,5 +34,10 @@ grep -q '\[DFlash2\] context projection shape=.*nonzero_bytes=[1-9]' "${RESULTS}
     echo "FAIL: DFlash2 context projection was absent or empty"
     exit 5
 }
+grep -q '\[DFlash2\] grouped convolution shape=.*nonzero_bytes=[1-9]' "${RESULTS}/driver.log" || {
+    echo "FAIL: DFlash2 grouped convolution was absent or empty"
+    exit 6
+}
 echo DFLASH_CAPTURE_PASS
 echo DFLASH_CONTEXT_PROJECTION_PASS
+echo DFLASH_GROUPED_CONV_PASS

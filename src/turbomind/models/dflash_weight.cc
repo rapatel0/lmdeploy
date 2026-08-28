@@ -48,6 +48,21 @@ DFlashWeight::DFlashWeight(const core::DFlashWeightConfig& cfg):
 
 DFlashWeight::~DFlashWeight() = default;
 
+DecoderLayerWeight* DFlashWeight::layer(int index) const
+{
+    return layers ? static_cast<DecoderLayerWeight*>(layers->child(std::to_string(index))) : nullptr;
+}
+
+DFlashConvWeight* DFlashWeight::attention_conv(int index) const
+{
+    return attention_convs ? static_cast<DFlashConvWeight*>(attention_convs->child(std::to_string(index))) : nullptr;
+}
+
+DFlashConvWeight* DFlashWeight::mlp_conv(int index) const
+{
+    return mlp_convs ? static_cast<DFlashConvWeight*>(mlp_convs->child(std::to_string(index))) : nullptr;
+}
+
 TM_MODULE_REGISTER(DFlashConvWeight, core::DFlashConvConfig);
 TM_MODULE_METHODS(DFlashConvWeight, DFLASH_CONV_CHILDREN, DFLASH_CONV_PARAMS)
 

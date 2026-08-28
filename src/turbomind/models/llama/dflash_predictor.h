@@ -7,6 +7,7 @@
 
 namespace turbomind {
 
+class DFlashConvWeight;
 class DFlashWeight;
 class LlamaLinear;
 
@@ -22,6 +23,9 @@ public:
     /// Project [tokens, context_features * hidden] target residuals to the
     /// draft hidden width, then apply hidden_norm.
     Tensor ProjectContext(const Tensor& target_hidden) const;
+
+    /// Apply the input or output side of one local convolution adapter.
+    Tensor ApplyGroupedConv(const Tensor& input, const DFlashConvWeight& weights, int side) const;
 
 private:
     const DFlashWeight& weights_;
