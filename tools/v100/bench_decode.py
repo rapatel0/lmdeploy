@@ -154,9 +154,9 @@ def build_sglang_prompt(tokenizer, repo: Path, target_len: int) -> tuple[str, li
         body_ids = (corpus_ids * repeats)[offset : offset + body_len]
     input_ids = prefix_ids + body_ids + suffix_ids
     token_hash = hashlib.sha256(b"".join(i.to_bytes(4, "little") for i in input_ids)).hexdigest()
+    # Arbitrary BPE token sequences are not guaranteed to survive a
+    # decode/encode round-trip. The benchmark submits input_ids directly.
     prompt = hf_tokenizer.decode(input_ids, skip_special_tokens=False)
-    if tokenizer.encode(prompt, add_special_tokens=False) != input_ids:
-        raise RuntimeError("SGLang prompt does not survive decode/encode round-trip")
     return prompt, input_ids, token_hash
 
 
@@ -316,6 +316,7 @@ def main() -> int:
     # Pipeline delegates to async_engine, which owns the tokenizer.
     tokenizer = pipe.async_engine.tokenizer
     prompt_hash = ""
+    prompt_ids: list[int] | None = None
     if args.sglang_corpus:
         prompt, prompt_ids, prompt_hash = build_sglang_prompt(tokenizer, Path(args.sglang_corpus), args.input_tokens)
         encoded_input = len(prompt_ids)
@@ -340,8 +341,32 @@ def main() -> int:
         ignore_eos=True,
     )
 
+    def run_request(config):
+        if not args.sglang_corpus:
+            return pipe([prompt], gen_config=config)[0]
+
+        assert prompt_ids is not None
+
+        async def run_ids():
+            engine = pipe.async_engine
+            session = engine.session_mgr.get()
+            request = await engine.preprocess(
+                messages=None,
+                session_id=session,
+                input_ids=prompt_ids,
+                gen_config=config,
+            )
+            result = None
+            async for item in engine.generate(request, stream_response=False):
+                result = item
+            if result is None:
+                raise RuntimeError("exact-id request returned no output")
+            return result.to_response(0)
+
+        return pipe._run(coro=run_ids()).result()
+
     print("warmup ...", flush=True)
-    pipe([prompt], gen_config=gen_config)
+    run_request(gen_config)
 
     # Measure TTFT separately with a one-token request. The synchronous API
     # returns only when generation completes, so the first-token latency
@@ -359,7 +384,7 @@ def main() -> int:
     ttft_samples = []
     for _ in range(args.trials):
         start = time.perf_counter()
-        pipe([prompt], gen_config=ttft_config)
+        run_request(ttft_config)
         ttft_samples.append(time.perf_counter() - start)
     ttft_s = statistics.median(ttft_samples)
     prefill_tok_s = encoded_input / ttft_s if ttft_s > 0 else 0.0
@@ -392,7 +417,7 @@ def main() -> int:
             print("FAIL: cudaProfilerStart failed", file=sys.stderr)
             return 2
         start = time.perf_counter()
-        out = pipe([prompt], gen_config=gen_config)[0]
+        out = run_request(gen_config)
         elapsed = time.perf_counter() - start
         if profile_this_trial and cuda_profiler_stop() != 0:
             print("FAIL: cudaProfilerStop failed", file=sys.stderr)
