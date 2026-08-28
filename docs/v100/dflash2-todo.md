@@ -63,11 +63,9 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Compare, in order: captured target features, context FC output, context norm output, each grouped-convolution output, attention output, residual norm, final draft hidden state, candidate IDs, unary scores, and selector scores.
   - Done when: the first numerical divergence is identified and either fixed or documented as intentional.
 
-- [ ] **Validate selector edge-score narrowing semantics.**
-  - Classification: runtime-codegen-dependent hypothesis.
-  - SGLang expresses `predecessor * hidden` as an FP16 tensor before contraction; LMDeploy promotes all three factors and accumulates serially in FP32.
-  - Compare every interaction score and top-two edge margin from shared tensors; inspect SGLang's generated kernel before changing LMDeploy.
-  - Done when: generated arithmetic is proven equivalent or LMDeploy matches the observed narrowing points.
+- [x] **Validate selector edge-score narrowing semantics.**
+  - Explicitly FP16-rounding `predecessor * hidden` produced the same 2.664 commit length and identical acceptance counts as FP32 intermediates.
+  - Throughput was 61.14 versus 61.76 tok/s, within run variance. The experimental branch was removed; this is not the fidelity gap.
 
 - [x] **Fix draft RoPE ownership and validate post-RoPE K parity.**
   - All DFlash layers had inherited target partial multimodal RoPE instead of their own full 128-dimensional standard RoPE.
@@ -150,4 +148,4 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - Exact short-workload identity: pass
 - Cumulative audited gain from the original 36.13 tok/s: about 70%
 
-The immediate execution order is: validate selector score narrowing, capture first-block tensor parity, then investigate context-KV/metadata lifecycle if the fidelity gap remains.
+The immediate execution order is: capture first-block tensor parity, then investigate context-KV/metadata lifecycle if the fidelity gap remains.

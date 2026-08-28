@@ -6,7 +6,6 @@
 #include <math_constants.h>
 
 #include <climits>
-#include <cstdlib>
 
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/utils/cuda_utils.h"
@@ -292,8 +291,7 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
                                          int           batch_size,
                                          int           slots,
                                          int           top_k,
-                                         int           rank,
-                                         bool          round_pred_state)
+                                         int           rank)
 {
     const int batch = blockIdx.x;
     if (batch >= batch_size) {
@@ -316,11 +314,7 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
             // Preserve the former serial accumulation order exactly while
             // evaluating all 16 candidates concurrently.
             for (int i = 0; i < rank; ++i) {
-                float pred_state = __half2float(pred[i]) * __half2float(state[i]);
-                if (round_pred_state) {
-                    pred_state = __half2float(__float2half_rn(pred_state));
-                }
-                score += pred_state * __half2float(succ[i]);
+                score += __half2float(pred[i]) * __half2float(state[i]) * __half2float(succ[i]);
             }
             candidate_scores[candidate_index] = score;
         }
@@ -590,10 +584,6 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
     TM_CHECK_EQ(selector_hidden.shape(0), (ssize_t)batch_size * slots);
     TM_CHECK_EQ(predecessor_codebook.shape(1), rank);
     TM_CHECK_EQ(successor_codebook.shape(1), rank);
-    static const bool round_pred_state = [] {
-        const char* value = std::getenv("TM_DFLASH_SELECTOR_FP16_PRODUCT");
-        return value && value[0] == '1';
-    }();
     DFlashGreedySelectorHalf<<<batch_size, 32, 0, stream>>>(output.data(),
                                                            anchors.data(),
                                                            candidate_ids.data(),
@@ -604,8 +594,7 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                                            batch_size,
                                                            slots,
                                                            top_k,
-                                                           rank,
-                                                           round_pred_state);
+                                                           rank);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 

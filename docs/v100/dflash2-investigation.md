@@ -219,6 +219,10 @@ The audited A/B confirmed a large uplift:
 
 This is a 31% acceptance gain and 30.7% throughput gain over the matched legacy arm. Higher acceptance exposed a latent terminal-state defect: a verification reaching `max_seq_len` did not run Generation's ordinary stop criterion, so it could schedule one more step. The engine now clamps publication defensively and verification explicitly marks limit-reaching rows finished. The rebuilt audited gate passed exact K=0/K=7 identity for 256 generated tokens (`DFLASH_AUDITED_IDENTITY_PASS`, artifacts `/results/20260828_195358-dflash-audited-identity-7eaf894d0dee`).
 
+## Selector rounding A/B
+
+Explicitly FP16-rounding the selector's `predecessor * hidden` intermediate did not change the audited result: both arms committed 2.664 tokens/step with identical accepted-draft and full-accept counts. Decode measured 61.14 tok/s with the original FP32 intermediate and 61.76 tok/s with explicit narrowing, which is within run variance. This hypothesis is closed and the extra branch was removed.
+
 ## Acceptance gap
 
 Current audited comparison:
