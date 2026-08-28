@@ -237,6 +237,7 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                                  std::vector<int>        attention_indices,
                                  int                     attention_phase_base,
                                  const EngineParam&      engine,
+                                 int                     phases,
                                  const Context&          ctx,
                                  EmbedFn                 embed,
                                  LogitsFn                logits,
@@ -266,6 +267,53 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
         TM_CHECK_EQ(attention_indices_.size(), 5);
         TM_CHECK_GE(attention_phase_base_, 0);
     }
+
+    static const bool persistent_workspace = [] {
+        const char* value = std::getenv("TM_DFLASH_PERSISTENT_WORKSPACE");
+        return value && value[0] == '1';
+    }();
+    persistent_workspace_ = persistent_workspace;
+    static const bool trace_workspace = [] {
+        const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");
+        return value && value[0] == '1';
+    }();
+    if (persistent_workspace_) {
+        TM_CHECK_GT(phases, 0);
+        TM_CHECK_GT(engine.max_batch_size, 0);
+        auto* selector = TM_CHECK_NOTNULL(weights_.selector.get());
+        TM_CHECK(selector->hidden_projection);
+        const int slots = weights_.block_size - 1;
+        const int rows  = engine.max_batch_size * slots;
+        workspaces_.resize(phases);
+        for (int phase = 0; phase < phases; ++phase) {
+            auto& workspace               = workspaces_[phase];
+            workspace.block_ids           = {(ssize_t)engine.max_batch_size * weights_.block_size, kDEVICE};
+            workspace.prediction_hidden   = {{rows, hidden_units_}, dtype_, kDEVICE};
+            workspace.candidate_ids       = {(ssize_t)rows * selector->top_k, kDEVICE};
+            workspace.unary_scores        = {{rows, selector->top_k}, kFloat32, kDEVICE};
+            workspace.selector_hidden     = {{rows, selector->state_rank}, dtype_, kDEVICE};
+            workspace.selected_ids        = {rows, kDEVICE};
+            workspace.selector_scores     = {{engine.max_batch_size, slots, selector->top_k}, kFloat32, kDEVICE};
+            if (trace_workspace) {
+                TM_LOG_INFO("[DFlash2] workspace phase={} block_ids={} prediction_hidden={} candidate_ids={} "
+                            "unary_scores={} selector_hidden={} selected_ids={} selector_scores={}",
+                            phase,
+                            (uintptr_t)workspace.block_ids.raw_data(),
+                            (uintptr_t)workspace.prediction_hidden.raw_data(),
+                            (uintptr_t)workspace.candidate_ids.raw_data(),
+                            (uintptr_t)workspace.unary_scores.raw_data(),
+                            (uintptr_t)workspace.selector_hidden.raw_data(),
+                            (uintptr_t)workspace.selected_ids.raw_data(),
+                            (uintptr_t)workspace.selector_scores.raw_data());
+            }
+        }
+        TM_LOG_INFO("[DFlash2] persistent workspace ready: phases={} max_batch={} block={} slots={}",
+                    phases,
+                    engine.max_batch_size,
+                    weights_.block_size,
+                    slots);
+    }
+
     ffn_layer_ = std::make_unique<LlamaFfnLayer>(ctx);
     TM_LOG_INFO("[DFlash2] context projector ready: features={} input={} hidden={}",
                 num_context_features_,
@@ -483,7 +531,9 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
     TM_CHECK_GT(batch_size, 0);
     TM_CHECK_GE(attention_phase_base_, 0);
 
-    Buffer_<int> block_ids{(ssize_t)batch_size * weights_.block_size, kDEVICE};
+    Buffer_<int> block_ids = persistent_workspace_ ?
+                                 workspaces_.at(phase).block_ids.slice(0, (ssize_t)batch_size * weights_.block_size) :
+                                 Buffer_<int>{(ssize_t)batch_size * weights_.block_size, kDEVICE};
     invokeBuildDFlashBlock(block_ids,
                            anchors,
                            weights_.block_size,
@@ -499,7 +549,9 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
     return hidden;
 }
 
-Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const Buffer_<int>& anchors) const
+Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor&       block_hidden,
+                                                const Buffer_<int>& anchors,
+                                                int                 phase) const
 {
     auto* selector = TM_CHECK_NOTNULL(weights_.selector.get());
     TM_CHECK(selector->hidden_projection);
@@ -507,13 +559,17 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
     const int slots      = weights_.block_size - 1;
     const int rows       = batch_size * slots;
 
-    Tensor prediction_hidden{{rows, hidden_units_}, dtype_, kDEVICE};
+    Workspace* workspace = persistent_workspace_ ? &workspaces_.at(phase) : nullptr;
+    Tensor prediction_hidden = workspace ? workspace->prediction_hidden.slice(0, rows) :
+                                           Tensor{{rows, hidden_units_}, dtype_, kDEVICE};
     invokeGatherDFlashPredictions(
         prediction_hidden, block_hidden, weights_.block_size, core::Context::stream().handle());
     CaptureParityTensor("selector.prediction_hidden", prediction_hidden);
 
-    Buffer_<int> candidate_ids{(ssize_t)rows * selector->top_k, kDEVICE};
-    Tensor unary_scores{{rows, selector->top_k}, kFloat32, kDEVICE};
+    Buffer_<int> candidate_ids = workspace ? workspace->candidate_ids.slice(0, (ssize_t)rows * selector->top_k) :
+                                             Buffer_<int>{(ssize_t)rows * selector->top_k, kDEVICE};
+    Tensor unary_scores = workspace ? workspace->unary_scores.slice(0, rows) :
+                                      Tensor{{rows, selector->top_k}, kFloat32, kDEVICE};
     if (UseLocalDFlashTopK() && !TraceDFlashSelector()) {
         candidates_fn_(candidate_ids,
                        unary_scores,
@@ -542,7 +598,8 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
         "selector.candidate_ids", Tensor{candidate_ids, {(ssize_t)rows, selector->top_k}});
     CaptureParityTensor("selector.unary_scores", unary_scores);
 
-    Tensor selector_hidden{{rows, selector->state_rank}, dtype_, kDEVICE};
+    Tensor selector_hidden = workspace ? workspace->selector_hidden.slice(0, rows) :
+                                         Tensor{{rows, selector->state_rank}, dtype_, kDEVICE};
     linear_.Forward(prediction_hidden, *selector->hidden_projection, selector_hidden);
     TM_CUDA_CHECK(cudaGetLastError());
     CaptureParityTensor("selector.hidden", selector_hidden);
@@ -550,11 +607,13 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
     Tensor selector_scores;
     Tensor* selector_scores_ptr = nullptr;
     if (parity_trace_ && parity_trace_->active) {
-        selector_scores = Tensor{{batch_size, slots, selector->top_k}, kFloat32, kDEVICE};
+        selector_scores = workspace ? workspace->selector_scores.slice(0, batch_size) :
+                                      Tensor{{batch_size, slots, selector->top_k}, kFloat32, kDEVICE};
         selector_scores_ptr = &selector_scores;
     }
 
-    Buffer_<int> output{(ssize_t)rows, kDEVICE};
+    Buffer_<int> output = workspace ? workspace->selected_ids.slice(0, rows) :
+                                      Buffer_<int>{(ssize_t)rows, kDEVICE};
     invokeDFlashGreedySelector(output,
                                anchors,
                                candidate_ids,

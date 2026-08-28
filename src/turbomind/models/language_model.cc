@@ -495,6 +495,7 @@ LanguageModel::Impl::Impl(
                                                               unified_decoder_->dflash_attn_indices(),
                                                               unified_decoder_->dflash_phase(0),
                                                               engine,
+                                                              phases,
                                                               ctx,
                                                               [this](const Buffer_<int>& ids) {
                                                                   return LookupEmbedding(ids, symm_buf_);
@@ -1237,7 +1238,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             draft_hidden.shape(1),
                             draft_nonzero);
 
-                Buffer_<int> candidates = dflash_predictor_->SelectCandidates(draft_hidden, anchors);
+                Buffer_<int> candidates = dflash_predictor_->SelectCandidates(draft_hidden, anchors, phase);
                 Buffer_<int> host_candidates{candidates.size(), kCPU};
                 core::Copy(candidates, candidates.size(), host_candidates);
                 core::Context::stream().Sync();
@@ -1436,7 +1437,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
         dflash_predictor_->BeginParityBlock(anchors, d.uids[0], tips[0], d.input_lens[0]);
     }
     Tensor block_hidden = dflash_predictor_->DraftBlock(anchors, phase, env);
-    Buffer_<int> candidates = dflash_predictor_->SelectCandidates(block_hidden, anchors);
+    Buffer_<int> candidates = dflash_predictor_->SelectCandidates(block_hidden, anchors, phase);
     Buffer_<int> host = dflash_predictor_->ParityActive() ?
                             d.spec_draft_candidates_host.slice(0, candidates.size()) :
                             Buffer_<int>{candidates.size(), kCPU};

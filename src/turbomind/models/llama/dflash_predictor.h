@@ -34,6 +34,7 @@ public:
                     std::vector<int>           attention_indices,
                     int                        attention_phase_base,
                     const EngineParam&         engine,
+                    int                        phases,
                     const Context&             ctx,
                     EmbedFn                    embed,
                     LogitsFn                   logits,
@@ -64,7 +65,7 @@ public:
     /// Build [anchor, mask x 7] per row and execute one parallel draft block.
     Tensor DraftBlock(const Buffer_<int>& anchors, int phase, TensorMap& env) const;
 
-    Buffer_<int> SelectCandidates(const Tensor& block_hidden, const Buffer_<int>& anchors) const;
+    Buffer_<int> SelectCandidates(const Tensor& block_hidden, const Buffer_<int>& anchors, int phase) const;
 
     /// Associate the next context projection with an eligible request.
     void ArmParityContext(uint64_t uid) const;
@@ -85,6 +86,16 @@ public:
 private:
     struct ParityTrace;
 
+    struct Workspace {
+        Buffer_<int> block_ids;
+        Tensor       prediction_hidden;
+        Buffer_<int> candidate_ids;
+        Tensor       unary_scores;
+        Tensor       selector_hidden;
+        Buffer_<int> selected_ids;
+        Tensor       selector_scores;
+    };
+
     void CaptureParityTensor(const char* name, const Tensor& value) const;
     void PrepareParityContext(const Tensor& target_hidden, const Tensor& projected, const Tensor& normalized) const;
 
@@ -101,6 +112,8 @@ private:
     EmbedFn                        embed_fn_;
     LogitsFn                       logits_fn_;
     CandidatesFn                   candidates_fn_;
+    bool                           persistent_workspace_{};
+    mutable std::vector<Workspace> workspaces_;
     mutable std::unique_ptr<ParityTrace> parity_trace_;
 };
 
