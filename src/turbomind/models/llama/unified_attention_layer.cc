@@ -532,8 +532,10 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
                 // bounded separately, in MTPPredictor::Draft, against the same
                 // block count -- adding num_drafts here would assert on a
                 // length no kernel writes, which is exactly what it did.
-                const int k_len_row = c.history_len + c.inflight_input_len + c.input_len
-                                      + (d.draft_block_size > 1 ? d.draft_block_size : 0);
+                const int draft_extra = engine_param_.num_draft_tokens > 0 && d.draft_block_size > 1 ?
+                                            d.draft_block_size :
+                                            0;
+                const int k_len_row = c.history_len + c.inflight_input_len + c.input_len + draft_extra;
                 const int need = (k_len_row + bs - 1) / bs;
                 TM_CHECK_LE(need, (int)c.block_ids.size())
                     << "row " << i << " needs " << need << " KV blocks for " << k_len_row
@@ -560,8 +562,10 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
         // first considered -- cu_k_len drives the real iteration, k_max only
         // sizes the split-K grid, so the cost is parallelism in the rare case
         // where the extra keys cross a CTA_S boundary.
-        const int k_len = c.history_len + c.inflight_input_len + c.input_len
-                          + (d.draft_block_size > 1 ? d.draft_block_size : 0);
+        const int draft_extra = engine_param_.num_draft_tokens > 0 && d.draft_block_size > 1 ?
+                                    d.draft_block_size :
+                                    0;
+        const int k_len = c.history_len + c.inflight_input_len + c.input_len + draft_extra;
 
         auto& s = i < d.decode.n ? d.decode : d.prefill;
         s.q_sum += q_len;
