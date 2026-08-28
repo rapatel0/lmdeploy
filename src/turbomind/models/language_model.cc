@@ -470,7 +470,7 @@ LanguageModel::Impl::Impl(
     // before the next Setup, the opposite direction and lifecycle.)
     static const bool dflash_persistent_workspace = [] {
         const char* value = std::getenv("TM_DFLASH_PERSISTENT_WORKSPACE");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     static const bool trace_dflash_workspace = [] {
         const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");

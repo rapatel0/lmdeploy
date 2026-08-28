@@ -118,14 +118,16 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Done when: no per-cycle host synchronization is required merely to publish seven draft IDs.
 
 - [ ] **Make target-verification temporary buffers stable.**
-  - Nsight reports hundreds of async allocations/frees and kernel submissions per cycle.
-  - Preallocate or arena-allocate fixed K=7/batch-one workspaces as a CUDA-graph prerequisite.
+  - Phase-owned TurboMind workspaces now cover context projection, embeddings, draft residual/convolution/MLP tensors, proposal/selector tensors, and—at commit `d277060f`—local LM-head and TP top-16 exchange buffers.
+  - The first profiled slice reduced steady allocator/free calls from 108,040 to 94,556 per captured rank aggregate and reduced `dflashDraftAndSelect` from 7.46 to 7.04 ms.
+  - UnifiedAttention qkv/output/flattened-KV and target-verification buffers remain.
   - Done when: allocator calls disappear from steady-state verification traces.
 
-- [ ] **Combine rejection argmax and ambiguity detection into one vocabulary pass.**
-  - The rejection kernel currently scans every target-logit row once for argmax and again for ambiguity.
-  - Preserve deterministic score-descending/token-ID-ascending behavior.
-  - Done when: exact identity passes and the rejection kernel time falls from the profiled baseline.
+- [x] **Combine rejection argmax and ambiguity detection into one vocabulary pass.**
+  - A deterministic top-2 block reduction preserves score-descending/token-ID-ascending order and removes the second full-vocabulary scan.
+  - The profiled rejection kernel fell from 1.495 to 0.971 ms average, a 35% kernel reduction.
+  - Matched K=7 profile cycle time improved from 48.08 ms with workspaces to 47.17 ms with one-pass rejection; exact audited identity and four-rank parity capture passed.
+  - One-pass rejection is now the default; `TM_DFLASH_ONE_PASS_REJECT=0` retains the legacy control.
 
 - [ ] **Evaluate the draft attention kernel against SGLang's V100 backend.**
   - Draft attention remains a material GPU component.

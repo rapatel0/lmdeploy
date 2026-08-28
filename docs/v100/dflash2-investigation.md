@@ -237,6 +237,18 @@ SGLang's V100 backend contains dedicated small-Q attention designs using Q16, KV
 
 The first single-build matrix appeared to show small cycle-cost improvements, but separate-process acceptance varied substantially. A longer five-trial confirmation falsified the apparent gain: Q64/KV64 achieved 60.74 tok/s at commit length 2.669, or 43.94 ms/verification step, while combined draft-Q16/KV32 plus target-Q32/KV32 achieved 57.43 tok/s at commit length 2.537, or 44.17 ms/step. The alternate policy passed audited identity but was 0.5% slower after acceptance normalization. Tile size alone is therefore not the missing optimization; SGLang's grouped heads, split-context scheduling, persistent buffers, and graph capture are the material architectural differences. The extra variants were removed. Artifacts: `/results/20260828_202608-dflash-attention-tile-446144af923c` and `/results/20260828_203751-dflash-attention-tile-confirm-e3aa21413e27`.
 
+## Stable workspace and one-pass rejection
+
+Commit `622e491b` completed a one-build dynamic/workspace/workspace-plus-one-pass comparison on island 2. All arms used five trials. Exact audited K=0/K=7 identity passed for the selected arm, and the first-real-block parity smoke wrote and validated complete manifests on all four TP ranks.
+
+Acceptance varied across fresh processes, so cycle time was normalized by each arm's final commit length. The unprofiled dynamic, workspace, and one-pass arms measured approximately 43.09, 43.05, and 42.67 ms per cycle. Under matched Nsight profiling, all three arms had commit length 2.311 and measured 48.53, 48.08, and 47.17 ms per cycle.
+
+The first persistent workspace slice reduced `cudaMallocFromPoolAsync` and `cudaFreeAsync` calls from 108,040 each to 94,556 each in the captured aggregate. `dflashDraftAndSelect` fell from 7.46 to 7.04 ms average. The direct wall-time change remained small, but stable addresses are required for CUDA graph capture.
+
+The one-pass deterministic top-2 rejection kernel removed the second vocabulary scan. Its profiled kernel average fell from 1.495 to 0.971 ms, a 35% reduction. Relative to the workspace control, profiled normalized cycle time improved by 1.9%; unprofiled normalized cycle time improved by 0.9%. The implementation is retained and enabled by default, with `TM_DFLASH_ONE_PASS_REJECT=0` as the legacy control.
+
+Artifacts: `/results/20260828_230149-dflash-one-pass-reject-622e491b2e4a`.
+
 ## Current speculative-cycle attribution
 
 A matched K=0/K=7 Nsight Systems run at commit `930baf48` profiled the audited prompt from one wheel. K=7 decoded at 47.59 tok/s under profiler overhead with commit length 2.311, which implies 48.6 ms per verification cycle.

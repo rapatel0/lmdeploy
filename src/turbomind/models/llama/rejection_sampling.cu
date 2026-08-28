@@ -248,7 +248,7 @@ RejectionResult GreedyReject(const void*  verification_logits,
 
     static const bool one_pass_ambiguity = [] {
         const char* value = std::getenv("TM_DFLASH_ONE_PASS_REJECT");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
 
 #define TM_LAUNCH_GREEDY_REJECT(Type)                                                                                  \

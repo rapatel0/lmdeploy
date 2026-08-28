@@ -299,7 +299,7 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
 
     static const bool persistent_workspace = [] {
         const char* value = std::getenv("TM_DFLASH_PERSISTENT_WORKSPACE");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     persistent_workspace_ = persistent_workspace;
     static const bool trace_workspace = [] {
