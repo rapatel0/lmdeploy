@@ -48,9 +48,11 @@ private:
 
 }  // namespace turbomind::core
 
+// Include the concrete class in the private symbol name so one translation
+// unit may register several related module types.
 #define TM_MODULE_REGISTER(ModuleClass, ConfigType)                                                                    \
     namespace {                                                                                                        \
-    static const bool _tm_module_registered_ = [] {                                                                    \
+    static const bool _tm_module_registered_##ModuleClass = [] {                                                       \
         ::turbomind::core::ModuleRegistry::instance().register_type<ModuleClass, ConfigType>(#ModuleClass);            \
         return true;                                                                                                   \
     }();                                                                                                               \
