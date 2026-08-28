@@ -570,7 +570,7 @@ void invokeDFlashTopK16(Buffer_<int>& ids,
     TM_CHECK_EQ(valid_vocab, logits.shape(1));
     static const bool cub_topk = [] {
         const char* value = std::getenv("TM_DFLASH_CUB_TOPK");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     if (cub_topk) {
         DFlashTopK16HalfCub<<<logits.shape(0), 256, 0, stream>>>(ids.data(),

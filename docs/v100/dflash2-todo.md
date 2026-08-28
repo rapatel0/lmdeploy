@@ -119,6 +119,11 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 ## Completed fixes
 
+- [x] **Parallelize the local top-16 merge with CUB.**
+  - Replaced the one-thread merge of 256 lane-local top-16 lists with `cub::BlockReduce`.
+  - Five-trial acceptance-normalized cycle time improved from 43.87 to 43.45 ms (about 1%); audited identity passed.
+  - CUB is the default, with `TM_DFLASH_CUB_TOPK=0` as the legacy control.
+
 - [x] **Use the exact audited SGLang prompt IDs.**
   - Prompt length 1,000; SHA-256 `9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01`.
 
