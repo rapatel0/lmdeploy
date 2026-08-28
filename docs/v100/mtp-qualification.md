@@ -47,6 +47,16 @@ Artifacts:
 - eight-run forced-rejection envelope:
   `/results/20260828_075437-mtp-forced-identity-5dba2af578a7`.
 
+Selective canonical replay was also tested. Replaying every zero-accept step
+restored the ordinary path but reduced K=4 to 42.16 tok/s (0.766x K=0).
+Replaying only bonuses with verifier top-two margins of 0.03125, 0.0625, or
+0.125 retained 1.046x, 1.025x, and 1.027x throughput respectively, but the
+mixed-row forced-rejection suite diverged on all five rows after the first
+replay event. The existing no-commit replay transition is therefore not safe
+for mixed batches and none of these fallback flags is enabled by default.
+Artifacts: `/results/20260828_082444-mtp-zero-replay-dd5372b7ab95` and
+`/results/20260828_083306-mtp-margin-identity-fee0d8dce7a1`.
+
 TurboMind now retains accepted draft prefixes for the recurrent Gated DeltaNet
 (GDN) model. This removes the previous requirement for full K-token acceptance
 and more than doubles K=4 throughput. It still does not beat target-only decode:

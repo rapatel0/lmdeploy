@@ -21,7 +21,6 @@ export TM_MTP_LOCAL_TOP1=1
 export TM_MTP_FROZEN_KV=0
 export TM_MTP_ACCEPTED_REPAIR=1
 export TM_MTP_SKIP_ATTN=0
-export TM_MTP_AMBIGUOUS_REPLAY=1
 export TM_MTP_FORCE_REJECT=1
 if ! python3 /src/tools/v100/verify_spec_identity.py \
     --model-dir "${MODEL_DIR}" --tp "${TP}" --num-draft-tokens 4 \

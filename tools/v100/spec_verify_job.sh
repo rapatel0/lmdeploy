@@ -53,7 +53,6 @@ export TM_MTP_LOCAL_TOP1=1
 export TM_MTP_FROZEN_KV=0
 export TM_MTP_ACCEPTED_REPAIR=1
 export TM_MTP_SKIP_ATTN=0
-export TM_MTP_AMBIGUOUS_REPLAY=1
 
 echo
 echo "=== build ==="
