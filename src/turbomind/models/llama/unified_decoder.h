@@ -66,6 +66,11 @@ public:
         return linear_attn_layer_ && linear_attn_layer_->has_snapshot();
     }
 
+    bool is_warm_up() const noexcept
+    {
+        return is_warm_up_ != 0;
+    }
+
     /// The draft's attention slot for a given batch phase, or -1 when
     /// speculation is off.
     ///

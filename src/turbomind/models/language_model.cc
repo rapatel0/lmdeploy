@@ -333,7 +333,7 @@ struct LanguageModel::Impl {
     bool CanDraft(int phase) const
     {
         const auto& d = data_.at(phase);
-        if (d.rows.empty() || !mtp_predictor_) {
+        if (d.rows.empty() || (!mtp_predictor_ && !dflash_predictor_)) {
             return false;
         }
         for (size_t i = 0; i < d.rows.size(); ++i) {
@@ -385,6 +385,7 @@ struct LanguageModel::Impl {
 
     /// Propose K drafts from the current tip and store them on each sequence.
     void DraftTokens(int phase, TensorMap& env);
+    void DraftDFlashTokens(int phase, TensorMap& env);
     /// Compare the verification logits against the drafts; produce the accepted
     /// count and bonus token per row.
     void RejectDrafts(int phase, TensorMap& env);
@@ -469,9 +470,8 @@ LanguageModel::Impl::Impl(
                                                                   return PostEmbedding(hidden, symm_buf_);
                                                               });
         if (engine.num_draft_tokens > 0) {
-            // Never fall through to embedded MTP: Qwen3.8 carries both weight
-            // families. Proposal execution replaces this guard.
-            TM_CHECK(false) << "DFlash2 context projection is ready, but draft execution is not implemented yet";
+            TM_CHECK_EQ(engine.num_draft_tokens, weights_.dflash->block_size - 1);
+            gdn_rollback_ = unified_decoder_->has_recurrent_state();
         }
     }
     else if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "mtp" && weights_.mtp
@@ -1055,6 +1055,12 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
     unified_decoder_->Forward(phase, env, weights_.layers_list());
 
+    if (dflash_predictor_ && env.try_("dflash_target_hidden") && !unified_decoder_->is_warm_up()) {
+        Tensor context = dflash_predictor_->ProjectContext(env.at("dflash_target_hidden"));
+        dflash_predictor_->MaterializeContextKV(phase, context);
+        env.produce("dflash_context_hidden", std::move(context));
+    }
+
     if (force_dflash_capture) {
         static bool capture_logged = false;
         if (!capture_logged) {
@@ -1090,7 +1096,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             layer_ids,
                             nonzero);
 
-                Tensor context = dflash_predictor_->ProjectContext(*capture);
+                Tensor context = env.at("dflash_context_hidden");
                 Tensor context_host{{1, context.shape(1)}, context.dtype(), kCPU};
                 Copy(context.slice(0, 1), context_host);
                 core::Context::stream().Sync();
@@ -1104,8 +1110,6 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             context.shape(0),
                             context.shape(1),
                             context_nonzero);
-
-                dflash_predictor_->MaterializeContextKV(phase, context);
 
                 auto* first_conv = TM_CHECK_NOTNULL(weights_.dflash->attention_conv(0));
                 Tensor convolved = dflash_predictor_->ApplyGroupedConv(context, *first_conv, 0);
@@ -1150,7 +1154,6 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                     candidate_text += i + 1 < host_candidates.size() ? "," : "";
                 }
                 TM_LOG_INFO("[DFlash2] greedy candidates=[{}]", candidate_text);
-                env.produce("dflash_context_hidden", std::move(context));
                 capture_logged = true;
             }
         }
@@ -1307,8 +1310,61 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     }
 }
 
+void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
+{
+    auto&     d   = data_.at(phase);
+    const int bsz = (int)d.rows.size();
+    const int K   = engine_param_.num_draft_tokens;
+    if (bsz == 0 || K <= 0) {
+        return;
+    }
+    TM_CHECK_EQ(K, weights_.dflash->block_size - 1);
+
+    // Rollback publishes the committed target frontier. Rebuild the shared
+    // key offsets before the next parallel draft block.
+    Buffer_<int> k_offsets = env.at("k_offsets").buffer();
+    PrefixSum(sequence_length_.front().data<int>(), bsz, k_offsets.data(), core::Context::stream().handle());
+
+    Buffer_<int> tips{bsz, kCPU};
+    Copy(sequence_length_.front().buffer().slice(0, bsz), tips);
+    core::Context::stream().Sync();
+    for (int i = 0; i < bsz; ++i) {
+        if (d.rows[i]->max_seq_len - tips[i] - 1 < K) {
+            for (auto* row : d.rows) {
+                row->pending_num_drafts = 0;
+            }
+            return;
+        }
+    }
+
+    auto anchors = autoreg_ids_.slice(0, bsz);
+    Tensor block_hidden = dflash_predictor_->DraftBlock(anchors, phase, env);
+    Buffer_<int> candidates = dflash_predictor_->SelectCandidates(block_hidden, anchors);
+    Buffer_<int> host{candidates.size(), kCPU};
+    core::Copy(candidates, candidates.size(), host);
+    core::Context::stream().Sync();
+
+    for (int i = 0; i < bsz; ++i) {
+        auto& row = *d.rows[i];
+        if (i < (int)d.skip_draft.size() && d.skip_draft[i]) {
+            row.pending_num_drafts = 0;
+            continue;
+        }
+        row.pending_num_drafts = K;
+        for (int k = 0; k < K; ++k) {
+            const int id = host[i * K + k];
+            TM_CHECK(0 <= id && id < weights_.vocab_size)
+                << "[DFlash2] candidate " << k << " for row " << i << " produced invalid token " << id;
+            row.pending_draft_tokens[k] = id;
+        }
+    }
+}
+
 void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
 {
+    if (dflash_predictor_) {
+        return DraftDFlashTokens(phase, env);
+    }
     TM_CHECK_NOTNULL(mtp_predictor_.get());
 
     auto&     d   = data_.at(phase);
@@ -1488,7 +1544,7 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
 
 void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
 {
-    TM_CHECK_NOTNULL(mtp_predictor_.get());
+    TM_CHECK(mtp_predictor_ || dflash_predictor_);
 
     auto&      d   = data_.at(phase);
     const int  bsz = (int)d.rows.size();
