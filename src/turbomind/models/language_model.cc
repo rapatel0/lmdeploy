@@ -1092,6 +1092,8 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             context.shape(1),
                             context_nonzero);
 
+                dflash_predictor_->MaterializeContextKV(phase, context);
+
                 auto* first_conv = TM_CHECK_NOTNULL(weights_.dflash->attention_conv(0));
                 Tensor convolved = dflash_predictor_->ApplyGroupedConv(context, *first_conv, 0);
                 Tensor convolved_host{{1, convolved.shape(1)}, convolved.dtype(), kCPU};

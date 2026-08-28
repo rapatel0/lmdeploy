@@ -1,6 +1,7 @@
 
 
 #include <algorithm>
+#include <cstdlib>
 #include <numeric>
 #include <optional>
 
@@ -109,8 +110,12 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
         }
     }
 
-    if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "dflash2" && model_weight.dflash
-        && model_weight.dflash->layers) {
+    static const bool force_dflash_capture = [] {
+        const char* value = std::getenv("TM_DFLASH_CAPTURE");
+        return value && value[0] == '1';
+    }();
+    if ((engine.num_draft_tokens > 0 || force_dflash_capture) && engine.speculative_algorithm == "dflash2"
+        && model_weight.dflash && model_weight.dflash->layers) {
         for (int i = 0; i < (int)model_weight.dflash->layers->size(); ++i) {
             auto* layer = model_weight.dflash->layer(i);
             TM_CHECK(layer && layer->attention) << "DFlash2 layer " << i << " has no attention weights";

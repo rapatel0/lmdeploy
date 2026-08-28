@@ -35,6 +35,10 @@ public:
     /// Apply the input or output side of one local convolution adapter.
     Tensor ApplyGroupedConv(const Tensor& input, const DFlashConvWeight& weights, int side) const;
 
+    /// Temporary correctness path: run full attention for each draft layer on
+    /// projected target context, preserving its K/V in dedicated cache slots.
+    void MaterializeContextKV(int target_phase, const Tensor& context) const;
+
 private:
     const DFlashWeight& weights_;
     int                 hidden_units_{};

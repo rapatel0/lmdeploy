@@ -8,6 +8,7 @@
 
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/kernels/norm/rms_norm.h"
+#include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/dflash_weight.h"
 #include "src/turbomind/models/linear_weight.h"
 #include "src/turbomind/models/llama/LlamaLinear.h"
@@ -70,6 +71,25 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden) const
                   core::Context::stream().handle());
     TM_CUDA_CHECK(cudaGetLastError());
     return normalized;
+}
+
+void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& context) const
+{
+    TM_CHECK_EQ(attention_indices_.size(), 5);
+    TM_CHECK_EQ(context.ndim(), 2);
+    TM_CHECK_EQ(context.shape(1), hidden_units_);
+
+    for (int i = 0; i < (int)attention_indices_.size(); ++i) {
+        auto* layer = TM_CHECK_NOTNULL(weights_.layer(i));
+        TM_CHECK(layer->attention);
+        Tensor discarded{{context.shape(0), hidden_units_}, dtype_, kDEVICE};
+        attention_.Forward({target_phase, context, discarded, layer->attention.get(), attention_indices_[i]});
+        TM_CUDA_CHECK(cudaGetLastError());
+    }
+    TM_LOG_INFO("[DFlash2] materialized context KV: tokens={} layers={} phase={}",
+                context.shape(0),
+                attention_indices_.size(),
+                target_phase);
 }
 
 Tensor DFlashPredictor::ApplyGroupedConv(const Tensor& input, const DFlashConvWeight& weights, int side) const
