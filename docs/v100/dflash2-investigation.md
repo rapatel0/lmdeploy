@@ -208,7 +208,16 @@ The loader now validates `layer_types`, configures homogeneous sliding layers as
 - draft: head dimension 128, full standard RoPE;
 - both use theta 10,000,000, but dimension and layout are not interchangeable.
 
-Consequently all five DFlash layers used target RoPE rather than the draft checkpoint's own `AttentionWeight::rope`. The implementation now builds one `RopeKernelParam` per attention weight and selects it by attention layer ID. A legacy-global versus per-layer A/B and exact audited identity gate are required.
+Consequently all five DFlash layers used target RoPE rather than the draft checkpoint's own `AttentionWeight::rope`. The implementation now builds one `RopeKernelParam` per attention weight and selects it by the actual weight object.
+
+The audited A/B confirmed a large uplift:
+
+| RoPE policy | Commit length | Decode tok/s |
+| --- | ---: | ---: |
+| target-global legacy | 2.033 | 46.98 |
+| per-layer checkpoint RoPE | 2.664 | 61.39 |
+
+This is a 31% acceptance gain and 30.7% throughput gain over the matched legacy arm. The first 256 generated token IDs matched K=0 exactly, but the speculative response incorrectly published one extra trailing token at the generation limit (257 versus 256). The remaining blocker is therefore tail-boundary publication, not a token-content divergence. A `TM_SPEC_TRACE` tail run is in progress.
 
 ## Acceptance gap
 

@@ -72,8 +72,9 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - [ ] **Fix draft RoPE ownership and validate post-RoPE K parity.**
   - Classification: confirmed configuration defect.
   - All DFlash layers inherited one target-global RoPE parameter: target head dimension 256 with partial multimodal RoPE, versus draft head dimension 128 with full standard RoPE.
-  - Per-layer RopeKernelParam selection is implemented behind an A/B control; benchmark and exact audited identity are next.
-  - Done when: each draft layer uses its checkpoint RoPE contract, identity passes, and acceptance impact is recorded.
+  - Per-layer RoPE raised commit length from 2.033 to 2.664 and decode from 46.98 to 61.39 tok/s.
+  - The first 256 token IDs match K=0, but the speculative response publishes one extra trailing token at the generation limit. A tail trace is running.
+  - Done when: the tail over-publication is fixed and exact audited identity passes.
 
 - [ ] **Run isolated grouped-convolution arithmetic parity.**
   - Classification: lower-priority rounding hypothesis; indexing already appears aligned.
