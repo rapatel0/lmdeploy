@@ -44,6 +44,8 @@ static inline ncclDataType_t to_nccl_dtype(DataType type)
             return ncclBfloat16;
         case kUint8:
             return ncclUint8;
+        case kInt32:
+            return ncclInt32;
         case kInt64:
             return ncclInt64;
         default:
