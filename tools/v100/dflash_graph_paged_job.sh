@@ -58,7 +58,10 @@ capture_count="$(grep -c '\[DFlash2\] selector graph captured phase=' "${RESULTS
 echo "=== matched Nsight profiles ==="
 NSYS="$(command -v nsys 2>/dev/null || true)"
 if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then NSYS=/opt/nsys/nsys; fi
-[ -n "${NSYS}" ] || { echo "FAIL: nsys unavailable" >&2; exit 2; }
+[ -n "${NSYS}" ] || {
+    echo "FAIL: nsys unavailable" >&2
+    exit 2
+}
 export FT_NVTX=ON
 for arm in "baseline 0 0" "selector_graph 1 0" "paged_q8 0 1" "combined 1 1"; do
     read -r name graph paged <<<"${arm}"
@@ -103,8 +106,8 @@ for arm in "selector_graph 1 0" "paged_q8 0 1" "combined 1 1"; do
         --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
         --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
         --corpus /sglang-corpus --tp "${TP:-4}" --input-tokens 1000 --output-tokens 256 \
-        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-        | tee "${RESULTS}/identity_${name}.log"
+        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 |
+        tee "${RESULTS}/identity_${name}.log"
     grep -q '^DFLASH_AUDITED_IDENTITY_PASS$' "${RESULTS}/identity_${name}.log"
 done
 

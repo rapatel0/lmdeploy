@@ -73,6 +73,9 @@ public:
 
     Buffer_<int> SelectCandidates(const Tensor& block_hidden, const Buffer_<int>& anchors, int phase) const;
 
+    /// Execute the production draft block and selector, with optional full graph replay.
+    Buffer_<int> DraftCandidates(const Buffer_<int>& anchors, int phase, TensorMap& env) const;
+
     /// Associate the next context projection with an eligible request.
     void ArmParityContext(uint64_t uid) const;
 
@@ -92,6 +95,7 @@ public:
 private:
     struct ParityTrace;
     struct SelectorGraph;
+    struct DraftGraph;
 
     struct LayerWorkspace {
         Tensor attention_conv_delta;
@@ -143,6 +147,7 @@ private:
     int                            max_workspace_rows_{};
     mutable std::vector<Workspace> workspaces_;
     mutable std::vector<std::unique_ptr<SelectorGraph>> selector_graphs_;
+    mutable std::vector<std::unique_ptr<DraftGraph>> draft_graphs_;
     mutable std::unique_ptr<ParityTrace> parity_trace_;
 };
 

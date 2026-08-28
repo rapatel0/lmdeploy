@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compare ordered first-block boundaries from LMDeploy and SGLang traces."""
+
 from __future__ import annotations
 
 import argparse

@@ -78,7 +78,10 @@ python3 /job/sglang_dflash_parity_client.py \
     --output "${RESULTS}/response.json"
 
 kill -- "-${server_pid}" 2>/dev/null || true
-for _ in $(seq 1 60); do kill -0 "${server_pid}" 2>/dev/null || break; sleep 1; done
+for _ in $(seq 1 60); do
+    kill -0 "${server_pid}" 2>/dev/null || break
+    sleep 1
+done
 kill -KILL -- "-${server_pid}" 2>/dev/null || true
 wait "${server_pid}" 2>/dev/null || true
 server_pid=
@@ -107,7 +110,10 @@ print(f"SGLANG_DFLASH_PARITY_TRACE_PASS ranks={len(dirs)}")
 PY
 
 LM_PARITY_REF="${LM_DFLASH_PARITY_REF:-/results/20260828_231817-dflash-one-pass-reject-014fcebdbe49/parity/lmdeploy}"
-[ -d "${LM_PARITY_REF}" ] || { echo "FAIL: LMDeploy parity reference not found: ${LM_PARITY_REF}" >&2; exit 4; }
+[ -d "${LM_PARITY_REF}" ] || {
+    echo "FAIL: LMDeploy parity reference not found: ${LM_PARITY_REF}" >&2
+    exit 4
+}
 python3 /job/compare_dflash_parity.py \
     --lmdeploy "${LM_PARITY_REF}" \
     --sglang "${RESULTS}/trace/sglang" \

@@ -3,6 +3,7 @@
 This file monkey-patches the installed reference runtime in memory; it never
 changes or ships SGLang source. Set SGLANG_DFLASH_PARITY_DIR to enable it.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,6 +27,7 @@ if _TRACE_ROOT:
     def _tp_rank() -> int:
         try:
             from sglang.srt.distributed import get_tensor_model_parallel_rank
+
             return int(get_tensor_model_parallel_rank())
         except Exception:
             return int(os.environ.get("LOCAL_RANK", os.environ.get("RANK", "0")))
@@ -90,23 +92,27 @@ if _TRACE_ROOT:
     def _traced_init(self, *args, **kwargs):
         _orig_init(self, *args, **kwargs)
         self.fc.register_forward_hook(lambda _m, _a, out: _dump("context.fc", out, last_row=True))
-        self.hidden_norm.register_forward_hook(
-            lambda _m, _a, out: _dump("context.norm", out, last_row=True)
-        )
+        self.hidden_norm.register_forward_hook(lambda _m, _a, out: _dump("context.norm", out, last_row=True))
         self.norm.register_forward_hook(lambda _m, _a, out: _dump("block.final_norm", out))
         for index, layer in enumerate(self.layers):
             layer._dflash_trace_name = f"layer{index}"
             layer.register_forward_pre_hook(
                 lambda module, args, i=index: (
-                    _dump(f"layer{i}.input.hidden_pre_norm", args[1]),
-                    _dump(f"layer{i}.input.residual", args[3]) if len(args) > 3 else None,
-                ) and None
+                    (
+                        _dump(f"layer{i}.input.hidden_pre_norm", args[1]),
+                        _dump(f"layer{i}.input.residual", args[3]) if len(args) > 3 else None,
+                    )
+                    and None
+                )
             )
             layer.register_forward_hook(
                 lambda _m, _a, out, i=index: (
-                    _dump(f"layer{i}.output.hidden", out[0]),
-                    _dump(f"layer{i}.output.residual", out[1]),
-                ) and None
+                    (
+                        _dump(f"layer{i}.output.hidden", out[0]),
+                        _dump(f"layer{i}.output.residual", out[1]),
+                    )
+                    and None
+                )
             )
             layer.input_layernorm.register_forward_hook(
                 lambda _m, _a, out, i=index: _dump(f"layer{i}.attention.norm_output", out)
@@ -117,9 +123,7 @@ if _TRACE_ROOT:
             layer.post_attention_layernorm.register_forward_hook(
                 lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.norm_output", out)
             )
-            layer.mlp.register_forward_hook(
-                lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.w2_reduced", out)
-            )
+            layer.mlp.register_forward_hook(lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.w2_reduced", out))
             if layer.attention_conv is not None:
                 layer.attention_conv._dflash_trace_name = f"layer{index}.attention"
             if layer.mlp_conv is not None:

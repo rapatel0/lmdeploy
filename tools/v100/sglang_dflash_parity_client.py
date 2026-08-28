@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Submit the audited 1K token-id prompt to a local SGLang trace server."""
+
 from __future__ import annotations
 
 import argparse

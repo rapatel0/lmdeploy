@@ -855,6 +855,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         const char* value = std::getenv("TM_DFLASH_PAGED_Q8");
         return value && value[0] == '1';
     }();
+    static const bool enable_dflash_draft_graph = [] {
+        const char* value = std::getenv("TM_DFLASH_DRAFT_GRAPH");
+        return value && value[0] == '1';
+    }();
     const int dflash_block = engine_param_.speculative_dflash_block_size > 0 ?
                                  engine_param_.speculative_dflash_block_size :
                                  engine_param_.num_draft_tokens + 1;
@@ -862,6 +866,11 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                      engine_param_.speculative_algorithm == "dflash2" && arch_ == 70 && !is_mla &&
                                      weights.causal && quant_policy_ == 0 &&
                                      d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == dflash_block;
+    const bool use_fixed_dflash_graph_geometry =
+        use_dflash_paged_q8 && enable_dflash_draft_graph && p.use_dflash_workspace;
+    const int dflash_graph_k_bound = weights.window_size > 0 ?
+                                         std::min(engine_param_.session_len, weights.window_size) :
+                                         engine_param_.session_len;
 
     Tensor tmp_kv;
     if (!use_dflash_paged_q8) {
@@ -909,6 +918,18 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         params.token_num = stat.q_sum;
         params.max_q_len = stat.q_max;
         params.max_k_len = stat.k_max;
+        if (use_fixed_dflash_graph_geometry) {
+            TM_CHECK_GE(dflash_graph_k_bound, dflash_block);
+            // CUDA graph kernel parameters retain their capture-time scalar
+            // values. Use a fixed sliding-window/session bound for host launch
+            // geometry, while the paged kernel continues to read each row's
+            // actual context length from device cu_k_len. ProcessKV already
+            // launches from the fixed max_q_len=8. The current Q=8 attention
+            // path uses one split. If split-K is enabled later, inactive
+            // overprovisioned splits exit and the last active split publishes
+            // the count consumed by invokeReduceV3.
+            params.max_k_len = dflash_graph_k_bound;
+        }
 
         TM_CHECK_LE(weights.cache_block_offset, INT_MAX);
 

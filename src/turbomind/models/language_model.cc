@@ -1518,8 +1518,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     if (bsz == 1 && K == 7) {
         dflash_predictor_->BeginParityBlock(anchors, d.uids[0], tips[0], d.input_lens[0]);
     }
-    Tensor block_hidden = dflash_predictor_->DraftBlock(anchors, phase, env);
-    Buffer_<int> candidates = dflash_predictor_->SelectCandidates(block_hidden, anchors, phase);
+    Buffer_<int> candidates = dflash_predictor_->DraftCandidates(anchors, phase, env);
     Buffer_<int> host = dflash_predictor_->ParityActive() ?
                             d.spec_draft_candidates_host.slice(0, candidates.size()) :
                             Buffer_<int>{candidates.size(), kCPU};
