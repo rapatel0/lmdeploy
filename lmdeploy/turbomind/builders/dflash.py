@@ -4,7 +4,7 @@ import _turbomind as _tm
 import torch
 
 from ..linear import Linear
-from ._base import Builder
+from ._base import Builder, _CPP_TO_TORCH
 
 DFlashConvConfig = _tm.DFlashConvConfig
 DFlashSelectorConfig = _tm.DFlashSelectorConfig
@@ -18,7 +18,7 @@ class DFlashConvBuilder(Builder):
         self._add_linear('kernel_projection', projection)
 
     def add_base_kernel(self, tensor: torch.Tensor):
-        self._add_tensor('base_kernel', tensor)
+        self._add_tensor('base_kernel', tensor.to(_CPP_TO_TORCH[self._ctx.data_type]))
 
 
 class DFlashSelectorBuilder(Builder):
@@ -28,10 +28,10 @@ class DFlashSelectorBuilder(Builder):
         self._add_linear('hidden_projection', projection)
 
     def add_predecessor_codebook(self, tensor: torch.Tensor):
-        self._add_tensor('predecessor_codebook', tensor)
+        self._add_tensor('predecessor_codebook', tensor.to(_CPP_TO_TORCH[self._ctx.data_type]))
 
     def add_successor_codebook(self, tensor: torch.Tensor):
-        self._add_tensor('successor_codebook', tensor)
+        self._add_tensor('successor_codebook', tensor.to(_CPP_TO_TORCH[self._ctx.data_type]))
 
 
 class DFlashWeightBuilder(Builder):
