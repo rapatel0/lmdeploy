@@ -1620,10 +1620,17 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
         Copy(rejected, drafts);
     }
 
-    static const float ambiguity_margin = [] {
+    static const float configured_ambiguity_margin = [] {
         const char* s = std::getenv("TM_MTP_AMBIGUITY_MARGIN");
-        return s ? std::max(0.f, (float)std::atof(s)) : 0.f;
+        return s ? std::max(0.f, (float)std::atof(s)) : -1.f;
     }();
+    // Same-process parity measured up to 0.0508 absolute FP16 logit drift
+    // between block verification and canonical recurrent decode. Replay a
+    // DFlash block when any committed decision lies inside a slightly wider
+    // margin; an explicit environment value still overrides this default.
+    const float ambiguity_margin = configured_ambiguity_margin >= 0.f ?
+                                       configured_ambiguity_margin :
+                                       (dflash_predictor_ ? 0.0625f : 0.f);
     auto result = GreedyReject(verify_logits_.raw_data(),
                                drafts.data(),
                                bsz,
@@ -1873,17 +1880,17 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             const char* s = std::getenv("TM_MTP_AMBIGUOUS_REPLAY");
             return s && s[0] == '1';
         }();
-        const bool replay_bonus = n == 0 && (zero_accept_replay || (ambiguous_replay && ambiguous[i]));
+        const bool replay_ambiguous = dflash_predictor_ || ambiguous_replay;
+        const bool replay_bonus = (n == 0 && zero_accept_replay) || (replay_ambiguous && ambiguous[i]);
         if (gdn_rollback_) {
             if (has_intermediate_gdn && replay_bonus) {
                 // A K+1 verifier forward is numerically close to, but not
                 // bit-identical with, the ordinary one-token target path. On
-                // a measured FP16 near-tie its position-zero bonus can choose
-                // the other argmax even when every draft is rejected. Restore
-                // slot zero and let the next ordinary forward recompute the
-                // token with the canonical target-only shape. This costs one
-                // replay only on zero-accept steps and is kept behind a flag
-                // until the matched throughput cost is known.
+                // a measured FP16 near-tie any accepted-prefix or bonus row can
+                // choose the other argmax. Restore slot zero and let the next
+                // ordinary forward recompute from the canonical target-only
+                // shape. DFlash enables this exactness guard by default; the
+                // measured margin keeps replay limited to sensitive decisions.
                 clamped             = true;
                 gdn_restore_[i]     = 1;
                 restore_gdn         = true;

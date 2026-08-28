@@ -42,9 +42,10 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
     const int lane_id   = threadIdx.x % 32;
     const int num_warps = blockDim.x / 32;
 
-    int accepted  = K;  // assume all accepted, will be overwritten on mismatch
-    int bonus     = 0;
-    int ambiguous = 0;
+    int accepted       = K;  // assume all accepted, will be overwritten on mismatch
+    int bonus          = 0;
+    int ambiguous      = 0;
+    int path_ambiguous = 0;
 
     for (int pos = 0; pos <= K; ++pos) {
         const T* pos_logits = batch_logits + (size_t)pos * vocab_size_padded;
@@ -143,6 +144,11 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
             }
         }
         const int target_ambiguous = __syncthreads_or(tied);
+        // Exact replay requires every committed decision in the prefix to be
+        // numerically stable, not only the final bonus row. A draft can match
+        // a chunked verifier's near-tied argmax while the canonical one-token
+        // path chooses the other token.
+        path_ambiguous |= target_ambiguous;
 
         // The ordinary top-k sampler uses the same value-descending,
         // id-ascending total order, so exact FP16 ties resolve identically.
@@ -156,7 +162,7 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
                 // First mismatch found
                 accepted  = pos;
                 bonus     = target_token;
-                ambiguous = target_ambiguous;
+                ambiguous = path_ambiguous;
             }
         }
         else {
@@ -164,7 +170,7 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
             if (accepted == K) {
                 // All K drafts matched; bonus = argmax(logits[K])
                 bonus     = target_token;
-                ambiguous = target_ambiguous;
+                ambiguous = path_ambiguous;
             }
         }
 
