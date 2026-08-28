@@ -1699,13 +1699,12 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
         const char* s = std::getenv("TM_MTP_AMBIGUITY_MARGIN");
         return s && s[0] ? std::max(0.f, (float)std::atof(s)) : -1.f;
     }();
-    // Same-process parity measured up to 0.0508 absolute FP16 logit drift
-    // between block verification and canonical recurrent decode. Replay a
-    // DFlash block when any committed decision lies inside a slightly wider
-    // margin; an explicit environment value still overrides this default.
-    const float ambiguity_margin = configured_ambiguity_margin >= 0.f ?
-                                       configured_ambiguity_margin :
-                                       (dflash_predictor_ ? 0.0625f : 0.f);
+    // A 0.0625 safety margin replayed whole DFlash prefixes and reduced the
+    // audited commit length by 0.22--0.26 tokens/step. Zero margin retains
+    // exact-tie replay and passed exact K=0/K=7 identity on the audited
+    // 1,000-token prompt. An explicit environment value remains available for
+    // conservative diagnostics.
+    const float ambiguity_margin = configured_ambiguity_margin >= 0.f ? configured_ambiguity_margin : 0.f;
 
     // Ordinary decoding masks every EOS ID until min_new_tokens. Verification
     // must use the same candidate set before it compares target and draft

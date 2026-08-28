@@ -144,7 +144,7 @@ The 2026-08-28 four-arm audited matrix showed that removing this round is semant
 - with zero ambiguity margin, commit length changed from 2.050 to 2.087 and decode from 47.46 to 47.39 tok/s;
 - raw commit length remained approximately 2.1 in every arm.
 
-All four arms passed the existing 256-token short-prompt K=0/K=7 identity gate. Exact audited-prompt identity remains a separate required gate.
+All four arms passed the existing 256-token short-prompt K=0/K=7 identity gate. The selected no-round/zero-margin configuration subsequently passed exact K=0/K=7 identity for 256 generated tokens on the audited 1,000-token prompt (`DFLASH_AUDITED_IDENTITY_PASS`, artifacts `/results/20260828_191101-dflash-audited-identity-f5868503af67`).
 
 ## Confirmed TP4 draft-network mismatch
 
@@ -183,7 +183,7 @@ Commit `720c8e70` added raw-versus-final counters. The audited matrix measured:
 
 Thus the 0.0625 policy discards roughly 0.22-0.26 tokens per verification and costs about 4-5 tok/s. It explains a meaningful part of the low published acceptance, but raw fidelity is still only about 2.1 versus SGLang's 3.765. The remaining gap is predominantly draft-network fidelity, not accounting.
 
-A zero margin can still flag exact ties, as seen in the round-on arm. Permanently changing the default requires exact audited-prompt identity, not only the existing short-prompt gate.
+A zero margin can still flag exact ties, as seen in the round-on arm. The no-round/zero-margin configuration passed exact audited-prompt identity, so the default margin was changed to zero while preserving the environment override for conservative diagnostics.
 
 ## Acceptance gap
 
@@ -198,11 +198,10 @@ At LMDeploy's current cycle cost, immediately matching SGLang acceptance would i
 
 The next acceptance investigation is ordered as follows:
 
-1. run exact audited-prompt K=0/K=7 identity for no context round and zero ambiguity margin;
-2. move both branch TP reductions before output convolution and W2 row-scale restoration;
-3. inspect the checkpoint architecture, unmatched keys, per-layer attention contracts, and RoPE ownership;
-4. compare intermediate projected context, draft hidden states, candidates, and selected path against SGLang if the gap remains;
-5. only then pursue CUDA graph capture of fixed-shape target verification and draft execution.
+1. move both branch TP reductions before output convolution and W2 row-scale restoration;
+2. inspect the checkpoint architecture, unmatched keys, per-layer attention contracts, and RoPE ownership;
+3. compare intermediate projected context, draft hidden states, candidates, and selected path against SGLang if the gap remains;
+4. only then pursue CUDA graph capture of fixed-shape target verification and draft execution.
 
 ## Open audits
 

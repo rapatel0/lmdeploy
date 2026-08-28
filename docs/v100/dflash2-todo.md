@@ -18,11 +18,9 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 ## P0: acceptance and draft fidelity
 
-- [ ] **Remove the unmatched BF16 round after context `hidden_norm`.**
-  - Classification: confirmed semantic mismatch.
-  - LMDeploy explicitly BF16-rounds `DFlashPredictor::ProjectContext`; SGLang uses `LagunaRMSNorm(..., scaled_residual_stream=False)` and ordinary FP16 RMSNorm at this boundary.
-  - Experiment: audited A/B with context round on/off and no other change.
-  - Done when: the matching no-round path passes identity and its acceptance/throughput effect is recorded.
+- [x] **Remove the unmatched BF16 round after context `hidden_norm`.**
+  - The no-round path matches SGLang, passed exact audited-prompt identity, and is now the default.
+  - Its measured acceptance effect was small: roughly +0.04 committed tokens/step.
 
 - [x] **Expose raw acceptance separately from post-replay commits.**
   - Commit `720c8e70` reports raw accepted drafts, raw commit length, ambiguous verifications, and accepted tokens discarded by ambiguity replay.
@@ -30,7 +28,7 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - [x] **Run the four-arm context-round/ambiguity matrix.**
   - Context round had little effect: raw commit remained approximately 2.1.
   - Removing the 0.0625 ambiguity margin raised final commit from 1.83-1.87 to 2.05-2.09 and throughput from 42-43 to about 47.4 tok/s.
-  - Every arm passed the 256-token short-prompt identity gate; exact audited-prompt identity remains open.
+  - Every arm passed the 256-token short-prompt identity gate; the selected no-round/zero-margin arm also passed exact audited-prompt identity.
 
 - [ ] **Inspect the draft checkpoint architecture and unmatched weight keys.**
   - Classification: high-impact conditional mismatch.
@@ -155,4 +153,4 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - Exact short-workload identity: pass
 - Cumulative audited runtime gain from completed selector/context work: about 17%
 
-The immediate execution order is: exact audited-prompt identity for the no-round/zero-margin arm, both branch collective boundaries, checkpoint architecture/keys, then per-layer attention and RoPE configuration.
+The immediate execution order is: both branch collective boundaries, checkpoint architecture/keys, then per-layer attention and RoPE configuration.
