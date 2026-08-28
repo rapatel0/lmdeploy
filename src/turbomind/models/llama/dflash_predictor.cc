@@ -89,9 +89,22 @@ void ReportDFlashTensor(const std::string& name, const Tensor& value)
 }  // namespace
 
 struct DFlashPredictor::ParityTrace {
+    struct HostDeleter {
+        void operator()(void* ptr) const
+        {
+            if (ptr) {
+                cudaFreeHost(ptr);
+            }
+        }
+    };
+
     struct Entry {
-        std::string name;
-        Tensor      host;
+        std::string                        name;
+        std::unique_ptr<void, HostDeleter> host;
+        DataType                           dtype{};
+        std::vector<ssize_t>               shape;
+        std::vector<ssize_t>               strides;
+        size_t                             bytes{};
     };
 
     explicit ParityTrace(const Context& ctx, const DFlashWeight& weights):
@@ -134,9 +147,25 @@ struct DFlashPredictor::ParityTrace {
             return;
         }
         TM_CHECK(value.is_contiguous()) << "DFlash parity capture requires contiguous tensors: " << name;
-        Tensor host{value.layout(), value.dtype(), kCPUpinned};
-        Copy(value, host);
-        entries.push_back({name, std::move(host)});
+        Entry entry;
+        entry.name = name;
+        entry.dtype = value.dtype();
+        entry.bytes = value.byte_size();
+        entry.shape.reserve(value.ndim());
+        entry.strides.reserve(value.ndim());
+        for (int i = 0; i < value.ndim(); ++i) {
+            entry.shape.push_back(value.shape(i));
+            entry.strides.push_back(value.stride(i));
+        }
+        void* host = nullptr;
+        TM_CUDA_CHECK(cudaMallocHost(&host, entry.bytes));
+        entry.host.reset(host);
+        TM_CUDA_CHECK(cudaMemcpyAsync(entry.host.get(),
+                                      value.raw_data(),
+                                      entry.bytes,
+                                      cudaMemcpyDeviceToHost,
+                                      core::Context::stream().handle()));
+        entries.push_back(std::move(entry));
     }
 
     void Flush()
@@ -157,21 +186,21 @@ struct DFlashPredictor::ParityTrace {
             const std::string file_name = prefix.str() + ".bin";
             std::ofstream data{dir / file_name, std::ios::binary};
             TM_CHECK(data) << "cannot open DFlash parity tensor " << file_name;
-            data.write((const char*)entry.host.raw_data(), entry.host.byte_size());
+            data.write((const char*)entry.host.get(), entry.bytes);
             TM_CHECK(data) << "cannot write DFlash parity tensor " << file_name;
 
             manifest << "{\"runtime\":\"lmdeploy\",\"ordinal\":" << ordinal << ",\"stage\":"
                      << JsonString(Stage(entry.name)) << ",\"name\":" << JsonString(entry.name.c_str())
-                     << ",\"dtype\":" << JsonString(to_string(entry.host.dtype()))
+                     << ",\"dtype\":" << JsonString(to_string(entry.dtype))
                      << ",\"shape\":[";
-            for (int i = 0; i < entry.host.ndim(); ++i) {
-                manifest << (i ? "," : "") << entry.host.shape(i);
+            for (int i = 0; i < (int)entry.shape.size(); ++i) {
+                manifest << (i ? "," : "") << entry.shape[i];
             }
             manifest << "],\"strides\":[";
-            for (int i = 0; i < entry.host.ndim(); ++i) {
-                manifest << (i ? "," : "") << entry.host.stride(i);
+            for (int i = 0; i < (int)entry.strides.size(); ++i) {
+                manifest << (i ? "," : "") << entry.strides[i];
             }
-            manifest << "],\"byte_order\":\"little\",\"bytes\":" << entry.host.byte_size()
+            manifest << "],\"byte_order\":\"little\",\"bytes\":" << entry.bytes
                      << ",\"file\":" << JsonString(file_name.c_str()) << ",\"tp_rank\":" << tp_rank
                      << ",\"tp_size\":" << tp_size << ",\"device\":" << device << ",\"uid\":" << uid
                      << ",\"sequence_length\":" << seq_len << ",\"input_length\":" << input_len
