@@ -58,8 +58,10 @@ public:
 
     /// Look up token embeddings through the target's shared table.
     using EmbedFn = std::function<Tensor(const Buffer_<int>&)>;
-    /// Project hidden states to vocabulary logits through the target's lm_head.
-    using LogitsFn = std::function<Tensor(const Tensor&)>;
+    /// Select one greedy token through the target's shared lm_head. Keeping
+    /// selection in the target lets TP ranks exchange only their top candidate
+    /// instead of all-gathering the full vocabulary for every draft step.
+    using Top1Fn = std::function<void(Buffer_<int>&, const Tensor&)>;
 
     /// `embed` and `logits` are supplied by the target rather than owned here,
     /// because this checkpoint sets `mtp_use_dedicated_embeddings` to false:
@@ -73,7 +75,7 @@ public:
                  const EngineParam&     engine,
                  const Context&         ctx,
                  EmbedFn                embed,
-                 LogitsFn               logits);
+                 Top1Fn                 top1);
 
     ~MTPPredictor();
 
@@ -199,8 +201,8 @@ private:
     /// tensor on disk, consistent with there being no MoE here.
     std::unique_ptr<LlamaFfnLayer> ffn_layer_;
 
-    const EmbedFn  embed_fn_;
-    const LogitsFn logits_fn_;
+    const EmbedFn embed_fn_;
+    const Top1Fn  top1_fn_;
 };
 
 }  // namespace turbomind

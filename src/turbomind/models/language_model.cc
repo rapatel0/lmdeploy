@@ -23,6 +23,7 @@
 #include "src/turbomind/engine/cache_registry.h"
 #include "src/turbomind/engine/request.h"
 #include "src/turbomind/generation/generation.h"
+#include "src/turbomind/kernels/argmax.h"
 #include "src/turbomind/kernels/gpt_kernels.h"
 #include "src/turbomind/models/input_processor.h"
 #include "src/turbomind/models/llama/llama_kernels.h"
@@ -255,6 +256,7 @@ struct LanguageModel::Impl {
 
     Tensor LookupEmbedding(const Buffer_<int>& input_ids, Buffer symm_buf);
     Tensor PostEmbedding(const Tensor& features, Buffer symm_buf);
+    void   DraftTop1(Buffer_<int>& out, const Tensor& features);
 
     // Build the global per-token validity mask for this pass (see `token_mask_`).
     void BuildTokenMask(const bool* finished, const int* q_offsets, const BatchData& b);
@@ -461,7 +463,7 @@ LanguageModel::Impl::Impl(
             engine,
             ctx,
             [this](const Buffer_<int>& ids) { return LookupEmbedding(ids, symm_buf_); },
-            [this](const Tensor& h) { return PostEmbedding(h, symm_buf_); });
+            [this](Buffer_<int>& out, const Tensor& h) { DraftTop1(out, h); });
     }
 
     const int vocab_size = weights_.output->output_dim * tp_size_;
@@ -646,6 +648,46 @@ Tensor LanguageModel::Impl::PostEmbedding(const Tensor& features, Buffer symm_bu
         TM_CUDA_CHECK(cudaGetLastError());
         return out;
     }
+}
+
+void LanguageModel::Impl::DraftTop1(Buffer_<int>& out, const Tensor& features)
+{
+    static const bool local_top1 = [] {
+        const char* value = std::getenv("TM_MTP_LOCAL_TOP1");
+        return value && value[0] == '1';
+    }();
+    const auto st = core::Context::stream().handle();
+    if (!local_top1 || tp_size_ == 1) {
+        auto logits = PostEmbedding(features, symm_buf_);
+        invokeArgmax(out, logits, st);
+        return;
+    }
+
+    const int rows             = features.shape(0);
+    const int local_vocab_size = weights_.output->output_dim;
+    const int token_id_offset  = tp_rank_ * local_vocab_size;
+    const int valid_vocab      = std::min(local_vocab_size, weights_.vocab_size - token_id_offset);
+    TM_CHECK_GT(valid_vocab, 0);
+
+    // Match SGLang's V100 greedy TP-top1 route: each rank computes its local
+    // LM-head shard, then exchanges one [score, global token id] pair per row.
+    // This replaces a full-vocabulary all-gather and transpose on every serial
+    // draft step with a tiny homogeneous FP32 all-gather. FP32 represents all
+    // supported token ids exactly.
+    Tensor local_logits{{rows, local_vocab_size}, weights_.data_type, kDEVICE};
+    TM_SCOPE_CALL(linear_.Forward(features, *weights_.output, local_logits));
+
+    Buffer_<float> local_candidates{(ssize_t)rows * 2, kDEVICE};
+    Buffer_<float> gathered_candidates{(ssize_t)tp_size_ * rows * 2, kDEVICE};
+    invokeLocalArgmax(local_candidates, local_logits, valid_vocab, token_id_offset, st);
+    comm_.d_comm->AllGather(local_candidates.data(),
+                            gathered_candidates.data(),
+                            local_candidates.size(),
+                            kFloat32,
+                            comm_.d_tp_group,
+                            st);
+    TM_CUDA_CHECK(cudaGetLastError());
+    invokeGlobalArgmax(out, gathered_candidates, rows, tp_size_, st);
 }
 
 void LanguageModel::Impl::Setup(int phase, TensorMap& env)

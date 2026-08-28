@@ -26,7 +26,7 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
                            const EngineParam&     engine,
                            const Context&         ctx,
                            EmbedFn                embed,
-                           LogitsFn               logits):
+                           Top1Fn                 top1):
     weights_{weights},
     attn_layer_{attn_layer},
     attn_index_{attn_index},
@@ -39,10 +39,10 @@ MTPPredictor::MTPPredictor(const MTPLayerWeight&  weights,
     linear_{*ctx.linear},
     ctx_{ctx},
     embed_fn_{std::move(embed)},
-    logits_fn_{std::move(logits)}
+    top1_fn_{std::move(top1)}
 {
     TM_CHECK(embed_fn_) << "MTP predictor needs the target's embedding lookup";
-    TM_CHECK(logits_fn_) << "MTP predictor needs the target's lm_head";
+    TM_CHECK(top1_fn_) << "MTP predictor needs the target's greedy lm_head";
     // The fc projection consumes the two normalised halves concatenated, so
     // its input is exactly twice the hidden size. Deriving hidden_units_ from
     // the weight rather than from config keeps the two from disagreeing.
@@ -598,8 +598,6 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
         // Decode phase: the draft always extends one token per sequence.
         Tensor out = DecodeStep(std::move(projected), phase, env);
 
-        Tensor logits = logits_fn_(out);
-
         // Write this step's tokens as the contiguous run for step `step`.
         //
         // The layout is [step][batch], not [batch][step]: one argmax per
@@ -609,7 +607,7 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
         // drafts in order.
         Buffer_<int> step_out{
             result.draft_tokens.data() + (ssize_t)step * batch_size, (ssize_t)batch_size, kDEVICE};
-        invokeArgmax(step_out, logits, stream);
+        top1_fn_(step_out, out);
 
         result.num_drafts = step + 1;
 

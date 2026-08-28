@@ -15,4 +15,15 @@ namespace turbomind {
 /// rejection.
 void invokeArgmax(Buffer_<int>& out, const Tensor& logits, cudaStream_t st);
 
+/// Produce `[score, global_token_id]` for each row's local vocabulary shard.
+/// Token ids are stored as float because all supported vocabularies are far
+/// below FP32's exact-integer limit; this packs each candidate into one tiny
+/// homogeneous TP all-gather.
+void invokeLocalArgmax(
+    Buffer_<float>& candidates, const Tensor& local_logits, int valid_vocab, int token_id_offset, cudaStream_t st);
+
+/// Select the global winner from candidates laid out `[rank, row, 2]`.
+void invokeGlobalArgmax(
+    Buffer_<int>& out, const Buffer_<float>& gathered_candidates, int rows, int ranks, cudaStream_t st);
+
 }  // namespace turbomind

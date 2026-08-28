@@ -29,6 +29,7 @@ TP="${TP:-4}"
 NUM_DRAFT_TOKENS="${NUM_DRAFT_TOKENS:-4}"
 MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
 TM_BATCH_COPY_DURING_API_CALL="${TM_BATCH_COPY_DURING_API_CALL:-0}"
+TM_MTP_LOCAL_TOP1="${TM_MTP_LOCAL_TOP1:-0}"
 CUDA_LAUNCH_BLOCKING="${CUDA_LAUNCH_BLOCKING:-0}"
 CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-}"
 
@@ -77,9 +78,9 @@ done
 kubectl -n "$NS" create configmap "${JOB}-script" "${CM_ARGS[@]}" >/dev/null
 
 python3 - "$JOB" "$NS" "$IMAGE" "$ISLAND2" "$ISLAND1" "$TP" "$NUM_DRAFT_TOKENS" "$MODEL_DIR" \
-    "$TM_BATCH_COPY_DURING_API_CALL" "$CUDA_LAUNCH_BLOCKING" "$CUBLAS_WORKSPACE_CONFIG" <<'PY' | kubectl apply -f - >/dev/null
+    "$TM_BATCH_COPY_DURING_API_CALL" "$TM_MTP_LOCAL_TOP1" "$CUDA_LAUNCH_BLOCKING" "$CUBLAS_WORKSPACE_CONFIG" <<'PY' | kubectl apply -f - >/dev/null
 import json, sys
-job, ns, image, island2, island1, tp, num_draft, model_dir, batch_copy_order, launch_blocking, cublas_workspace = sys.argv[1:12]
+job, ns, image, island2, island1, tp, num_draft, model_dir, batch_copy_order, mtp_local_top1, launch_blocking, cublas_workspace = sys.argv[1:13]
 
 guard = r'''set -uo pipefail
 for BAD in $ISLAND1_UUIDS; do
@@ -124,6 +125,7 @@ manifest = {
                     {"name": "NUM_DRAFT_TOKENS", "value": num_draft},
                     {"name": "MODEL_DIR", "value": model_dir},
                     {"name": "TM_BATCH_COPY_DURING_API_CALL", "value": batch_copy_order},
+                    {"name": "TM_MTP_LOCAL_TOP1", "value": mtp_local_top1},
                     {"name": "CUDA_LAUNCH_BLOCKING", "value": launch_blocking},
                     {"name": "CUBLAS_WORKSPACE_CONFIG", "value": cublas_workspace},
                 ],
