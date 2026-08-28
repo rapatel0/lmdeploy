@@ -1853,7 +1853,8 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         const auto& eos = c.gen_cfg.eos_ids;
         if (!eos.empty()) {
             for (int k = 0; k < n; ++k) {
-                if (std::find(eos.begin(), eos.end(), c.draft_tokens[k]) != eos.end()) {
+                const bool eos_enabled = base + k + 1 >= c.prompt_len + c.gen_cfg.min_new_tokens;
+                if (eos_enabled && std::find(eos.begin(), eos.end(), c.draft_tokens[k]) != eos.end()) {
                     n            = k + 1;
                     accepted[i]  = n;
                     clamped      = true;
@@ -2051,7 +2052,8 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
 
         // The bonus token is the last one committed, so EOS there ends the
         // sequence without truncating anything.
-        if (!eos.empty() && !eos_hit_[i]
+        const bool bonus_eos_enabled = seq_lens[i] >= c.prompt_len + c.gen_cfg.min_new_tokens;
+        if (bonus_eos_enabled && !eos.empty() && !eos_hit_[i]
             && std::find(eos.begin(), eos.end(), bonus[i]) != eos.end()) {
             eos_hit_[i] = true;
         }
