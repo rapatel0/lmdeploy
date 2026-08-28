@@ -196,23 +196,50 @@ void MTPPredictor::PrefillFill(int                 target_phase,
     TM_CHECK_EQ((int)full_hidden_states.shape(0), token_num)
         << "MTP PrefillFill: hidden rows must match the submitted tokens";
 
-    // Entry convention, shared with Draft(): the entry at position p is
-    // f(embed(token[p]), hidden[p-1]). Draft() writes the sampled token's
-    // entry from the tip hidden state -- that is exactly p = S. Here the
-    // chunk supplies token[p] directly and hidden[p-1] is the PREVIOUS row
-    // of the target's full hidden states, so the hidden half is the chunk
-    // shifted down by one row, per row of the batch.
+    // SGLang's EAGLE/NEXTN prefill uses input rotation: position p pairs
+    // token[p+1] with target hidden[p]. Its final position pairs the freshly
+    // sampled target token with the final prompt hidden and produces draft 0.
+    // LMDeploy samples after this prefill hook, so the tail is a placeholder;
+    // Draft() overwrites that same KV position with the real sampled token.
     //
-    // Each row's first chunk position has no predecessor hidden in this
-    // forward -- it lives in the previous chunk, or nowhere at p = 0. It
-    // gets zeros. One degraded entry per chunk per row, against hundreds
-    // filled with the trained convention; the alternative of stashing the
-    // last hidden row per sequence across chunks is bookkeeping this pass
-    // does not need to prove the mechanism.
-    Tensor embedding = embed_fn_(input_ids);
+    // The old path formed the same pair one position later -- token[p] with
+    // hidden[p-1] -- and then advanced again before draft step zero. Native
+    // SGLang measured 1.83/3.25 committed tokens at K=1/K=4 while that shifted
+    // path measured 1.31/1.40, making this alignment a first-class A/B gate.
+    static const bool eagle_rotation = [] {
+        const char* value = std::getenv("TM_MTP_EAGLE_ROTATION");
+        return value && value[0] == '1';
+    }();
 
-    Tensor shifted{{token_num, hidden_units_}, dtype_, kDEVICE};
-    {
+    Tensor projected;
+    if (eagle_rotation) {
+        Buffer_<int> rotated_ids{token_num, kDEVICE};
+        int          offset = 0;
+        for (int i = 0; i < batch_size; ++i) {
+            const int len = input_lens[i];
+            TM_CHECK_GT(len, 0);
+            if (len > 1) {
+                TM_CUDA_CHECK(cudaMemcpyAsync(rotated_ids.data() + offset,
+                                              input_ids.data() + offset + 1,
+                                              (size_t)(len - 1) * sizeof(int),
+                                              cudaMemcpyDeviceToDevice,
+                                              stream));
+            }
+            // Placeholder only: Draft step zero overwrites this tail slot.
+            TM_CUDA_CHECK(cudaMemcpyAsync(rotated_ids.data() + offset + len - 1,
+                                          input_ids.data() + offset + len - 1,
+                                          sizeof(int),
+                                          cudaMemcpyDeviceToDevice,
+                                          stream));
+            offset += len;
+        }
+        TM_CHECK_EQ(offset, token_num) << "MTP PrefillFill: input_lens do not sum to the token count";
+        Tensor embedding = embed_fn_(rotated_ids);
+        projected        = Project(embedding, full_hidden_states, token_num);
+    }
+    else {
+        Tensor embedding = embed_fn_(input_ids);
+        Tensor shifted{{token_num, hidden_units_}, dtype_, kDEVICE};
         const size_t row_bytes = byte_size(dtype_, (size_t)hidden_units_);
         char*        dst       = static_cast<char*>(shifted.raw_data());
         const char*  src       = static_cast<const char*>(full_hidden_states.raw_data());
@@ -231,9 +258,8 @@ void MTPPredictor::PrefillFill(int                 target_phase,
             offset += len;
         }
         TM_CHECK_EQ(offset, token_num) << "MTP PrefillFill: input_lens do not sum to the token count";
+        projected = Project(embedding, shifted, token_num);
     }
-
-    Tensor projected = Project(embedding, shifted, token_num);
 
     // Norm, then attention against the TARGET's phase plan. The plan already
     // describes this chunk's exact shape -- q_len per row, key lengths, block
@@ -593,11 +619,16 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
             << " effective_drafts=" << effective_drafts << ")";
     }
 
+    static const bool eagle_rotation = [] {
+        const char* value = std::getenv("TM_MTP_EAGLE_ROTATION");
+        return value && value[0] == '1';
+    }();
+
     for (int step = 0; step < effective_drafts; ++step) {
-        // Step 0 advances too, placing the sampled token at L instead of L-1.
-        // The frozen-KV control deliberately reuses that scratch position on
-        // later steps, matching SGLang NEXTN's proposal walk.
-        if (step == 0 || !frozen_kv) {
+        // Under EAGLE rotation, step zero completes the prefill tail at L-1;
+        // only later proposals append. The legacy path starts at L instead.
+        const bool advance_step = eagle_rotation ? (step > 0 && !frozen_kv) : (step == 0 || !frozen_kv);
+        if (advance_step) {
             AdvanceCuSeqLens(k_offsets.data(), batch_size, 1, stream);
             ++advanced;
         }

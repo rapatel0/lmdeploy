@@ -109,14 +109,11 @@ public:
     /// uninitialized KV and produced junk; at seq_len 85 it produced
     /// plausible drafts and one acceptance. Run 20260827_092923.
     ///
-    /// The entry convention must match Draft(): entry at position p is
-    /// f(embed(token[p]), hidden[p-1]), RoPE position p. Draft() writes the
-    /// sampled token's entry at position S with the tip hidden state, which
-    /// is this same convention at p = S. A per-row shift assembles the
-    /// hidden half: position p takes the target hidden of p-1, and each
-    /// row's first chunk position takes zeros, because its predecessor
-    /// hidden lives in the previous chunk (or nowhere, at p = 0). One
-    /// degraded entry per chunk per row, against hundreds filled.
+    /// The EAGLE convention rotates input tokens left: position p pairs
+    /// token[p+1] with hidden[p]. Draft step zero supplies the unknown tail
+    /// token after target sampling and overwrites the final prefill KV slot.
+    /// TM_MTP_EAGLE_ROTATION gates that alignment against the legacy
+    /// token[p]/hidden[p-1] path until the measured acceptance gate passes.
     ///
     /// Only the KV write matters. K and V are projections of this layer's
     /// INPUT, so the pipeline stops after the attention call: no FFN, no
