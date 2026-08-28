@@ -56,7 +56,11 @@ assert ec.speculative_draft_window == 2048
 weight_cfg = tm.DFlashWeightConfig()
 weight_cfg.block_size = 8
 weight_cfg.draft_window = 2048
-weight_cfg.num_context_features = 3
+weight_cfg.num_context_features = 5
+weight_cfg.mask_token_id = 248070
+weight_cfg.target_layer_ids = [5, 19, 33, 47, 61]
+weight_cfg.output_multiplier = 1.0
+weight_cfg.final_logit_softcapping = 0.0
 conv_cfg = tm.DFlashConvConfig()
 conv_cfg.taps = 4
 conv_cfg.group_size = 64
@@ -64,6 +68,8 @@ selector_cfg = tm.DFlashSelectorConfig()
 selector_cfg.state_rank = 64
 selector_cfg.top_k = 16
 assert weight_cfg.module_type == 'DFlashWeight'
+assert weight_cfg.target_layer_ids == [5, 19, 33, 47, 61]
+assert weight_cfg.mask_token_id == 248070
 assert conv_cfg.module_type == 'DFlashConvWeight'
 assert selector_cfg.module_type == 'DFlashSelectorWeight'
 print('DFLASH_NATIVE_CONFIG_PASS')

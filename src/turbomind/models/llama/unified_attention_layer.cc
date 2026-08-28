@@ -798,6 +798,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         params.sinks       = weights.sinks ? weights.sinks.data_or((T*)nullptr) : (T*)nullptr;
         params.scale_sinks = scaling;
 
+        // DFlash2 draft attention is non-causal inside its parallel proposal
+        // block. AttentionWeight already carries the checkpoint contract; do
+        // not leave AttentionParams at its causal default.
+        params.causal      = weights.causal;
         params.window_size = weights.window_size;
         if (!params.window_size) {
             params.window_size = 256 << 20;  // 256 M

@@ -121,6 +121,10 @@ private:
     /// MTPPredictor needs this index to address that slot.
     int mtp_attn_index_{-1};
 
+    // Post-layer residual boundaries consumed by the DFlash2 context
+    // projection, in checkpoint order.
+    std::vector<int> dflash_target_layer_ids_;
+
     int& is_warm_up_;
 
     std::unique_ptr<UnifiedAttentionLayer> attn_layer_;

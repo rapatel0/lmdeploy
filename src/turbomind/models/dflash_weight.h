@@ -4,6 +4,8 @@
 #include "src/turbomind/core/core.h"
 #include "src/turbomind/core/module.h"
 
+#include <vector>
+
 namespace turbomind::core {
 
 struct DFlashConvConfig: ModuleConfig {
@@ -41,7 +43,11 @@ struct DFlashWeightConfig: ModuleConfig {
     X(DataType, data_type)                                                                                             \
     X(int, block_size, 8)                                                                                              \
     X(int, draft_window, 2048)                                                                                         \
-    X(int, num_context_features, 0)
+    X(int, num_context_features, 0)                                                                                    \
+    X(int, mask_token_id, -1)                                                                                          \
+    X(std::vector<int>, target_layer_ids)                                                                              \
+    X(float, output_multiplier, 1.f)                                                                                   \
+    X(float, final_logit_softcapping, 0.f)
 
     DFLASH_WEIGHT_FIELDS(TM_MEMBER)
     TM_FOR_EACH(DFlashWeightConfig, DFLASH_WEIGHT_FIELDS)
@@ -129,9 +135,13 @@ public:
 
     TM_MODULE_DECLARE(DFlashWeight, DFLASH_WEIGHT_CHILDREN, DFLASH_WEIGHT_PARAMS)
 
-    int block_size{};
-    int draft_window{};
-    int num_context_features{};
+    int              block_size{};
+    int              draft_window{};
+    int              num_context_features{};
+    int              mask_token_id{-1};
+    std::vector<int> target_layer_ids;
+    float            output_multiplier{1.f};
+    float            final_logit_softcapping{};
 };
 
 }  // namespace turbomind

@@ -1,5 +1,6 @@
 
 
+#include <algorithm>
 #include <numeric>
 #include <optional>
 
@@ -12,6 +13,7 @@
 #include "src/turbomind/models/attention_weight.h"
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/delta_net_weight.h"
+#include "src/turbomind/models/dflash_weight.h"
 #include "src/turbomind/models/llama/llama_kernels.h"
 #include "src/turbomind/models/mtp_weight.h"
 #include "src/turbomind/models/llama/llama_utils.h"
@@ -51,6 +53,7 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
     attn_tp_group_(ctx.comm.d_tp_group),
     d_comm_(ctx.comm.d_comm),
     tune_layer_num_(engine.tune_layer_num),
+    dflash_target_layer_ids_(model_weight.dflash ? model_weight.dflash->target_layer_ids : std::vector<int>{}),
     is_warm_up_{*ctx.is_warm_up}
 {
     std::vector<MoeWeight*>       moe_weights;
@@ -396,6 +399,29 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
 
         TM_DEBUG_TENSOR(local_residual, Concat("residual1", layer), 2);
         TM_DEBUG_TENSOR(local_hidden_states, Concat("norm0", layer + 1), 2);
+
+        // DFlash2 checkpoint layer IDs name post-layer residuals. Preserve the
+        // per-token feature order [token, feature, hidden], matching SGLang's
+        // concatenation before the context projection. cudaMemcpy2D expresses
+        // the column insertion without a bespoke kernel.
+        if (auto* capture = args.try_("dflash_target_hidden"); capture && !dflash_target_layer_ids_.empty()) {
+            auto it = std::find(dflash_target_layer_ids_.begin(), dflash_target_layer_ids_.end(), layer);
+            if (it != dflash_target_layer_ids_.end()) {
+                const int     feature   = static_cast<int>(it - dflash_target_layer_ids_.begin());
+                const ssize_t row_bytes = byte_size(dtype, hidden_units_);
+                TM_CHECK_EQ(capture->dtype(), dtype);
+                TM_CHECK_EQ(capture->shape(0), local_token_num);
+                TM_CHECK_EQ(capture->shape(1), (ssize_t)dflash_target_layer_ids_.size() * hidden_units_);
+                TM_CUDA_CHECK(cudaMemcpy2DAsync((char*)capture->raw_data() + feature * row_bytes,
+                                                byte_size(dtype, capture->stride(0)),
+                                                local_residual.raw_data(),
+                                                byte_size(dtype, local_residual.stride(0)),
+                                                row_bytes,
+                                                local_token_num,
+                                                cudaMemcpyDeviceToDevice,
+                                                stream));
+            }
+        }
 
         // if (layer == layer_num_ - 1) {
         //     args.at("batch").data<BatchData*>()[0]->Notify();

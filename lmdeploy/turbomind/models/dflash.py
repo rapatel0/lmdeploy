@@ -23,6 +23,13 @@ def _required_int(mapping, name):
         raise ValueError(f'invalid DFlash2 config field: {name}') from e
 
 
+def _optional_float(value, default):
+    try:
+        return default if value is None else float(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f'invalid DFlash2 float value: {value!r}') from e
+
+
 class DFlash2Model(Qwen3TextModel):
     """Build the five-layer DFlash2 draft without embeddings or lm_head."""
 
@@ -34,6 +41,11 @@ class DFlash2Model(Qwen3TextModel):
         self._conv_group_size = _required_int(draft, 'conv_group_size')
         self._selector_rank = _required_int(draft, 'selector_rank')
         self._selector_top_k = _required_int(draft, 'selector_top_k')
+        self._mask_token_id = _required_int(draft, 'mask_token_id')
+        self._output_multiplier = _optional_float(
+            draft.get('output_multiplier', getattr(cfg, 'output_multiplier', None)), 1.0)
+        self._final_logit_softcapping = _optional_float(
+            draft.get('final_logit_softcapping', getattr(cfg, 'final_logit_softcapping', None)), 0.0)
         try:
             self._target_layer_ids = tuple(int(i) for i in draft['target_layer_ids'])
             self._attn_cfg.window_size = int(getattr(cfg, 'sliding_window', 0) or 0)
@@ -80,6 +92,10 @@ class DFlash2Model(Qwen3TextModel):
         cfg.block_size = self._block_size
         cfg.draft_window = self._attn_cfg.window_size
         cfg.num_context_features = len(self._target_layer_ids)
+        cfg.mask_token_id = self._mask_token_id
+        cfg.target_layer_ids = list(self._target_layer_ids)
+        cfg.output_multiplier = self._output_multiplier
+        cfg.final_logit_softcapping = self._final_logit_softcapping
         builder = DFlashWeightBuilder(cfg, self._ctx)
         builder.add_fc(self._linear(pfx + 'fc'))
         builder.hidden_norm = self.norm(pfx + 'hidden_norm')

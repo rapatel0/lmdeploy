@@ -19,7 +19,15 @@ WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | so
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd / || exit $?
 export TM_LOG_LEVEL=INFO
+export TM_DFLASH_CAPTURE=1
 python3 /job/verify_dflash_load.py \
     --model "${MODEL}" \
     --draft-model "${DRAFT_MODEL}" \
-    --tp "${TP:-4}"
+    --tp "${TP:-4}" 2>&1 | tee "${RESULTS}/driver.log"
+[ "${PIPESTATUS[0]}" -eq 0 ] || exit 3
+grep -q '\[DFlash2\] target capture shape=.*layer_ids=\[5,19,33,47,61\].*nonzero_bytes=\[[1-9]' \
+    "${RESULTS}/driver.log" || {
+    echo "FAIL: target residual capture was absent or empty"
+    exit 4
+}
+echo DFLASH_CAPTURE_PASS

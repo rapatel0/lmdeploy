@@ -32,6 +32,7 @@
 #include "src/turbomind/models/llama/mtp_predictor.h"
 #include "src/turbomind/models/llama/rejection_sampling.h"
 #include "src/turbomind/models/llama/unified_decoder.h"
+#include "src/turbomind/models/dflash_weight.h"
 #include "src/turbomind/models/model_weight.h"
 #include "src/turbomind/models/mtp_weight.h"
 #include "src/turbomind/models/output_processor.h"
@@ -452,8 +453,16 @@ LanguageModel::Impl::Impl(
     // happened: K=0 aborted on a missing `finished` key.
     //
     // Speculation off must mean the speculative code does not run at all.
-    if (engine.num_draft_tokens > 0 && weights_.mtp && weights_.mtp->decoder_layer
-        && unified_decoder_->mtp_attn_index() >= 0 && unified_decoder_->attn_layer()) {
+    if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "dflash2") {
+        // Never fall through to the embedded MTP predictor: Qwen3.8 carries
+        // both weight families, and doing so silently benchmarks the wrong
+        // algorithm. This guard is removed when DFlashPredictor is wired.
+        TM_CHECK(weights_.dflash) << "DFlash2 selected but separate draft weights are absent";
+        TM_CHECK(false) << "DFlash2 weights are loaded, but runtime draft execution is not implemented yet";
+    }
+    else if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "mtp" && weights_.mtp
+             && weights_.mtp->decoder_layer && unified_decoder_->mtp_attn_index() >= 0
+             && unified_decoder_->attn_layer()) {
         gdn_rollback_  = unified_decoder_->has_recurrent_state();
         mtp_predictor_ = std::make_unique<MTPPredictor>(
             *weights_.mtp,
@@ -991,6 +1000,24 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         // dbg(env);
     }
 
+    // Capture DFlash2's five target residual features when its runtime is
+    // active. TM_DFLASH_CAPTURE permits a K=0 diagnostic before proposal
+    // execution is enabled; ordinary target-only and MTP runs allocate none.
+    static const bool force_dflash_capture = [] {
+        const char* value = std::getenv("TM_DFLASH_CAPTURE");
+        return value && value[0] == '1';
+    }();
+    if (weights_.dflash && engine_param_.speculative_algorithm == "dflash2"
+        && (engine_param_.num_draft_tokens > 0 || force_dflash_capture)) {
+        const auto token_num = env.at("input_embeds").shape(0);
+        Tensor capture{{token_num,
+                        (ssize_t)weights_.dflash->target_layer_ids.size() * weights_.hidden_units},
+                       weights_.data_type,
+                       kDEVICE};
+        Clear(capture);
+        env.produce("dflash_target_hidden", std::move(capture));
+    }
+
     env.produce("output_norm_weight", weights_.norm->weight);
 
     // Save recurrent state before a verification forward, while it still
@@ -1006,6 +1033,38 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     }
 
     unified_decoder_->Forward(phase, env, weights_.layers_list());
+
+    if (force_dflash_capture) {
+        static bool capture_logged = false;
+        if (!capture_logged) {
+            auto* capture = env.try_("dflash_target_hidden");
+            TM_CHECK(capture);
+            Tensor host{{1, capture->shape(1)}, capture->dtype(), kCPU};
+            Copy(capture->slice(0, 1), host);
+            core::Context::stream().Sync();
+            const ssize_t feature_bytes = byte_size(capture->dtype(), weights_.hidden_units);
+            const char*   bytes         = (const char*)host.raw_data();
+            std::string   nonzero;
+            std::string   layer_ids;
+            for (size_t feature = 0; feature < weights_.dflash->target_layer_ids.size(); ++feature) {
+                ssize_t count = 0;
+                for (ssize_t i = 0; i < feature_bytes; ++i) {
+                    count += bytes[feature * feature_bytes + i] != 0;
+                }
+                nonzero += std::to_string(count);
+                layer_ids += std::to_string(weights_.dflash->target_layer_ids[feature]);
+                const char* separator = feature + 1 < weights_.dflash->target_layer_ids.size() ? "," : "";
+                nonzero += separator;
+                layer_ids += separator;
+            }
+            TM_LOG_INFO("[DFlash2] target capture shape=[{},{}] layer_ids=[{}] nonzero_bytes=[{}]",
+                        capture->shape(0),
+                        capture->shape(1),
+                        layer_ids,
+                        nonzero);
+            capture_logged = true;
+        }
+    }
 
     // Fill the draft layer's KV slot for this chunk's prompt positions.
     //

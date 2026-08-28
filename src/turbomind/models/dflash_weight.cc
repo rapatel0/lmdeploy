@@ -29,11 +29,21 @@ DFlashSelectorWeight::DFlashSelectorWeight(const core::DFlashSelectorConfig& cfg
 DFlashSelectorWeight::~DFlashSelectorWeight() = default;
 
 DFlashWeight::DFlashWeight(const core::DFlashWeightConfig& cfg):
-    block_size(cfg.block_size), draft_window(cfg.draft_window), num_context_features(cfg.num_context_features)
+    block_size(cfg.block_size),
+    draft_window(cfg.draft_window),
+    num_context_features(cfg.num_context_features),
+    mask_token_id(cfg.mask_token_id),
+    target_layer_ids(cfg.target_layer_ids),
+    output_multiplier(cfg.output_multiplier),
+    final_logit_softcapping(cfg.final_logit_softcapping)
 {
     TM_CHECK_GE(block_size, 2);
     TM_CHECK_GT(draft_window, 0);
     TM_CHECK_GT(num_context_features, 0);
+    TM_CHECK_EQ(target_layer_ids.size(), num_context_features);
+    TM_CHECK_GE(mask_token_id, 0);
+    TM_CHECK_GT(output_multiplier, 0.f);
+    TM_CHECK_GE(final_logit_softcapping, 0.f);
 }
 
 DFlashWeight::~DFlashWeight() = default;
