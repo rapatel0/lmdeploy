@@ -231,7 +231,9 @@ Matching PyTorch's apparent FP16 operation boundaries inside grouped convolution
 
 A fresh Nsight Systems capture at commit `948484b9` localized the current K=7 GPU time. The generic SM70 target-verification attention kernel (`head_dim=256`, Q64/KV64) consumed **11.9%** of aggregate GPU kernel time, while all five draft `head_dim=128` attention calls together consumed only **1.2%**. The target verifier therefore has much more tile-tuning headroom than the draft attention itself. Full/fragmented GEMMs remained dominant, and the trace also confirmed substantial verifier rejection, selector, NCCL, and recurrent-kernel costs. Artifacts: `/results/20260828_201555-nsys-dflash-948484b97678`.
 
-SGLang's V100 backend contains dedicated small-Q attention designs using Q16, KV32/KV64, split context, and 80-SM-aware launch geometry. LMDeploy's SM70 attention registry was extended with runtime-selectable Q16/Q32 and KV32 variants for both the draft's 128-dimensional heads and the target verifier's 256-dimensional heads. A single-build attribution matrix tests draft-only, target-only, and combined changes.
+SGLang's V100 backend contains dedicated small-Q attention designs using Q16, KV32/KV64, split context, and 80-SM-aware launch geometry. LMDeploy's SM70 attention registry was extended with runtime-selectable Q16/Q32 and KV32 variants for both the draft's 128-dimensional heads and the target verifier's 256-dimensional heads.
+
+The first single-build matrix found that tile changes are modest cycle-cost improvements rather than a large standalone uplift. Normalizing decode rate by committed tokens/step gives approximately 43.99 ms/step for Q64/KV64, 43.55 ms/step for draft Q16/KV32, 43.67 ms/step for target Q32/KV32, and 45.3 ms/step for target Q16/KV32. Thus Q16 is useful for draft head-dim 128, Q32 is better for target head-dim 256, and target Q16 is a regression. Because separate-process acceptance varied across arms, a longer baseline-versus-combined Q128=16/KV32 plus Q256=32/KV32 confirmation is required before changing defaults. Artifacts: `/results/20260828_202608-dflash-attention-tile-446144af923c`.
 
 ## Acceptance gap
 

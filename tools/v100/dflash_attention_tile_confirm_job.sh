@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Test SM70 head-dim-128 query tile sizes for DFlash block-8 attention.
+# Confirm the best combined SM70 attention tiles with longer trials.
 set -euo pipefail
 
 SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/null)"
 [ -n "${SRC_COMMIT}" ] || SRC_COMMIT=unknown
-RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-attention-tile-${SRC_COMMIT}
+RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-attention-tile-confirm-${SRC_COMMIT}
 mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
 finish() {
@@ -30,7 +30,7 @@ export TM_DFLASH_REDUCE_BEFORE_CONV=0
 export TM_DFLASH_LEGACY_ATTENTION_POLICY=0
 export TM_DFLASH_PER_LAYER_ROPE=1
 
-for shape in baseline:64:64:64:64 draft16x32:16:32:64:64 target32x32:64:64:32:32 target16x32:64:64:16:32 both16x32:16:32:16:32; do
+for shape in baseline:64:64:64:64 optimal:16:32:32:32; do
     IFS=: read -r arm q128 kv128 q256 kv256 <<<"${shape}"
     echo "=== ATTENTION_TILE_ARM ${arm} ==="
     TM_ATTENTION_SM70_128_CTA_Q="${q128}" \
@@ -42,7 +42,7 @@ for shape in baseline:64:64:64:64 draft16x32:16:32:64:64 target32x32:64:64:32:32
         --num-draft-tokens 7 --speculative-algorithm dflash2 \
         --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
         --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
-        --input-tokens 1000 --output-tokens 256 --trials 2 \
+        --input-tokens 1000 --output-tokens 256 --trials 5 \
         --sglang-corpus /sglang-corpus \
         --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
         --cache-max-entry-count 0.05 --json-out "${RESULTS}/${arm}.json" \
@@ -51,15 +51,15 @@ done
 
 TM_ATTENTION_SM70_128_CTA_Q=16 \
     TM_ATTENTION_SM70_128_CTA_KV=32 \
-    TM_ATTENTION_SM70_256_CTA_Q=16 \
+    TM_ATTENTION_SM70_256_CTA_Q=32 \
     TM_ATTENTION_SM70_256_CTA_KV=32 \
     python3 /job/verify_dflash_audited.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
     --corpus /sglang-corpus --tp "${TP:-4}" --input-tokens 1000 --output-tokens 256 \
     --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-    2>&1 | tee "${RESULTS}/both16x32_identity.log"
-grep -q '^DFLASH_AUDITED_IDENTITY_PASS$' "${RESULTS}/both16x32_identity.log"
+    2>&1 | tee "${RESULTS}/optimal_identity.log"
+grep -q '^DFLASH_AUDITED_IDENTITY_PASS$' "${RESULTS}/optimal_identity.log"
 
 python3 - "${RESULTS}" <<'PY'
 import json
@@ -86,4 +86,4 @@ print(json.dumps(rows, indent=2))
 PY
 
 touch "${RESULTS}/completed"
-echo DFLASH_ATTENTION_TILE_COMPLETE
+echo DFLASH_ATTENTION_TILE_CONFIRM_COMPLETE

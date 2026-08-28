@@ -90,7 +90,8 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 - [ ] **Tune SM70 small-Q attention tiles for the verifier and draft.**
   - Fresh Nsight attribution: target head-dim-256 verification attention is 11.9% of K=7 GPU time; all draft head-dim-128 attention is 1.2%.
-  - One-build matrix compares Q64/KV64 against Q32/Q16 and KV32, separately for target and draft.
+  - First matrix: draft Q16/KV32 improved normalized cycle time about 1%; target Q32/KV32 improved it about 0.7%; target Q16/KV32 regressed about 3%.
+  - A five-trial confirmation now compares Q64/KV64 against the combined draft-Q16/target-Q32 policy and runs audited identity.
   - SGLang/TileLang guidance: V100 uses synchronous staging, shape-specific tiles, and split/context geometry rather than Ampere-style pipelines.
 
 - [ ] **Capture fixed-shape target verification and draft execution in CUDA graphs.**
