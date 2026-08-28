@@ -67,6 +67,10 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Explicitly FP16-rounding `predecessor * hidden` produced the same 2.664 commit length and identical acceptance counts as FP32 intermediates.
   - Throughput was 61.14 versus 61.76 tok/s, within run variance. The experimental branch was removed; this is not the fidelity gap.
 
+- [x] **Validate grouped-convolution FP16 operation boundaries.**
+  - Explicit FP16 coefficient, product, and accumulation boundaries produced the same 2.664 commit length and identical counters as FP32 accumulation.
+  - Throughput was 61.40 versus 60.90 tok/s; the FP16 arm passed audited identity. The branch was removed.
+
 - [x] **Fix draft RoPE ownership and validate post-RoPE K parity.**
   - All DFlash layers had inherited target partial multimodal RoPE instead of their own full 128-dimensional standard RoPE.
   - Per-layer RoPE raised commit length from 2.033 to 2.664 and decode from 46.98 to 61.39 tok/s.

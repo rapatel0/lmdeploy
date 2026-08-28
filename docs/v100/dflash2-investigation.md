@@ -223,6 +223,10 @@ This is a 31% acceptance gain and 30.7% throughput gain over the matched legacy 
 
 Explicitly FP16-rounding the selector's `predecessor * hidden` intermediate did not change the audited result: both arms committed 2.664 tokens/step with identical accepted-draft and full-accept counts. Decode measured 61.14 tok/s with the original FP32 intermediate and 61.76 tok/s with explicit narrowing, which is within run variance. This hypothesis is closed and the extra branch was removed.
 
+## Grouped-convolution rounding A/B
+
+Matching PyTorch's apparent FP16 operation boundaries inside grouped convolution did not change acceptance: both the original FP32-accumulation arm and the FP16-step arm committed 2.664 tokens/step with identical counters. Decode was 61.40 versus 60.90 tok/s, respectively. The FP16-step arm passed the audited 256-token K=0/K=7 identity gate. This hypothesis is closed and the experimental branch was removed.
+
 ## Acceptance gap
 
 Current audited comparison:
