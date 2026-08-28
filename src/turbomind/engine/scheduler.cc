@@ -368,7 +368,12 @@ void Scheduler::EnsureBlocks(Sequence& s)
     // extra block -- real KV memory charged for a feature that is switched off.
     // max_extend still clamps the walk to what is really allocated; this only
     // stops the clamp from biting for want of a block.
-    const int draft_headroom = num_draft_tokens_ > 0 && s.generating ? num_draft_tokens_ : 0;
+    // The first proposal runs after the final prefill forward, before the
+    // scheduler has observed `generating=true`, so conditioning this reservation
+    // on that flag leaves the first draft without a block. Reserve for every
+    // scheduled speculative row. The extra one is the DFlash anchor position;
+    // recurrent MTP simply receives one harmless slot of additional slack.
+    const int draft_headroom = num_draft_tokens_ > 0 ? num_draft_tokens_ + 1 : 0;
 
     const int length = s.seq_len + s.inflight_new_tokens + draft_headroom;
     const int needed = (length + bs - 1) / bs;
