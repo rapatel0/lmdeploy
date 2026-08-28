@@ -9,10 +9,16 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <unistd.h>
 
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/kernels/norm/rms_norm.h"
@@ -82,6 +88,150 @@ void ReportDFlashTensor(const std::string& name, const Tensor& value)
 
 }  // namespace
 
+struct DFlashPredictor::ParityTrace {
+    struct Entry {
+        std::string name;
+        Tensor      host;
+    };
+
+    explicit ParityTrace(const Context& ctx, const DFlashWeight& weights):
+        root(std::getenv("TM_DFLASH_PARITY_DIR") ? std::getenv("TM_DFLASH_PARITY_DIR") : ""),
+        tp_rank(ctx.comm.h_tp_group ? ctx.comm.h_tp_group->rank() : 0),
+        tp_size(ctx.comm.h_tp_group ? ctx.comm.h_tp_group->n_ranks() : 1),
+        feature_ids(weights.target_layer_ids)
+    {
+    }
+
+    static std::string JsonString(const char* value)
+    {
+        std::string out{"\""};
+        if (value) {
+            for (const char c : std::string{value}) {
+                if (c == '\\' || c == '\"') {
+                    out += '\\';
+                }
+                out += c;
+            }
+        }
+        out += '\"';
+        return out;
+    }
+
+    static const char* Stage(const std::string& name)
+    {
+        if (name.rfind("target.", 0) == 0 || name.rfind("context.", 0) == 0) {
+            return "context";
+        }
+        if (name.rfind("selector.", 0) == 0) {
+            return "selector";
+        }
+        return "draft";
+    }
+
+    void Capture(const char* name, const Tensor& value)
+    {
+        if (!active) {
+            return;
+        }
+        TM_CHECK(value.is_contiguous()) << "DFlash parity capture requires contiguous tensors: " << name;
+        Tensor host{value.layout(), value.dtype(), kCPUpinned};
+        Copy(value, host);
+        entries.push_back({name, std::move(host)});
+    }
+
+    void Flush()
+    {
+        core::Context::stream().Sync();
+        const auto capture_name = "rank-" + std::to_string(tp_rank) + "-device-" + std::to_string(device)
+                                  + "-pid-" + std::to_string((long long)getpid());
+        const auto dir = std::filesystem::path(root) / "lmdeploy" / capture_name;
+        TM_CHECK(!std::filesystem::exists(dir)) << "DFlash parity capture directory already exists: " << dir.string();
+        std::filesystem::create_directories(dir);
+        std::ofstream manifest{dir / "manifest.jsonl", std::ios::out | std::ios::trunc};
+        TM_CHECK(manifest) << "cannot open DFlash parity manifest in " << dir.string();
+
+        for (size_t ordinal = 0; ordinal < entries.size(); ++ordinal) {
+            auto& entry = entries[ordinal];
+            std::ostringstream prefix;
+            prefix << std::setw(6) << std::setfill('0') << ordinal << "-" << entry.name;
+            const std::string file_name = prefix.str() + ".bin";
+            std::ofstream data{dir / file_name, std::ios::binary};
+            TM_CHECK(data) << "cannot open DFlash parity tensor " << file_name;
+            data.write((const char*)entry.host.raw_data(), entry.host.byte_size());
+            TM_CHECK(data) << "cannot write DFlash parity tensor " << file_name;
+
+            manifest << "{\"runtime\":\"lmdeploy\",\"ordinal\":" << ordinal << ",\"stage\":"
+                     << JsonString(Stage(entry.name)) << ",\"name\":" << JsonString(entry.name.c_str())
+                     << ",\"dtype\":" << JsonString(to_string(entry.host.dtype()))
+                     << ",\"shape\":[";
+            for (int i = 0; i < entry.host.ndim(); ++i) {
+                manifest << (i ? "," : "") << entry.host.shape(i);
+            }
+            manifest << "],\"strides\":[";
+            for (int i = 0; i < entry.host.ndim(); ++i) {
+                manifest << (i ? "," : "") << entry.host.stride(i);
+            }
+            manifest << "],\"byte_order\":\"little\",\"bytes\":" << entry.host.byte_size()
+                     << ",\"file\":" << JsonString(file_name.c_str()) << ",\"tp_rank\":" << tp_rank
+                     << ",\"tp_size\":" << tp_size << ",\"device\":" << device << ",\"uid\":" << uid
+                     << ",\"sequence_length\":" << seq_len << ",\"input_length\":" << input_len
+                     << ",\"target_feature_ids\":[";
+            for (int i = 0; i < (int)feature_ids.size(); ++i) {
+                manifest << (i ? "," : "") << feature_ids[i];
+            }
+            manifest << "],\"policies\":{";
+            constexpr const char* flags[] = {"TM_DFLASH_LOCAL_TOPK",
+                                             "TM_DFLASH_CUB_TOPK",
+                                             "TM_DFLASH_REDUCE_BEFORE_CONV",
+                                             "TM_DFLASH_CONTEXT_BF16_ROUND",
+                                             "TM_DFLASH_LEGACY_ATTENTION_POLICY",
+                                             "TM_DFLASH_PER_LAYER_ROPE"};
+            for (int i = 0; i < (int)(sizeof(flags) / sizeof(flags[0])); ++i) {
+                manifest << (i ? "," : "") << JsonString(flags[i]) << ":" << JsonString(std::getenv(flags[i]));
+            }
+            manifest << "}}\n";
+        }
+        manifest.flush();
+        TM_CHECK(manifest) << "cannot write DFlash parity manifest";
+        TM_LOG_INFO("[DFlash2] parity trace wrote {} tensors to {}", entries.size(), dir.string());
+        entries.clear();
+        ClearPending();
+        context_armed = false;
+        active = false;
+        completed = true;
+    }
+
+    void ClearPending()
+    {
+        pending_target = {};
+        pending_fc = {};
+        pending_norm = {};
+        context_pending = false;
+        context_armed = false;
+        armed_uid = 0;
+        pending_uid = 0;
+    }
+
+    std::string root;
+    int         tp_rank{};
+    int         tp_size{1};
+    int         device{};
+    uint64_t    uid{};
+    int         seq_len{};
+    int         input_len{};
+    bool        active{};
+    bool        completed{};
+    bool        context_armed{};
+    bool        context_pending{};
+    uint64_t    armed_uid{};
+    uint64_t    pending_uid{};
+    Tensor      pending_target;
+    Tensor      pending_fc;
+    Tensor      pending_norm;
+    std::vector<int> feature_ids;
+    std::vector<Entry> entries;
+};
+
 DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                                  UnifiedAttentionLayer& attention,
                                  std::vector<int>        attention_indices,
@@ -124,6 +274,88 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
 }
 
 DFlashPredictor::~DFlashPredictor() = default;
+
+void DFlashPredictor::ArmParityContext(uint64_t uid) const
+{
+    const char* root = std::getenv("TM_DFLASH_PARITY_DIR");
+    if (!root || !root[0]) {
+        return;
+    }
+    if (!parity_trace_) {
+        parity_trace_ = std::make_unique<ParityTrace>(ctx_, weights_);
+    }
+    auto& trace = *parity_trace_;
+    if (trace.completed || trace.active) {
+        return;
+    }
+    trace.ClearPending();
+    trace.context_armed = true;
+    trace.armed_uid = uid;
+}
+
+void DFlashPredictor::PrepareParityContext(const Tensor& target_hidden,
+                                           const Tensor& projected,
+                                           const Tensor& normalized) const
+{
+    if (!parity_trace_) {
+        return;
+    }
+    auto& trace = *parity_trace_;
+    if (trace.completed || trace.active || !trace.context_armed || *ctx_.is_warm_up) {
+        return;
+    }
+    trace.pending_target = target_hidden;
+    trace.pending_fc = projected;
+    trace.pending_norm = normalized;
+    trace.pending_uid = trace.armed_uid;
+    trace.context_pending = true;
+    trace.context_armed = false;
+}
+
+void DFlashPredictor::BeginParityBlock(const Buffer_<int>& anchors,
+                                       uint64_t             uid,
+                                       int                  seq_len,
+                                       int                  input_len) const
+{
+    if (!parity_trace_ || parity_trace_->completed || parity_trace_->active || !parity_trace_->context_pending) {
+        return;
+    }
+    auto& trace = *parity_trace_;
+    if (trace.pending_uid != uid) {
+        trace.ClearPending();
+        return;
+    }
+    trace.active = true;
+    trace.uid = uid;
+    trace.seq_len = seq_len;
+    trace.input_len = input_len;
+    TM_CUDA_CHECK(cudaGetDevice(&trace.device));
+    trace.Capture("target.post_layer_residual", trace.pending_target);
+    trace.Capture("context.fc", trace.pending_fc);
+    trace.Capture("context.norm", trace.pending_norm);
+    trace.Capture("block.anchors", Tensor{anchors, {(ssize_t)anchors.size()}});
+}
+
+bool DFlashPredictor::FinishParityBlock() const
+{
+    if (!ParityActive()) {
+        return false;
+    }
+    parity_trace_->Flush();
+    return true;
+}
+
+bool DFlashPredictor::ParityActive() const
+{
+    return parity_trace_ && parity_trace_->active;
+}
+
+void DFlashPredictor::CaptureParityTensor(const char* name, const Tensor& value) const
+{
+    if (parity_trace_) {
+        parity_trace_->Capture(name, value);
+    }
+}
 
 void DFlashPredictor::SetupAttention(int phase, TensorMap& env)
 {
@@ -170,6 +402,7 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden) const
         invokeDFlashRoundBFloat16(normalized, core::Context::stream().handle());
         TM_CUDA_CHECK(cudaGetLastError());
     }
+    PrepareParityContext(target_hidden, projected, normalized);
     return normalized;
 }
 
@@ -256,6 +489,7 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
                            weights_.block_size,
                            weights_.mask_token_id,
                            core::Context::stream().handle());
+    CaptureParityTensor("block.ids", Tensor{block_ids, {(ssize_t)batch_size, weights_.block_size}});
     Tensor hidden = embed_fn_(block_ids);
 
     Buffer_<int> k_offsets = env.at("k_offsets").buffer().view<int>();
@@ -276,6 +510,7 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
     Tensor prediction_hidden{{rows, hidden_units_}, dtype_, kDEVICE};
     invokeGatherDFlashPredictions(
         prediction_hidden, block_hidden, weights_.block_size, core::Context::stream().handle());
+    CaptureParityTensor("selector.prediction_hidden", prediction_hidden);
 
     Buffer_<int> candidate_ids{(ssize_t)rows * selector->top_k, kDEVICE};
     Tensor unary_scores{{rows, selector->top_k}, kFloat32, kDEVICE};
@@ -303,9 +538,21 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
                            core::Context::stream().handle());
     }
 
+    CaptureParityTensor(
+        "selector.candidate_ids", Tensor{candidate_ids, {(ssize_t)rows, selector->top_k}});
+    CaptureParityTensor("selector.unary_scores", unary_scores);
+
     Tensor selector_hidden{{rows, selector->state_rank}, dtype_, kDEVICE};
     linear_.Forward(prediction_hidden, *selector->hidden_projection, selector_hidden);
     TM_CUDA_CHECK(cudaGetLastError());
+    CaptureParityTensor("selector.hidden", selector_hidden);
+
+    Tensor selector_scores;
+    Tensor* selector_scores_ptr = nullptr;
+    if (parity_trace_ && parity_trace_->active) {
+        selector_scores = Tensor{{batch_size, slots, selector->top_k}, kFloat32, kDEVICE};
+        selector_scores_ptr = &selector_scores;
+    }
 
     Buffer_<int> output{(ssize_t)rows, kDEVICE};
     invokeDFlashGreedySelector(output,
@@ -317,7 +564,12 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
                                selector->successor_codebook,
                                slots,
                                selector->top_k,
-                               core::Context::stream().handle());
+                               core::Context::stream().handle(),
+                               selector_scores_ptr);
+    if (selector_scores_ptr) {
+        CaptureParityTensor("selector.scores", selector_scores);
+    }
+    CaptureParityTensor("selector.selected_ids", Tensor{output, {(ssize_t)batch_size, slots}});
     return output;
 }
 
@@ -328,19 +580,32 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     const int  token_num       = hidden.shape(0);
     const auto stream          = core::Context::stream().handle();
     static std::atomic<bool> block_reported{false};
-    const bool trace_block = TraceDFlashSelector() && !block_reported.exchange(true);
+    const bool trace_block  = TraceDFlashSelector() && !block_reported.exchange(true);
+    const bool report_block = trace_block || ParityActive();
     auto report = [&](const std::string& stage, const Tensor& value) {
         if (TM_UNLIKELY(trace_block)) {
             ReportDFlashTensor(stage, value);
         }
+        CaptureParityTensor(stage.c_str(), value);
     };
-    report("block.embedding", hidden);
+    auto report_named = [&](const char* stage, const Tensor& value) {
+        if (TM_UNLIKELY(report_block)) {
+            report(stage, value);
+        }
+    };
+    auto report_layer = [&](int layer, const char* stage, const Tensor& value) {
+        if (TM_UNLIKELY(report_block)) {
+            report("layer" + std::to_string(layer) + stage, value);
+        }
+    };
+    report_named("block.embedding", hidden);
 
     // DFlash2 was trained in BF16 and its unnormalized residual can exceed
     // FP16's 65,504 limit on V100. Keep the residual and TP reduction in FP32,
     // then emit the normalized activation in FP16 for GEMMs.
     Tensor residual{hidden.shape(), kFloat32, kDEVICE};
     invokeDFlashCastToFloat(residual, hidden, stream);
+    report_named("block.initial_residual", residual);
 
     auto* first_layer = TM_CHECK_NOTNULL(weights_.layer(0));
     invokeRMSNorm(hidden,
@@ -353,7 +618,7 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     // The draft checkpoint's pre-norm boundaries are BF16. Preserve that
     // rounding while storing FP16 activations for V100 GEMMs.
     invokeDFlashRoundBFloat16(hidden, stream);
-    report("block.initial_norm", hidden);
+    report_named("block.initial_norm", hidden);
 
     constexpr float kResidualScale = 256.f;
     constexpr float kGateUpScale   = 32.f;
@@ -373,17 +638,20 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         }
     };
 
-    auto residual_norm = [&](Tensor& value,
-                             Tensor& res,
-                             const Tensor& bias,
+    auto residual_norm = [&](Tensor&           value,
+                             Tensor&           res,
+                             const Tensor&     bias,
                              const NormWeight& norm,
-                             float reduced_scale) {
+                             float             reduced_scale,
+                             int               layer,
+                             const char*       post_collective_stage) {
         // Laguna transports each 1/256 branch in FP16 and performs the TP
         // reduction in that dtype. The previous FP32 cast added a kernel,
         // doubled collective traffic, and changed reduction rounding relative
         // to the SGLang reference draft.
         if (!reduce_before_conv) {
             reduce_branch(value);
+            report_layer(layer, post_collective_stage, value);
         }
         invokeDFlashResidualRMSNorm(value,
                                     res,
@@ -402,8 +670,11 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         auto* mlp_conv  = TM_CHECK_NOTNULL(weights_.mlp_conv(i));
         TM_CHECK(layer->attention && layer->feed_forward);
 
+        report_layer(i, ".input.hidden", hidden);
+        report_layer(i, ".input.residual", residual);
         auto attn_input = PrepareGroupedConv(hidden, *attn_conv);
-        report("layer" + std::to_string(i) + ".attention_prepare", attn_input.output);
+        report_layer(i, ".attention.conv_delta", attn_input.delta);
+        report_layer(i, ".attention.conv_side0", attn_input.output);
         Tensor attn_output{{token_num, hidden_units_}, dtype_, kDEVICE};
         attention_.Forward({attention_phase,
                             attn_input.output,
@@ -411,19 +682,27 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                             layer->attention.get(),
                             attention_indices_[i],
                             1.f / kResidualScale});
-        report("layer" + std::to_string(i) + ".attention_raw", attn_output);
+        report_layer(i, ".attention.wo_local", attn_output);
         if (reduce_before_conv) {
             reduce_branch(attn_output);
-            report("layer" + std::to_string(i) + ".attention_reduced", attn_output);
+            report_layer(i, ".attention.tp_reduced_pre_conv", attn_output);
         }
         attn_output = FinishGroupedConv(attn_output, attn_input.delta, *attn_conv);
-        report("layer" + std::to_string(i) + ".attention_finish", attn_output);
-        residual_norm(attn_output, residual, layer->attention->wo->bias, *layer->ffn_norm, kResidualScale);
-        report("layer" + std::to_string(i) + ".attention_residual_norm", attn_output);
+        report_layer(i, ".attention.conv_side1", attn_output);
+        residual_norm(attn_output,
+                      residual,
+                      layer->attention->wo->bias,
+                      *layer->ffn_norm,
+                      kResidualScale,
+                      i,
+                      ".attention.tp_reduced_post_conv");
+        report_layer(i, ".attention.norm_output", attn_output);
+        report_layer(i, ".attention.residual_state", residual);
         hidden = std::move(attn_output);
 
         auto mlp_input = PrepareGroupedConv(hidden, *mlp_conv);
-        report("layer" + std::to_string(i) + ".mlp_prepare", mlp_input.output);
+        report_layer(i, ".mlp.conv_delta", mlp_input.delta);
+        report_layer(i, ".mlp.conv_side0", mlp_input.output);
 
         // Match SGLang's Laguna SM70 MLP exactly: shrink W13's input, restore
         // gate/up in FP32 with BF16 rounding, dynamically scale SwiGLU by row
@@ -433,27 +712,38 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         TM_CHECK(fused->weight) << "DFlash2 Laguna path requires fused gate/up weights";
         TM_CHECK(!mlp.is_fused_silu) << "DFlash2 Laguna path requires unfused SwiGLU activation";
         invokeDFlashScale(mlp_input.output, 1.f / kGateUpScale, stream);
+        report_layer(i, ".mlp.scaled_input", mlp_input.output);
         Tensor gate_up;
         linear_.Forward(mlp_input.output, *fused, gate_up);
+        report_layer(i, ".mlp.gate_up", gate_up);
         TM_CHECK_EQ(gate_up.shape(1), 2 * mlp.inter_size);
         Tensor activated{{token_num, mlp.inter_size}, dtype_, kDEVICE};
         Tensor activation_scales{{token_num}, kFloat32, kDEVICE};
         invokeDFlashLagunaSilu(activated, activation_scales, gate_up, kGateUpScale, stream);
+        report_layer(i, ".mlp.activated", activated);
+        report_layer(i, ".mlp.activation_scales", activation_scales);
         linear_.Forward(activated, *mlp.w2, mlp_input.output);
+        report_layer(i, ".mlp.w2_local", mlp_input.output);
         if (reduce_before_conv) {
             reduce_branch(mlp_input.output);
-            report("layer" + std::to_string(i) + ".mlp_reduced", mlp_input.output);
+            report_layer(i, ".mlp.tp_reduced_pre_scale", mlp_input.output);
         }
         invokeDFlashScaleRows(mlp_input.output, activation_scales, 1.f / kResidualScale, stream);
-
-        report("layer" + std::to_string(i) + ".mlp_raw", mlp_input.output);
+        report_layer(i, ".mlp.scaled_w2", mlp_input.output);
         Tensor mlp_output = FinishGroupedConv(mlp_input.output, mlp_input.delta, *mlp_conv);
-        report("layer" + std::to_string(i) + ".mlp_finish", mlp_output);
+        report_layer(i, ".mlp.conv_side1", mlp_output);
 
         const NormWeight& output_norm =
             i + 1 < (int)attention_indices_.size() ? *weights_.layer(i + 1)->attention_norm : *weights_.final_norm;
-        residual_norm(mlp_output, residual, {}, output_norm, kResidualScale);
-        report("layer" + std::to_string(i) + ".mlp_residual_norm", mlp_output);
+        residual_norm(mlp_output,
+                      residual,
+                      {},
+                      output_norm,
+                      kResidualScale,
+                      i,
+                      ".mlp.tp_reduced_post_conv");
+        report_layer(i, ".mlp.norm_output", mlp_output);
+        report_layer(i, ".mlp.residual_state", residual);
         hidden = std::move(mlp_output);
     }
     return hidden;

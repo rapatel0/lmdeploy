@@ -71,7 +71,8 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                  const Tensor&       successor_codebook,
                                  int                 slots,
                                  int                 top_k,
-                                 cudaStream_t        stream);
+                                 cudaStream_t        stream,
+                                 Tensor*             trace_scores = nullptr);
 
 /// Apply one side of DFlash2's dynamic grouped depthwise convolution.
 ///

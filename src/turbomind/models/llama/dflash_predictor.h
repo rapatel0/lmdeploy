@@ -1,6 +1,7 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -65,11 +66,28 @@ public:
 
     Buffer_<int> SelectCandidates(const Tensor& block_hidden, const Buffer_<int>& anchors) const;
 
+    /// Associate the next context projection with an eligible request.
+    void ArmParityContext(uint64_t uid) const;
+
+    /// Start the optional first-real-block parity capture.
+    void BeginParityBlock(const Buffer_<int>& anchors, uint64_t uid, int seq_len, int input_len) const;
+
+    /// Flush a complete context, draft, and selector capture.
+    /// Returns true when the flush synchronized the model stream.
+    bool FinishParityBlock() const;
+
+    bool ParityActive() const;
+
     /// Temporary correctness path: run full attention for each draft layer on
     /// projected target context, preserving its K/V in dedicated cache slots.
     void MaterializeContextKV(int target_phase, const Tensor& context) const;
 
 private:
+    struct ParityTrace;
+
+    void CaptureParityTensor(const char* name, const Tensor& value) const;
+    void PrepareParityContext(const Tensor& target_hidden, const Tensor& projected, const Tensor& normalized) const;
+
     const DFlashWeight& weights_;
     int                 hidden_units_{};
     int                 num_context_features_{};
@@ -83,6 +101,7 @@ private:
     EmbedFn                        embed_fn_;
     LogitsFn                       logits_fn_;
     CandidatesFn                   candidates_fn_;
+    mutable std::unique_ptr<ParityTrace> parity_trace_;
 };
 
 }  // namespace turbomind

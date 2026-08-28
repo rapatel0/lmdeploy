@@ -1142,6 +1142,9 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
     if (dflash_predictor_ && env.try_("dflash_target_hidden") && !unified_decoder_->is_warm_up()) {
         NvtxScope scope("dflashContextKV");
+        if (d.rows.size() == 1 && engine_param_.num_draft_tokens == 7) {
+            dflash_predictor_->ArmParityContext(d.uids[0]);
+        }
         Tensor context = dflash_predictor_->ProjectContext(env.at("dflash_target_hidden"));
         dflash_predictor_->MaterializeContextKV(phase, context);
         env.produce("dflash_context_hidden", std::move(context));
@@ -1425,11 +1428,16 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     }
 
     auto anchors = autoreg_ids_.slice(0, bsz);
+    if (bsz == 1 && K == 7) {
+        dflash_predictor_->BeginParityBlock(anchors, d.uids[0], tips[0], d.input_lens[0]);
+    }
     Tensor block_hidden = dflash_predictor_->DraftBlock(anchors, phase, env);
     Buffer_<int> candidates = dflash_predictor_->SelectCandidates(block_hidden, anchors);
-    Buffer_<int> host{candidates.size(), kCPU};
+    Buffer_<int> host{candidates.size(), dflash_predictor_->ParityActive() ? kCPUpinned : kCPU};
     core::Copy(candidates, candidates.size(), host);
-    core::Context::stream().Sync();
+    if (!dflash_predictor_->FinishParityBlock()) {
+        core::Context::stream().Sync();
+    }
 
     for (int i = 0; i < bsz; ++i) {
         auto& row = *d.rows[i];

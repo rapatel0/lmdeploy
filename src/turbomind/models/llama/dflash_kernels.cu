@@ -327,6 +327,7 @@ __global__ void DFlashMergeTopK16Kernel(int*         ids,
     }
 }
 
+template<bool TraceScores>
 __global__ void DFlashGreedySelectorHalf(int*         output,
                                          const int*   anchors,
                                          const int*   candidates,
@@ -334,6 +335,7 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
                                          const __half* hidden,
                                          const __half* predecessor,
                                          const __half* successor,
+                                         float*        trace_scores,
                                          int           batch_size,
                                          int           slots,
                                          int           top_k,
@@ -363,6 +365,9 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
                 score += __half2float(pred[i]) * __half2float(state[i]) * __half2float(succ[i]);
             }
             candidate_scores[candidate_index] = score;
+            if constexpr (TraceScores) {
+                trace_scores[(batch * slots + slot) * top_k + candidate_index] = score;
+            }
         }
         __syncthreads();
         if (threadIdx.x == 0) {
@@ -632,7 +637,8 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                  const Tensor&       successor_codebook,
                                  int                 slots,
                                  int                 top_k,
-                                 cudaStream_t        stream)
+                                 cudaStream_t        stream,
+                                 Tensor*             trace_scores)
 {
     TM_CHECK_EQ(top_k, 16);
     TM_CHECK_EQ(selector_hidden.dtype(), kHalf);
@@ -646,17 +652,36 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
     TM_CHECK_EQ(selector_hidden.shape(0), (ssize_t)batch_size * slots);
     TM_CHECK_EQ(predecessor_codebook.shape(1), rank);
     TM_CHECK_EQ(successor_codebook.shape(1), rank);
-    DFlashGreedySelectorHalf<<<batch_size, 32, 0, stream>>>(output.data(),
-                                                           anchors.data(),
-                                                           candidate_ids.data(),
-                                                           unary_scores.data<float>(),
-                                                           (const __half*)selector_hidden.raw_data(),
-                                                           (const __half*)predecessor_codebook.raw_data(),
-                                                           (const __half*)successor_codebook.raw_data(),
-                                                           batch_size,
-                                                           slots,
-                                                           top_k,
-                                                           rank);
+    if (trace_scores) {
+        TM_CHECK_EQ(trace_scores->dtype(), kFloat32);
+        TM_CHECK_EQ(trace_scores->size(), (ssize_t)batch_size * slots * top_k);
+        DFlashGreedySelectorHalf<true><<<batch_size, 32, 0, stream>>>(output.data(),
+                                                                     anchors.data(),
+                                                                     candidate_ids.data(),
+                                                                     unary_scores.data<float>(),
+                                                                     (const __half*)selector_hidden.raw_data(),
+                                                                     (const __half*)predecessor_codebook.raw_data(),
+                                                                     (const __half*)successor_codebook.raw_data(),
+                                                                     trace_scores->data<float>(),
+                                                                     batch_size,
+                                                                     slots,
+                                                                     top_k,
+                                                                     rank);
+    }
+    else {
+        DFlashGreedySelectorHalf<false><<<batch_size, 32, 0, stream>>>(output.data(),
+                                                                      anchors.data(),
+                                                                      candidate_ids.data(),
+                                                                      unary_scores.data<float>(),
+                                                                      (const __half*)selector_hidden.raw_data(),
+                                                                      (const __half*)predecessor_codebook.raw_data(),
+                                                                      (const __half*)successor_codebook.raw_data(),
+                                                                      nullptr,
+                                                                      batch_size,
+                                                                      slots,
+                                                                      top_k,
+                                                                      rank);
+    }
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
