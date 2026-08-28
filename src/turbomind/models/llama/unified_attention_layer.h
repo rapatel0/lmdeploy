@@ -56,6 +56,7 @@ public:
         int               layer_id;
         float             output_input_scale{1.f};
         bool              kv_only{false};
+        bool              use_dflash_workspace{false};
     };
 
     ~UnifiedAttentionLayer();
@@ -113,7 +114,6 @@ private:
     std::set<int>  setup_logged_;
 
     /// Bounded counter for the KV kernel argument dump. Diagnostic only.
-    int            kv_dumps_{0};
 
     ///////////////////////////////////////////////////////
     /// temp runtime buffers (allocated in constructor)

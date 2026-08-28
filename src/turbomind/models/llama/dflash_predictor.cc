@@ -867,7 +867,9 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                             attn_output,
                             layer->attention.get(),
                             attention_indices_[i],
-                            1.f / kResidualScale});
+                            1.f / kResidualScale,
+                            false,
+                            true});
         report_layer(i, ".attention.wo_local", attn_output);
         if (reduce_before_conv) {
             reduce_branch(attn_output);

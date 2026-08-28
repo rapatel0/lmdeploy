@@ -21,6 +21,7 @@
 
 #include "src/turbomind/engine/block.h"
 #include <algorithm>
+#include <cstdlib>
 #include <string>
 #include <functional>
 #include <math.h>
@@ -147,6 +148,20 @@ struct AttentionData {
     // content is only built at Forward time. Consumed by the attention reduce.
     Buffer_<bool> token_mask;
     int           token_mask_base = 0;  // this DP rank's token offset within the global mask
+
+    struct DFlashWorkspace {
+        Tensor qkv;
+        Tensor attention;
+        Tensor flattened_kv;
+        int    max_tokens{};
+        int    max_k_sum{};
+        int    qkv_width{};
+        int    attention_width{};
+        int    local_kv_heads{};
+        int    head_dim{};
+        bool   initialized{};
+        bool   traced{};
+    } dflash_workspace;
 
     // int dbg_offset;
     // int dbg_size;
@@ -637,12 +652,92 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
 
     auto& d = *data_.at(p.phase);
 
+    static const bool persistent_dflash_workspace = [] {
+        const char* value = std::getenv("TM_DFLASH_PERSISTENT_WORKSPACE");
+        return !value || value[0] != '0';
+    }();
+    AttentionData::DFlashWorkspace* dflash_workspace = nullptr;
+    const int dflash_batch = d.decode.n + d.prefill.n;
+    if (p.use_dflash_workspace && persistent_dflash_workspace && dflash_batch == 1) {
+        TM_CHECK(!p.kv_only);
+        TM_CHECK(engine_param_.speculative_algorithm == "dflash2");
+        TM_CHECK(weights.w_qkv && weights.w_qkv->output_dim);
+        TM_CHECK(!weights.is_mla());
+
+        auto& workspace = d.dflash_workspace;
+        const int draft_block = std::max(1,
+                                         engine_param_.speculative_dflash_block_size > 0 ?
+                                             engine_param_.speculative_dflash_block_size :
+                                             engine_param_.num_draft_tokens + 1);
+        const int local_heads    = weights.head_num / weights.tp_size;
+        const int local_kv_heads = weights.kv_head_num / weights.tp_size;
+        const int qkv_width      = weights.w_qkv->output_dim;
+        const int attention_width = local_heads * weights.head_dim;
+        const int max_tokens      = draft_block;
+        // Graph replay is restricted to batch one. FlattenKV materializes the
+        // full logical key span before the attention kernel applies its window,
+        // so reserve the configured session plus the proposal block.
+        const int max_k_sum = engine_param_.session_len + draft_block;
+        TM_CHECK_EQ(token_num, draft_block);
+
+        if (!workspace.initialized) {
+            workspace.qkv = {{max_tokens, qkv_width}, engine_param_.data_type, kDEVICE};
+            workspace.attention = {{max_tokens, attention_width}, engine_param_.data_type, kDEVICE};
+            workspace.flattened_kv = {{local_kv_heads,
+                                       2,
+                                       max_k_sum + MAX_CTA_S,
+                                       weights.head_dim},
+                                      engine_param_.data_type,
+                                      kDEVICE};
+            workspace.max_tokens = max_tokens;
+            workspace.max_k_sum = max_k_sum;
+            workspace.qkv_width = qkv_width;
+            workspace.attention_width = attention_width;
+            workspace.local_kv_heads = local_kv_heads;
+            workspace.head_dim = weights.head_dim;
+            workspace.initialized = true;
+        }
+
+        TM_CHECK_EQ(workspace.qkv_width, qkv_width);
+        TM_CHECK_EQ(workspace.attention_width, attention_width);
+        TM_CHECK_EQ(workspace.local_kv_heads, local_kv_heads);
+        TM_CHECK_EQ(workspace.head_dim, weights.head_dim);
+        TM_CHECK_LE(token_num, workspace.max_tokens);
+
+        static const bool trace_workspace = [] {
+            const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");
+            return value && value[0] == '1';
+        }();
+        if (trace_workspace && !workspace.traced) {
+            workspace.traced = true;
+            TM_LOG_INFO("[DFlash2] attention workspace phase={} qkv={} attention={} flattened_kv={} "
+                        "max_tokens={} max_k_sum={} qkv_width={} attention_width={} kv_heads={} head_dim={}",
+                        p.phase,
+                        (uintptr_t)workspace.qkv.raw_data(),
+                        (uintptr_t)workspace.attention.raw_data(),
+                        (uintptr_t)workspace.flattened_kv.raw_data(),
+                        workspace.max_tokens,
+                        workspace.max_k_sum,
+                        workspace.qkv_width,
+                        workspace.attention_width,
+                        workspace.local_kv_heads,
+                        workspace.head_dim);
+        }
+        dflash_workspace = &workspace;
+    }
+    // ForwardParam is by value. Clear eligibility for unsupported batches so
+    // core_attention cannot accidentally reuse an initialized batch-one arena.
+    p.use_dflash_workspace = dflash_workspace != nullptr;
+
     // if (d.dbg_size) {
     //     DebugTensor(p.input.slice(d.dbg_offset, d.dbg_size), Concat("attn_in", p.layer_id), 0);
     // }
 
     if (weights.w_qkv && weights.w_qkv->output_dim) {
         // [token_num, hidden_dim] -> [token_num, local_q_kv_head_num, head_dim]
+        if (dflash_workspace) {
+            qkv = dflash_workspace->qkv.slice(0, token_num);
+        }
         TM_SCOPE_CALL(linear_.Forward(p.input, *weights.w_qkv, qkv));
 
         qk_norm(qkv, weights);
@@ -747,11 +842,23 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
 
     const int local_q_kv_head_num = local_head_num + 2 * local_kv_head_num;
 
-    Tensor attn{{q_count, local_head_num * size_per_head}, dtype, device};
+    const bool use_dflash_workspace = p.use_dflash_workspace && d.dflash_workspace.initialized;
+    if (use_dflash_workspace) {
+        TM_CHECK_LE(q_count, d.dflash_workspace.max_tokens);
+        TM_CHECK_LE(d.prefill.k_sum, d.dflash_workspace.max_k_sum);
+    }
+    Tensor attn = use_dflash_workspace ? d.dflash_workspace.attention.slice(0, q_count) :
+                                         Tensor{{q_count, local_head_num * size_per_head}, dtype, device};
 
     const bool is_mla = weights.is_mla();
 
-    Tensor tmp_kv{{local_kv_head_num, is_mla ? 1 : 2, d.prefill.k_sum + MAX_CTA_S, size_per_head}, dtype, device};
+    Tensor tmp_kv = use_dflash_workspace ? d.dflash_workspace.flattened_kv :
+                                           Tensor{{local_kv_head_num,
+                                                   is_mla ? 1 : 2,
+                                                   d.prefill.k_sum + MAX_CTA_S,
+                                                   size_per_head},
+                                                  dtype,
+                                                  device};
 
     auto CreateParams = [&](int offset, AttentionData::Stat stat, int max_kv_splits, cudaStream_t stream) {
         AttentionParams<T> params{};
@@ -919,60 +1026,6 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         // disable split kv for prefill for now
         auto params = CreateParams(offset, d.prefill, 1, pf_stream);
         if constexpr (sizeof(T) == 2) {
-            // Dump what the KV kernel is actually given, once.
-            //
-            // Two host-side assertions -- Setup's block-count check and the
-            // draft's reach check -- both stay silent while this kernel faults,
-            // so the numbers the kernel receives differ from the numbers I have
-            // been reasoning about. Five separate readings of the arithmetic
-            // all concluded it fits; the hardware disagrees, so the arithmetic
-            // is not the thing to read again.
-            // Fire on SPECULATIVE prefill calls, not the first prefill call.
-            //
-            // The one-shot guard captured the prompt prefill -- 1102 tokens in
-            // 18 blocks, entirely healthy -- and then stayed quiet for the step
-            // that actually faults. A diagnostic that reports the wrong call is
-            // worse than none: it looks like evidence.
-            //
-            // A verification forward is prefill-shaped but short: q_sum is
-            // bsz * (1 + num_drafts), never the prompt length. Bounding the
-            // dump to small prefills selects those and skips the prompt.
-            const bool spec_shaped = d.prefill.q_sum <= 64;
-            if (spec_shaped && kv_dumps_ < 4) {
-                ++kv_dumps_;
-                Buffer_<int> off_host{d.prefill.n + 1, kCPU};
-                Copy(d.block_ptrs_offsets.slice(offset, d.prefill.n + 1), off_host);
-                core::Context::stream().Sync();
-                std::string offs;
-                for (int i = 0; i <= d.prefill.n; ++i) {
-                    offs += std::to_string(off_host[i]) + (i < d.prefill.n ? "," : "");
-                }
-                // Blocks the k_max keys actually need, against the blocks this
-                // row's offsets say it owns. If those disagree the fault is
-                // located; if they agree the address error is elsewhere and
-                // this rules the block table out for the failing call rather
-                // than for a healthy one.
-                const int need_blocks = (d.prefill.k_max + engine_param_.cache_block_seq_len - 1)
-                                        / engine_param_.cache_block_seq_len;
-                const int have_blocks = d.prefill.n > 0 ? off_host[1] - off_host[0] : 0;
-
-                TM_LOG_ERROR("[kv] SPEC num_drafts0={} need_blocks={} have_blocks={} phase={} offset={} "
-                             "prefill.n={} q_sum={} k_sum={} k_max={} "
-                             "block_len={} cache_block_offset={} block_ptr_offsets=[{}]",
-                             d.num_drafts0,
-                             need_blocks,
-                             have_blocks,
-                             p.phase,
-                             offset,
-                             d.prefill.n,
-                             d.prefill.q_sum,
-                             d.prefill.k_sum,
-                             d.prefill.k_max,
-                             engine_param_.cache_block_seq_len,
-                             (int)weights.cache_block_offset,
-                             offs);
-            }
-
             invokeProcessKV_v2_(params);
             TM_CUDA_CHECK(cudaGetLastError());
 
