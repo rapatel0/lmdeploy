@@ -1632,8 +1632,27 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             }
         }
 
+        static const bool zero_accept_replay = [] {
+            const char* s = std::getenv("TM_MTP_ZERO_ACCEPT_REPLAY");
+            return s && s[0] == '1';
+        }();
         if (gdn_rollback_) {
-            if (has_intermediate_gdn) {
+            if (has_intermediate_gdn && zero_accept_replay && n == 0) {
+                // A K+1 verifier forward is numerically close to, but not
+                // bit-identical with, the ordinary one-token target path. On
+                // a measured FP16 near-tie its position-zero bonus can choose
+                // the other argmax even when every draft is rejected. Restore
+                // slot zero and let the next ordinary forward recompute the
+                // token with the canonical target-only shape. This costs one
+                // replay only on zero-accept steps and is kept behind a flag
+                // until the matched throughput cost is known.
+                clamped             = true;
+                gdn_restore_[i]     = 1;
+                restore_gdn         = true;
+                no_commit_[i]       = 1;
+                gdn_state_slots_[i] = -1;
+            }
+            else if (has_intermediate_gdn) {
                 // Verification input is [old tip, D0, ...]. If n drafts and
                 // the bonus commit, state must include input positions through
                 // D(n-1): slot n+1. An accepted EOS draft omits the bonus and
