@@ -240,9 +240,10 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
     TM_CUDA_CHECK(cudaEventCreateWithFlags(&aux_event_, cudaEventDisableTiming));
 
     init_rope_kernel_param(rope_, rope_param_);
-    rope_params_.resize(weights.size());
-    for (int i = 0; i < (int)weights.size(); ++i) {
-        init_rope_kernel_param(weights[i]->rope, rope_params_[i]);
+    for (const auto* weight : weights) {
+        RopeKernelParam param{};
+        init_rope_kernel_param(weight->rope, param);
+        rope_params_.emplace(weight, param);
     }
 
     const int bsz = engine.max_batch_size;
@@ -848,7 +849,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
             const char* value = std::getenv("TM_DFLASH_PER_LAYER_ROPE");
             return !value || value[0] != '0';
         }();
-        params.rope_param = per_layer_rope ? rope_params_.at(p.layer_id) : rope_param_;
+        params.rope_param = per_layer_rope ? rope_params_.at(&weights) : rope_param_;
         if (params.rope_param.type == RopeType::kDynamic) {
             params.rope_param.base = d.rope_base.data() + offset;
         }

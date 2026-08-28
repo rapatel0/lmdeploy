@@ -23,6 +23,7 @@
 
 #include <cuda_runtime.h>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 #include "src/turbomind/core/core.h"
@@ -96,8 +97,8 @@ private:
 
     RNG rng_;
 
-    RopeKernelParam              rope_param_{};
-    std::vector<RopeKernelParam> rope_params_;
+    RopeKernelParam                                         rope_param_{};
+    std::unordered_map<const WeightType*, RopeKernelParam>  rope_params_;
 
     std::vector<std::shared_ptr<AttentionData>> data_;
 
