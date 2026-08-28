@@ -43,6 +43,17 @@ trap finish EXIT
 echo "=== source ==="
 cat /src/SOURCE_STAMP 2>/dev/null || echo "no SOURCE_STAMP"
 
+# Qualify the corrected, best-performing lifecycle rather than inheriting the
+# launcher's old diagnostic defaults. Repair is active only for the measured
+# batch-size-one fast path; the mixed-row identity arms still exercise the
+# committed-frontier rebuild without the batch-size-one repair shortcut.
+export TM_MTP_TP_REDUCE=1
+export TM_MTP_EAGLE_ROTATION=1
+export TM_MTP_LOCAL_TOP1=1
+export TM_MTP_FROZEN_KV=0
+export TM_MTP_ACCEPTED_REPAIR=1
+export TM_MTP_SKIP_ATTN=0
+
 echo
 echo "=== build ==="
 # The progress line stalls at roughly 351/359 for several minutes while
