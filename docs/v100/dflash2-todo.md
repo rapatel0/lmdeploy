@@ -63,7 +63,7 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - [ ] **Add first-block tensor parity against SGLang.**
   - Commit `33c0cf2c` added a trace-only first-real-block capture for target features, context FC/norm, draft boundaries, production candidates, unary scores, selector state, edge scores, and selected IDs.
   - The capture uses pinned host copies, unique process/rank directories, and one final synchronization.
-  - Next: validate the trace on TP4, add matching hooks to the pinned SGLang V100 image, then compare the first mismatch.
+  - Next: validate the trace on TP4 and compare the first mismatch against read-only SGLang reference behavior; all durable changes remain in TurboMind.
   - Done when: the first numerical divergence is identified and either fixed or documented as intentional.
 
 - [x] **Validate selector edge-score narrowing semantics.**
@@ -98,10 +98,10 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - K=7 spent 59.1% of aggregate CUDA API time inside 25,332 `cudaMemcpyAsync` calls.
   - The hot speculative readbacks use pageable host buffers, so pinned staging is the first measured host-control experiment.
 
-- [ ] **Replace pageable speculative readbacks with persistent pinned staging.**
-  - Commit `057db9a7` adds one-build pageable, pinned, and pinned-plus-combined rollback arms.
-  - It also retains per-phase ownership so asynchronous copies cannot race the next scheduler phase.
-  - Done when: five-trial normalized cycle time improves, exact audited identity passes, and the parity trace smoke test passes on all four ranks.
+- [x] **Test persistent pinned staging for speculative readbacks.**
+  - Five-trial acceptance-normalized cycle time was 43.04 ms pageable, 42.92 ms pinned, and 42.99 ms pinned plus one combined rollback barrier.
+  - The largest change was 0.3%, so the apparent `cudaMemcpyAsync` API cost was outstanding GPU work at the synchronization boundary rather than removable pageable staging overhead.
+  - Exact audited identity passed. The experimental hot-path buffers and controls were removed.
 
 - [x] **Tune SM70 small-Q attention tiles for the verifier and draft.**
   - Fresh Nsight attribution: target head-dim-256 verification attention is 11.9% of K=7 GPU time; all draft head-dim-128 attention is 1.2%.

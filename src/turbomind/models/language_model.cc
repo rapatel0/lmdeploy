@@ -105,13 +105,8 @@ struct LanguageModel::Impl {
         Buffer_<int> sequence_length_host;
         Buffer_<int> readonly_block_num_host;
 
-        // Persistent pinned readback buffers for speculative host control.
-        // Their per-phase ownership prevents the next Setup from replacing
-        // memory while the executor still has asynchronous copies in flight.
-        Buffer_<int>  spec_draft_tips_host;
-        Buffer_<int>  spec_draft_candidates_host;
-        Buffer_<int>  spec_rollback_host;
-        Buffer_<bool> spec_finished_host;
+        // Trace-only pinned staging for the production selector candidates.
+        Buffer_<int> spec_draft_candidates_host;
 
         Buffer_<bool> autoregres;
         Buffer_<bool> generating;
@@ -468,10 +463,7 @@ LanguageModel::Impl::Impl(
         auto& d                   = data_.emplace_back();
         d.sequence_length_host       = {engine.max_batch_size, kCPUpinned};
         d.readonly_block_num_host    = {engine.max_batch_size, kCPUpinned};
-        d.spec_draft_tips_host       = {engine.max_batch_size, kCPUpinned};
         d.spec_draft_candidates_host = {engine.max_batch_size * Sequence::kMaxDraftTokens, kCPUpinned};
-        d.spec_rollback_host         = {engine.max_batch_size * 6, kCPUpinned};
-        d.spec_finished_host         = {engine.max_batch_size, kCPUpinned};
         d.sequence_length    = empty_like(d.sequence_length_host, kDEVICE);
         d.readonly_block_num = empty_like(d.readonly_block_num_host, kDEVICE);
         d.finished           = empty_like(finished_buf_, kDEVICE);
@@ -1427,11 +1419,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     Buffer_<int> k_offsets = env.at("k_offsets").buffer();
     PrefixSum(sequence_length_.front().data<int>(), bsz, k_offsets.data(), core::Context::stream().handle());
 
-    static const bool pinned_staging = [] {
-        const char* value = std::getenv("TM_DFLASH_PINNED_STAGING");
-        return value && value[0] == '1';
-    }();
-    Buffer_<int> tips = pinned_staging ? d.spec_draft_tips_host.slice(0, bsz) : Buffer_<int>{bsz, kCPU};
+    Buffer_<int> tips{bsz, kCPU};
     Copy(sequence_length_.front().buffer().slice(0, bsz), tips);
     core::Context::stream().Sync();
     for (int i = 0; i < bsz; ++i) {
@@ -1449,7 +1437,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     }
     Tensor block_hidden = dflash_predictor_->DraftBlock(anchors, phase, env);
     Buffer_<int> candidates = dflash_predictor_->SelectCandidates(block_hidden, anchors);
-    Buffer_<int> host = pinned_staging || dflash_predictor_->ParityActive() ?
+    Buffer_<int> host = dflash_predictor_->ParityActive() ?
                             d.spec_draft_candidates_host.slice(0, candidates.size()) :
                             Buffer_<int>{candidates.size(), kCPU};
     core::Copy(candidates, candidates.size(), host);
@@ -1885,31 +1873,12 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     auto&     d   = data_.at(phase);
     const int bsz = (int)d.rows.size();
 
-    static const bool pinned_staging = [] {
-        const char* value = std::getenv("TM_DFLASH_PINNED_STAGING");
-        return value && value[0] == '1';
-    }();
-    static const bool combine_syncs = [] {
-        const char* value = std::getenv("TM_DFLASH_COMBINE_ROLLBACK_SYNCS");
-        return value && value[0] == '1';
-    }();
-    auto host_ints = [&](int slot) {
-        return pinned_staging ? d.spec_rollback_host.slice((ssize_t)slot * max_batch_size_, bsz) :
-                                Buffer_<int>{bsz, kCPU};
-    };
-    Buffer_<int> accepted = host_ints(0);
-    Buffer_<int> bonus     = host_ints(1);
-    Buffer_<int> ambiguous = host_ints(2);
-    Buffer_<int> seq_lens  = host_ints(3);
-    Buffer_<int> out_ids   = host_ints(4);
-    Buffer_<int> tip_ids   = host_ints(5);
+    Buffer_<int> accepted{bsz, kCPU};
+    Buffer_<int> bonus{bsz, kCPU};
+    Buffer_<int> ambiguous{bsz, kCPU};
     Copy(env.at("num_accepted").buffer().slice(0, bsz), accepted);
     Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
     Copy(env.at("bonus_ambiguous").buffer().slice(0, bsz), ambiguous);
-    if (pinned_staging && combine_syncs) {
-        Copy(sequence_length_.front().buffer().slice(0, bsz), seq_lens);
-        Copy(autoreg_ids_.slice(0, bsz), out_ids);
-    }
     core::Context::stream().Sync();
 
     // Do NOT write token_ids or seq_len here.
@@ -1947,14 +1916,15 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     gdn_state_slots_.assign(bsz, -1);
     no_commit_.assign(bsz, 0);
     no_bonus_.assign(bsz, 0);
+    Buffer_<int> seq_lens{bsz, kCPU};
+    Buffer_<int> out_ids{bsz, kCPU};
+    Buffer_<int> tip_ids{bsz, kCPU};
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
     // Unprep, and Unprep is what copies the live buffer into d.sequence_length,
     // so reading d here would give the PREVIOUS step's lengths.
-    if (!(pinned_staging && combine_syncs)) {
-        Copy(sequence_length_.front().buffer().slice(0, bsz), seq_lens);
-        Copy(autoreg_ids_.slice(0, bsz), out_ids);
-        core::Context::stream().Sync();
-    }
+    Copy(sequence_length_.front().buffer().slice(0, bsz), seq_lens);
+    Copy(autoreg_ids_.slice(0, bsz), out_ids);
+    core::Context::stream().Sync();
     std::copy_n(out_ids.data(), bsz, tip_ids.data());
 
     for (int i = 0; i < bsz; ++i) {
@@ -2287,7 +2257,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     }
 
     if (std::find(eos_hit_.begin(), eos_hit_.begin() + bsz, true) != eos_hit_.begin() + bsz) {
-        Buffer_<bool> host = pinned_staging ? d.spec_finished_host.slice(0, bsz) : Buffer_<bool>{bsz, kCPU};
+        Buffer_<bool> host{bsz, kCPU};
         Copy(finished_.front().buffer().slice(0, bsz), host);
         core::Context::stream().Sync();
         for (int i = 0; i < bsz; ++i) {

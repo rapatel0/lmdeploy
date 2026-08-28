@@ -252,7 +252,9 @@ Context-KV work adds approximately 0.52 ms per verification. Together these rang
 
 CUDA API attribution exposed the first host-control target. The K=7 capture issued 25,332 `cudaMemcpyAsync` calls that consumed 6.07 seconds of aggregate API time, or 59.1% of reported CUDA API time. It also issued 108,040 `cudaMallocFromPoolAsync` and 108,040 `cudaFreeAsync` calls. The speculative verdict, length, tip, and candidate readbacks use temporary pageable host buffers. Pageable asynchronous copies can block during host staging before the explicit stream synchronization.
 
-Commit `057db9a7` adds persistent per-phase pinned readback buffers and a three-arm pageable, pinned, and pinned-plus-combined synchronization experiment. The same build also validates exact identity and the first-block parity trace. Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
+The three-arm result falsified pageable staging as a useful optimization. Acceptance-normalized cycle time was 43.04 ms with pageable buffers, 42.92 ms with pinned buffers, and 42.99 ms with pinned buffers plus a combined rollback barrier. The maximum difference was 0.3%. Exact audited identity passed for the combined arm. Raw decode throughput was not used for attribution because fresh-process commit length differed at 2.620, 2.478, and 2.669.
+
+The large `cudaMemcpyAsync` API attribution therefore mostly represents outstanding GPU work encountered at host-control synchronization boundaries, not removable host staging overhead. The pinned hot-path buffers and controls were removed. The trace smoke subtest requested only eight outputs, which suppresses a seven-token draft near the generation limit, so it produced no parity trace; parity capture remains separately unvalidated rather than failed. Experiment artifacts: `/results/20260828_214332-dflash-pinned-staging-057db9a76ebc`. Profile artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 
 ## Rollback barrier merge
 

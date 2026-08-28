@@ -59,8 +59,7 @@ Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 
 - Treat the rollback barrier merge as closed.
 - It changed normalized cycle time from 43.11 to 43.13 ms and provided no gain.
-- First replace pageable speculative readbacks with persistent pinned per-phase staging.
-- Re-test the rollback barrier merge after pageable implicit synchronization is removed.
+- Persistent pinned staging was falsified: pageable, pinned, and pinned-plus-combined arms measured 43.04, 42.92, and 42.99 ms per acceptance-normalized cycle.
 - Replace the host sequence-limit check with a device predicate.
 - Keep proposal IDs in device memory through verification setup.
 - Keep accepted lengths, bonus IDs, and published lengths in device memory.
