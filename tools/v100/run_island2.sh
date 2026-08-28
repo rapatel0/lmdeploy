@@ -155,6 +155,7 @@ manifest = {
                     # Staged from the SGLang V100 image because the lean
                     # LMDeploy build image does not ship Nsight Systems.
                     {"name": "nsys", "mountPath": "/opt/nsys", "readOnly": True},
+                    {"name": "sglang-corpus", "mountPath": "/sglang-corpus", "readOnly": True},
                 ]}],
             "volumes": [
                 {"name": "job", "configMap": {"name": f"{job}-script"}},
@@ -168,6 +169,7 @@ manifest = {
                 # anything. Jobs copy their artifacts here.
                 {"name": "results", "hostPath": {"path": "/localpool/lmdeploy-v100-next/results", "type": "DirectoryOrCreate"}},
                 {"name": "nsys", "hostPath": {"path": "/localpool/lmdeploy-v100-next/nsys-cli", "type": "Directory"}},
+                {"name": "sglang-corpus", "hostPath": {"path": "/localpool/lmdeploy-v100-next/sglang-corpus", "type": "Directory"}},
             ]}}}}
 print(json.dumps(manifest))
 PY

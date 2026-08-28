@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import statistics
 import sys
 import time
+from pathlib import Path
 
 
 def build_prompt(tokenizer, target_tokens: int) -> str:
@@ -46,6 +48,86 @@ def build_prompt(tokenizer, target_tokens: int) -> str:
     while len(tokenizer.encode(text)) < target_tokens:
         text += filler
     return text
+
+
+SOURCE_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".md",
+    ".py", ".rs", ".sh", ".toml", ".yaml", ".yml",
+}
+EXCLUDED_PARTS = {
+    ".git", ".pytest_cache", "__pycache__", "build", "dist",
+    "node_modules", "target", "third_party",
+}
+TASKS = [
+    "Identify the most important correctness and reliability risks in this code and explain concrete fixes.",
+    "Trace the major data flow through this code, then propose a practical optimization that preserves behavior.",
+    "Review this code as a senior maintainer. Prioritize bugs, unsafe assumptions, and missing tests.",
+    "Produce an implementation plan for improving this code, including likely regressions and validation steps.",
+]
+
+
+def stable_int(*parts: object) -> int:
+    digest = hashlib.sha256("|".join(map(str, parts)).encode()).digest()
+    return int.from_bytes(digest[:8], "little")
+
+
+def build_sglang_prompt(tokenizer, repo: Path, target_len: int) -> tuple[str, list[int], str]:
+    """Reproduce SGLang's audited repeat=0, concurrency=1 prompt exactly."""
+    chunks: list[str] = []
+    total_chars = 0
+    for path in sorted(repo.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
+            continue
+        rel = path.relative_to(repo)
+        if any(part in EXCLUDED_PARTS for part in rel.parts) or path.stat().st_size > 1_000_000:
+            continue
+        text = path.read_text(errors="ignore")
+        if not text.strip():
+            continue
+        chunks.append(f"\n\n# FILE: {rel}\n{text}")
+        total_chars += len(text)
+        if total_chars >= 1_500_000:
+            break
+    old_limit = tokenizer.model_max_length
+    tokenizer.model_max_length = 1_000_000_000
+    try:
+        corpus_ids = tokenizer.encode("".join(chunks), add_special_tokens=False)
+    finally:
+        tokenizer.model_max_length = old_limit
+    if len(corpus_ids) < 100_000:
+        raise RuntimeError(f"SGLang source corpus is too small: {len(corpus_ids)} tokens")
+
+    nonce = hashlib.sha256(f"0:{target_len}:1:0".encode()).hexdigest()[:16]
+    placeholder = f"\nZXQCORPUSMARKER{nonce.upper()}QXZ\n"
+    task = TASKS[stable_int(nonce) % len(TASKS)]
+    messages = [
+        {"role": "system", "content": (
+            f"Benchmark session {nonce}. You are a coding agent performing "
+            "a careful repository review. Be precise and evidence-driven."
+        )},
+        {"role": "user", "content": (
+            "The following is a slice of a real software repository.\n"
+            f"{placeholder}\nTask: {task}\n"
+            "Write a technically detailed response of at least 350 words. "
+            "Use specific examples from the supplied code and do not stop early."
+        )},
+    ]
+    rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    prefix_text, suffix_text = rendered.split(placeholder)
+    prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
+    suffix_ids = tokenizer.encode(suffix_text, add_special_tokens=False)
+    body_len = target_len - len(prefix_ids) - len(suffix_ids)
+    offset = stable_int(0, target_len, 1, 0) % len(corpus_ids)
+    body_ids = (corpus_ids + corpus_ids)[offset:offset + body_len]
+    if len(body_ids) != body_len:
+        repeats = (body_len + len(corpus_ids) - 1) // len(corpus_ids) + 1
+        body_ids = (corpus_ids * repeats)[offset:offset + body_len]
+    input_ids = prefix_ids + body_ids + suffix_ids
+    token_hash = hashlib.sha256(b"".join(i.to_bytes(4, "little") for i in input_ids)).hexdigest()
+    prompt = tokenizer.decode(input_ids, skip_special_tokens=False)
+    if tokenizer.encode(prompt, add_special_tokens=False) != input_ids:
+        raise RuntimeError("SGLang prompt does not survive decode/encode round-trip")
+    return prompt, input_ids, token_hash
 
 
 def is_degenerate(text: str) -> bool:
@@ -70,6 +152,12 @@ def main() -> int:
     parser.add_argument("--tp", type=int, default=4)
     parser.add_argument("--input-tokens", type=int, default=1024)
     parser.add_argument("--output-tokens", type=int, default=256)
+    parser.add_argument(
+        "--sglang-corpus",
+        default="",
+        help="repository slice used to reproduce SGLang's audited prompt exactly",
+    )
+    parser.add_argument("--expected-prompt-sha256", default="")
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--cache-max-entry-count", type=float, default=0.8)
     parser.add_argument(
@@ -197,8 +285,18 @@ def main() -> int:
 
     # Pipeline delegates to async_engine, which owns the tokenizer.
     tokenizer = pipe.async_engine.tokenizer
-    prompt = build_prompt(tokenizer, args.input_tokens)
-    encoded_input = len(tokenizer.encode(prompt))
+    prompt_hash = ""
+    if args.sglang_corpus:
+        prompt, prompt_ids, prompt_hash = build_sglang_prompt(tokenizer, Path(args.sglang_corpus), args.input_tokens)
+        encoded_input = len(prompt_ids)
+        print(f"SGLang prompt hash={prompt_hash}", flush=True)
+        if args.expected_prompt_sha256 and prompt_hash != args.expected_prompt_sha256:
+            raise RuntimeError(
+                f"SGLang prompt hash mismatch: expected {args.expected_prompt_sha256}, got {prompt_hash}"
+            )
+    else:
+        prompt = build_prompt(tokenizer, args.input_tokens)
+        encoded_input = len(tokenizer.encode(prompt))
     print(f"prompt encodes to {encoded_input} tokens", flush=True)
 
     # Greedy and ignore_eos so every trial generates exactly the requested

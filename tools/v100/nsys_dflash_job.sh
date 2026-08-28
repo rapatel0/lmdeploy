@@ -20,7 +20,10 @@ NSYS="$(command -v nsys 2>/dev/null || true)"
 if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then
     NSYS=/opt/nsys/nsys
 fi
-[ -n "${NSYS}" ] || { echo "FAIL: nsys unavailable" >&2; exit 2; }
+[ -n "${NSYS}" ] || {
+    echo "FAIL: nsys unavailable" >&2
+    exit 2
+}
 "${NSYS}" --version
 
 if ! bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1; then
@@ -37,7 +40,9 @@ for k in 0 7; do
     args=(
         --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
         --num-draft-tokens "${k}"
-        --input-tokens 1024 --output-tokens 128 --trials 1
+        --input-tokens 1000 --output-tokens 128 --trials 1
+        --sglang-corpus /sglang-corpus
+        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01
         --cache-max-entry-count 0.05 --cuda-profiler-range
         --json-out "${RESULTS}/bench_k${k}.json"
     )

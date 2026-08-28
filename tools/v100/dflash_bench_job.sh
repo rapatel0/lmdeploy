@@ -29,7 +29,9 @@ for K in 0 7; do
     ARGS=(
         --model "${MODEL}" --tp "${TP:-4}"
         --num-draft-tokens "${K}"
-        --input-tokens 1024 --output-tokens 256 --trials 3
+        --input-tokens 1000 --output-tokens 256 --trials 3
+        --sglang-corpus /sglang-corpus
+        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01
         --cache-max-entry-count 0.05
         --json-out "${RESULTS}/bench_k${K}.json"
     )
