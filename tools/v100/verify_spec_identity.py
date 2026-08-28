@@ -146,6 +146,7 @@ def main() -> int:
     parser.add_argument("--num-draft-tokens", type=int, default=4)
     parser.add_argument("--max-new-tokens", type=int, default=192)
     parser.add_argument("--baseline-replicas", type=int, default=1)
+    parser.add_argument("--skip-narrowing", action="store_true")
     parser.add_argument("--json-out", default="")
     args = parser.parse_args()
 
@@ -222,6 +223,9 @@ def main() -> int:
             "sampling, so this is a verification defect, not a tolerance issue.",
             file=sys.stderr,
         )
+
+        if args.skip_narrowing:
+            return 6
 
         # Narrow the cause before anyone starts reading kernels.
         #
