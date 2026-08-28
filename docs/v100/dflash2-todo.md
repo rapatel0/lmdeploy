@@ -69,12 +69,10 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Compare every interaction score and top-two edge margin from shared tensors; inspect SGLang's generated kernel before changing LMDeploy.
   - Done when: generated arithmetic is proven equivalent or LMDeploy matches the observed narrowing points.
 
-- [ ] **Fix draft RoPE ownership and validate post-RoPE K parity.**
-  - Classification: confirmed configuration defect.
-  - All DFlash layers inherited one target-global RoPE parameter: target head dimension 256 with partial multimodal RoPE, versus draft head dimension 128 with full standard RoPE.
+- [x] **Fix draft RoPE ownership and validate post-RoPE K parity.**
+  - All DFlash layers had inherited target partial multimodal RoPE instead of their own full 128-dimensional standard RoPE.
   - Per-layer RoPE raised commit length from 2.033 to 2.664 and decode from 46.98 to 61.39 tok/s.
-  - The first 256 token IDs match K=0, but the speculative response publishes one extra trailing token at the generation limit. A tail trace is running.
-  - Done when: the tail over-publication is fixed and exact audited identity passes.
+  - The generation-limit publication defect exposed by higher acceptance was fixed; exact audited K=0/K=7 identity passed for 256 tokens.
 
 - [ ] **Run isolated grouped-convolution arithmetic parity.**
   - Classification: lower-priority rounding hypothesis; indexing already appears aligned.
@@ -146,10 +144,10 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 ## Current measured state
 
-- LMDeploy DFlash2 audited decode: 42.27 tok/s
-- LMDeploy committed length: 1.862
+- LMDeploy DFlash2 audited decode: 61.39 tok/s
+- LMDeploy committed length: 2.664
 - SGLang committed length: 3.765
 - Exact short-workload identity: pass
-- Cumulative audited runtime gain from completed selector/context work: about 17%
+- Cumulative audited gain from the original 36.13 tok/s: about 70%
 
-The immediate execution order is: validate the corrected causal sliding-attention policy, verify draft RoPE ownership, then capture first-block tensor parity.
+The immediate execution order is: validate selector score narrowing, capture first-block tensor parity, then investigate context-KV/metadata lifecycle if the fidelity gap remains.

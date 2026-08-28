@@ -217,7 +217,7 @@ The audited A/B confirmed a large uplift:
 | target-global legacy | 2.033 | 46.98 |
 | per-layer checkpoint RoPE | 2.664 | 61.39 |
 
-This is a 31% acceptance gain and 30.7% throughput gain over the matched legacy arm. The first 256 generated token IDs matched K=0 exactly, but the speculative response incorrectly published one extra trailing token at the generation limit (257 versus 256). The remaining blocker is therefore tail-boundary publication, not a token-content divergence. A `TM_SPEC_TRACE` tail run is in progress.
+This is a 31% acceptance gain and 30.7% throughput gain over the matched legacy arm. Higher acceptance exposed a latent terminal-state defect: a verification reaching `max_seq_len` did not run Generation's ordinary stop criterion, so it could schedule one more step. The engine now clamps publication defensively and verification explicitly marks limit-reaching rows finished. The rebuilt audited gate passed exact K=0/K=7 identity for 256 generated tokens (`DFLASH_AUDITED_IDENTITY_PASS`, artifacts `/results/20260828_195358-dflash-audited-identity-7eaf894d0dee`).
 
 ## Acceptance gap
 
