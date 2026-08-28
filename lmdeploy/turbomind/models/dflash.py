@@ -1,6 +1,8 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """DFlash2 separate-checkpoint weight loader for TurboMind."""
 
+import os
+
 from ..builders import (
     DecoderLayerBuilder,
     DecoderLayerConfig,
@@ -48,10 +50,33 @@ class DFlash2Model(Qwen3TextModel):
             draft.get('final_logit_softcapping', getattr(cfg, 'final_logit_softcapping', None)), 0.0)
         try:
             self._target_layer_ids = tuple(int(i) for i in draft['target_layer_ids'])
-            self._attn_cfg.window_size = int(getattr(cfg, 'sliding_window', 0) or 0)
+            layer_types = tuple(getattr(cfg, 'layer_types', ()) or ())
+            if layer_types and len(layer_types) != int(cfg.num_hidden_layers):
+                raise ValueError('layer_types must contain one entry per draft layer')
+            unsupported = set(layer_types) - {'sliding_attention', 'full_attention'}
+            if unsupported:
+                raise ValueError(f'unsupported DFlash2 layer types: {sorted(unsupported)}')
+            if 'sliding_attention' in layer_types and 'full_attention' in layer_types:
+                raise ValueError('mixed DFlash2 attention types require per-layer TurboMind configuration')
+            legacy_policy = os.getenv('TM_DFLASH_LEGACY_ATTENTION_POLICY') == '1'
+            if legacy_policy:
+                self._attn_cfg.causal = bool(getattr(cfg, 'is_causal', False))
+                self._attn_cfg.window_size = int(getattr(cfg, 'sliding_window', 0) or 0)
+            elif layer_types and layer_types[0] == 'sliding_attention':
+                # SGLang treats DFlash sliding_attention as decoder attention
+                # even when the top-level draft config says is_causal=False.
+                # The published checkpoint uses exactly this combination.
+                self._attn_cfg.causal = True
+                self._attn_cfg.window_size = int(getattr(cfg, 'sliding_window'))
+            elif layer_types and layer_types[0] == 'full_attention':
+                # SGLang defaults DFlash full_attention to encoder-only.
+                self._attn_cfg.causal = False
+                self._attn_cfg.window_size = 0
+            else:
+                self._attn_cfg.causal = bool(getattr(cfg, 'is_causal', False))
+                self._attn_cfg.window_size = int(getattr(cfg, 'sliding_window', 0) or 0)
         except (KeyError, TypeError, ValueError) as e:
-            raise ValueError('invalid DFlash2 target layers or sliding window') from e
-        self._attn_cfg.causal = bool(getattr(cfg, 'is_causal', False))
+            raise ValueError('invalid DFlash2 target layers or attention policy') from e
 
     def _conv(self, pfx):
         cfg = DFlashConvConfig()

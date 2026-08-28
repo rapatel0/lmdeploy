@@ -160,7 +160,7 @@ LMDeploy performs:
 
 For MLP, SGLang likewise reduces raw W2 first, then restores dynamic row scale and applies the output convolution. LMDeploy restores the scale and convolves each rank's partial output before reduction.
 
-These forms commute in exact arithmetic but not across FP16 stores and FP16 NCCL. The mismatch occurs at ten branch boundaries across five layers and is now the strongest confirmed draft-fidelity defect.
+These forms commute in exact arithmetic but not across FP16 stores and FP16 NCCL. However, the audited A/B falsified this as an explanation for low acceptance: raw commit was 2.107 with the old order and 2.110 with reduce-first, while decode fell from 47.18 to 46.16 tok/s. The short identity gate passed both arms. Keep this as a tensor-parity discrepancy, not an acceptance lead.
 
 ## Confirmed acceptance-accounting amplifier
 
@@ -184,6 +184,21 @@ Commit `720c8e70` added raw-versus-final counters. The audited matrix measured:
 Thus the 0.0625 policy discards roughly 0.22-0.26 tokens per verification and costs about 4-5 tok/s. It explains a meaningful part of the low published acceptance, but raw fidelity is still only about 2.1 versus SGLang's 3.765. The remaining gap is predominantly draft-network fidelity, not accounting.
 
 A zero margin can still flag exact ties, as seen in the round-on arm. The no-round/zero-margin configuration passed exact audited-prompt identity, so the default margin was changed to zero while preserving the environment override for conservative diagnostics.
+
+## Confirmed checkpoint attention-policy defect
+
+The published checkpoint declares:
+
+- `architectures=["DFlash2DraftModel"]`;
+- five `layer_types`, all `sliding_attention`;
+- `sliding_window=2048`;
+- top-level `is_causal=false`.
+
+SGLang deliberately interprets every DFlash `sliding_attention` layer as decoder/causal attention regardless of the top-level flag, with 2047 visible tokens to the left. LMDeploy ignored `layer_types` and copied `is_causal=false`, so all five trained causal draft layers ran as non-causal attention. Depending on the TurboMind kernel specialization, this can also defeat enforcement of the intended left window.
+
+The checkpoint is the generic DFlash2 architecture, not Laguna: its 81 tensor keys contain no `aux_hidden_norms` or `g_proj`. Thus Laguna-specific missing weights are not an active issue for this model.
+
+The loader now validates `layer_types`, configures homogeneous sliding layers as causal/windowed and homogeneous full layers as encoder-only, and rejects unsupported mixed policies instead of silently flattening them. A legacy-policy A/B and exact audited identity gate are required before closing this defect.
 
 ## Acceptance gap
 

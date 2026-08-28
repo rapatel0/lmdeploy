@@ -113,8 +113,8 @@ def main() -> int:
     if draft != baseline:
         first = next((i for i, (a, b) in enumerate(zip(baseline, draft)) if a != b), min(len(baseline), len(draft)))
         print(f"DFLASH_AUDITED_IDENTITY_FAIL first_difference={first}")
-        print(f"baseline[{first}:{first + 8}]={baseline[first:first + 8]}")
-        print(f"dflash[{first}:{first + 8}]={draft[first:first + 8]}")
+        print(f"baseline[{first}:{first + 8}]={baseline[first : first + 8]}")
+        print(f"dflash[{first}:{first + 8}]={draft[first : first + 8]}")
         return 2
     print("DFLASH_AUDITED_IDENTITY_PASS")
     return 0

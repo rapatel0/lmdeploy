@@ -30,24 +30,24 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Removing the 0.0625 ambiguity margin raised final commit from 1.83-1.87 to 2.05-2.09 and throughput from 42-43 to about 47.4 tok/s.
   - Every arm passed the 256-token short-prompt identity gate; the selected no-round/zero-margin arm also passed exact audited-prompt identity.
 
-- [ ] **Inspect the draft checkpoint architecture and unmatched weight keys.**
-  - Classification: high-impact conditional mismatch.
-  - SGLang has a `DFlashLagunaForCausalLM` contract with `aux_hidden_norms`, per-layer input norms for context K/V, and `g_proj`; LMDeploy always constructs its generic DFlash2 model.
-  - Record `architectures`, `layer_types`, and all unloaded/unmatched checkpoint keys.
-  - Done when: the checkpoint is proven generic or every Laguna-specific weight and operation is supported.
+- [x] **Inspect the draft checkpoint architecture and unmatched weight keys.**
+  - The checkpoint is generic `DFlash2DraftModel`, not Laguna.
+  - Its 81 tensors contain no `aux_hidden_norms` or `g_proj`; the generic loader is the correct architecture.
 
 - [ ] **Load attention type and window per draft layer.**
-  - Classification: confirmed loader mismatch; workload effect pending config inspection.
-  - SGLang resolves full versus sliding attention per layer. LMDeploy currently assigns one global causal/window configuration and ignores `layer_types`.
-  - Done when: every loaded TurboMind draft layer matches SGLang's per-layer attention type and `sliding_window - 1` convention.
+  - Classification: confirmed high-impact loader defect.
+  - The published checkpoint has five `sliding_attention` layers and `is_causal=false`. SGLang deliberately runs those layers as causal decoder attention; LMDeploy incorrectly copied the top-level false flag and ran them non-causally.
+  - The loader now configures homogeneous sliding/full policies correctly and rejects unsupported mixtures. A legacy-policy A/B and audited identity gate are running.
+  - Done when: corrected attention materially improves or is falsified, and every loaded layer's effective contract is recorded.
 
 - [ ] **Move TP all-reduces before output grouped convolution and W2 row-scale restoration.**
   - Classification: confirmed TP4 operation-order mismatch.
   - Attention: SGLang performs local Wo, FP16 all-reduce, then output grouped convolution; LMDeploy performs local Wo, output convolution, then all-reduce inside residual norm.
   - MLP: SGLang performs local W2, FP16 all-reduce, row-scale restoration, then output grouped convolution; LMDeploy restores row scale and applies output convolution before all-reduce.
   - These operations commute only in exact arithmetic; FP16 stores and collectives create ten mismatched rounding boundaries across five layers.
-  - First diagnostic: capture local projection, post-reduce, post-scale, post-convolution, and post-norm tensors; report row-scale distribution.
-  - Done when: both branches match SGLang's collective boundary, double reduction is impossible, identity passes, and acceptance impact is recorded.
+  - The first A/B showed no fidelity benefit: raw commit 2.107 old versus 2.110 reduce-first; reduce-first throughput was 46.16 versus 47.18 tok/s. Short identity passed both.
+  - Keep open only as a tensor-parity discrepancy; it is not the current acceptance lead.
+  - Done when: shared-tensor parity proves the required boundary and any adopted order avoids the measured regression.
 
 - [ ] **Write only committed verifier context K/V, or prove rejected suffixes are invisible.**
   - Classification: lifecycle hypothesis.
@@ -153,4 +153,4 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - Exact short-workload identity: pass
 - Cumulative audited runtime gain from completed selector/context work: about 17%
 
-The immediate execution order is: both branch collective boundaries, checkpoint architecture/keys, then per-layer attention and RoPE configuration.
+The immediate execution order is: validate the corrected causal sliding-attention policy, verify draft RoPE ownership, then capture first-block tensor parity.
