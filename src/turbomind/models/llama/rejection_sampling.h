@@ -9,8 +9,9 @@
 namespace turbomind {
 
 struct RejectionResult {
-    Buffer_<int> num_accepted;  // [batch] number of accepted drafts per request (0 ≤ N ≤ K)
-    Buffer_<int> bonus_tokens;  // [batch] bonus token at first mismatch position
+    Buffer_<int> num_accepted;    // [batch] number of accepted drafts per request (0 ≤ N ≤ K)
+    Buffer_<int> bonus_tokens;    // [batch] bonus token at first mismatch position
+    Buffer_<int> bonus_ambiguous; // [batch] selected bonus shared the exact maximum with another token
 };
 
 /// Greedy rejection sampling: compare draft tokens against target logits.

@@ -15,8 +15,9 @@ namespace turbomind {
 // Each block processes K+1 logit vectors sequentially, computing argmax for each,
 // then compares against draft tokens to find the first mismatch.
 template<typename T>
-__global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
-                                   int*       bonus_tokens,   // [batch]
+__global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
+                                   int*       bonus_tokens,    // [batch]
+                                   int*       bonus_ambiguous, // [batch]
                                    const T*   logits,         // [batch, K+1, vocab_size]
                                    const int* draft_tokens,   // [batch, K]
                                    int        K,
@@ -34,13 +35,15 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
     __shared__ int   s_max_idx[32];
     // Shared memory for broadcasting argmax result to all threads
     __shared__ int   s_argmax_token;
+    __shared__ float s_argmax_value;
 
     const int warp_id   = threadIdx.x / 32;
     const int lane_id   = threadIdx.x % 32;
     const int num_warps = blockDim.x / 32;
 
-    int accepted = K;  // assume all accepted, will be overwritten on mismatch
-    int bonus    = 0;
+    int accepted  = K;  // assume all accepted, will be overwritten on mismatch
+    int bonus     = 0;
+    int ambiguous = 0;
 
     for (int pos = 0; pos <= K; ++pos) {
         const T* pos_logits = batch_logits + (size_t)pos * vocab_size_padded;
@@ -121,8 +124,23 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
             // cause. Falling back to 0 keeps it in range; the draft still gets
             // rejected, because a real draft will not equal 0 by chance.
             s_argmax_token = (max_idx == INT_MAX) ? 0 : max_idx;
+            s_argmax_value = max_val;
         }
         __syncthreads();
+
+        // Detect an exact tie for the selected maximum. A K+1 target forward
+        // and a one-token target forward can resolve a numerically sensitive
+        // FP16 tie differently even though both reductions are deterministic.
+        // The caller may replay only this rare bonus through the canonical
+        // one-token path instead of replaying every zero-accept verification.
+        bool tied = false;
+        for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
+            if (i != s_argmax_token && static_cast<float>(pos_logits[i]) == s_argmax_value) {
+                tied = true;
+                break;
+            }
+        }
+        const int target_ambiguous = __syncthreads_or(tied);
 
         // The ordinary top-k sampler uses the same value-descending,
         // id-ascending total order, so exact FP16 ties resolve identically.
@@ -134,15 +152,17 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
             int draft = batch_drafts[pos];
             if (draft != target_token && accepted == K) {
                 // First mismatch found
-                accepted = pos;
-                bonus    = target_token;
+                accepted  = pos;
+                bonus     = target_token;
+                ambiguous = target_ambiguous;
             }
         }
         else {
             // pos == K: this is the bonus token position.
             if (accepted == K) {
                 // All K drafts matched; bonus = argmax(logits[K])
-                bonus = target_token;
+                bonus     = target_token;
+                ambiguous = target_ambiguous;
             }
         }
 
@@ -154,8 +174,9 @@ __global__ void GreedyRejectKernel(int*       num_accepted,   // [batch]
     }
 
     if (threadIdx.x == 0) {
-        num_accepted[b] = accepted;
-        bonus_tokens[b] = bonus;
+        num_accepted[b]   = accepted;
+        bonus_tokens[b]   = bonus;
+        bonus_ambiguous[b] = ambiguous;
     }
 }
 
@@ -169,8 +190,9 @@ RejectionResult GreedyReject(const void*  verification_logits,
                               cudaStream_t stream)
 {
     RejectionResult result;
-    result.num_accepted = Buffer_<int>(batch_size, kDEVICE);
-    result.bonus_tokens = Buffer_<int>(batch_size, kDEVICE);
+    result.num_accepted    = Buffer_<int>(batch_size, kDEVICE);
+    result.bonus_tokens    = Buffer_<int>(batch_size, kDEVICE);
+    result.bonus_ambiguous = Buffer_<int>(batch_size, kDEVICE);
 
     if (batch_size == 0 || K == 0) {
         return result;
@@ -179,23 +201,24 @@ RejectionResult GreedyReject(const void*  verification_logits,
     constexpr int block = 256;
     const int     grid  = batch_size;
 
-    int* d_num_accepted = result.num_accepted.data();
-    int* d_bonus_tokens = result.bonus_tokens.data();
+    int* d_num_accepted    = result.num_accepted.data();
+    int* d_bonus_tokens    = result.bonus_tokens.data();
+    int* d_bonus_ambiguous = result.bonus_ambiguous.data();
 
     if (dtype == DataType::kFloat16) {
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, (const half*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
+            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const half*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
     }
 #ifdef ENABLE_BF16
     else if (dtype == DataType::kBfloat16) {
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, (const __nv_bfloat16*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
+            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const __nv_bfloat16*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
     }
 #endif
     else {
         // Fallback: treat as float
         GreedyRejectKernel<<<grid, block, 0, stream>>>(
-            d_num_accepted, d_bonus_tokens, (const float*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
+            d_num_accepted, d_bonus_tokens, d_bonus_ambiguous, (const float*)verification_logits, draft_tokens, K, vocab_size, vocab_size_padded);
     }
 
     return result;

@@ -1506,6 +1506,7 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
 
     env.produce("num_accepted", result.num_accepted);
     env.produce("bonus_tokens", result.bonus_tokens);
+    env.produce("bonus_ambiguous", result.bonus_ambiguous);
 
     // Generation::Rollback needs the drafts themselves to append the accepted
     // ones to its own copy of each sequence.
@@ -1524,8 +1525,10 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
 
     Buffer_<int> accepted{bsz, kCPU};
     Buffer_<int> bonus{bsz, kCPU};
+    Buffer_<int> ambiguous{bsz, kCPU};
     Copy(env.at("num_accepted").buffer().slice(0, bsz), accepted);
     Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
+    Copy(env.at("bonus_ambiguous").buffer().slice(0, bsz), ambiguous);
     core::Context::stream().Sync();
 
     // Do NOT write token_ids or seq_len here.
@@ -1636,8 +1639,13 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             const char* s = std::getenv("TM_MTP_ZERO_ACCEPT_REPLAY");
             return s && s[0] == '1';
         }();
+        static const bool ambiguous_replay = [] {
+            const char* s = std::getenv("TM_MTP_AMBIGUOUS_REPLAY");
+            return s && s[0] == '1';
+        }();
+        const bool replay_bonus = n == 0 && (zero_accept_replay || (ambiguous_replay && ambiguous[i]));
         if (gdn_rollback_) {
-            if (has_intermediate_gdn && zero_accept_replay && n == 0) {
+            if (has_intermediate_gdn && replay_bonus) {
                 // A K+1 verifier forward is numerically close to, but not
                 // bit-identical with, the ordinary one-token target path. On
                 // a measured FP16 near-tie its position-zero bonus can choose
