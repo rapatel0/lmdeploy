@@ -106,9 +106,18 @@ def build_sglang_prompt(tokenizer, repo: Path, target_len: int) -> tuple[str, li
         total_chars += len(text)
         if total_chars >= 1_500_000:
             break
-    # LMDeploy's Tokenizer wrapper does not expose Hugging Face's
-    # model_max_length and does not truncate encode() at the model context.
-    corpus_ids = tokenizer.encode("".join(chunks), add_special_tokens=False)
+    # LMDeploy wraps Hugging Face twice: Tokenizer -> HuggingFaceTokenizer ->
+    # AutoTokenizer. Prompt reproduction needs the underlying chat template,
+    # while inference still validates the final ids through LMDeploy's wrapper.
+    hf_tokenizer = getattr(getattr(tokenizer, "model", None), "model", None)
+    if hf_tokenizer is None or not hasattr(hf_tokenizer, "apply_chat_template"):
+        raise RuntimeError("audited prompt requires the underlying Hugging Face tokenizer")
+    old_limit = hf_tokenizer.model_max_length
+    hf_tokenizer.model_max_length = 1_000_000_000
+    try:
+        corpus_ids = hf_tokenizer.encode("".join(chunks), add_special_tokens=False)
+    finally:
+        hf_tokenizer.model_max_length = old_limit
     if len(corpus_ids) < 100_000:
         raise RuntimeError(f"SGLang source corpus is too small: {len(corpus_ids)} tokens")
 
@@ -133,10 +142,10 @@ def build_sglang_prompt(tokenizer, repo: Path, target_len: int) -> tuple[str, li
             ),
         },
     ]
-    rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    rendered = hf_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     prefix_text, suffix_text = rendered.split(placeholder)
-    prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
-    suffix_ids = tokenizer.encode(suffix_text, add_special_tokens=False)
+    prefix_ids = hf_tokenizer.encode(prefix_text, add_special_tokens=False)
+    suffix_ids = hf_tokenizer.encode(suffix_text, add_special_tokens=False)
     body_len = target_len - len(prefix_ids) - len(suffix_ids)
     offset = stable_int(0, target_len, 1, 0) % len(corpus_ids)
     body_ids = (corpus_ids + corpus_ids)[offset : offset + body_len]
@@ -145,7 +154,7 @@ def build_sglang_prompt(tokenizer, repo: Path, target_len: int) -> tuple[str, li
         body_ids = (corpus_ids * repeats)[offset : offset + body_len]
     input_ids = prefix_ids + body_ids + suffix_ids
     token_hash = hashlib.sha256(b"".join(i.to_bytes(4, "little") for i in input_ids)).hexdigest()
-    prompt = tokenizer.decode(input_ids, skip_special_tokens=False)
+    prompt = hf_tokenizer.decode(input_ids, skip_special_tokens=False)
     if tokenizer.encode(prompt, add_special_tokens=False) != input_ids:
         raise RuntimeError("SGLang prompt does not survive decode/encode round-trip")
     return prompt, input_ids, token_hash
