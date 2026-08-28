@@ -175,7 +175,8 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
         auto* layer = TM_CHECK_NOTNULL(weights_.layer(i));
         TM_CHECK(layer->attention);
         Tensor discarded{{context.shape(0), hidden_units_}, dtype_, kDEVICE};
-        attention_.Forward({target_phase, context, discarded, layer->attention.get(), attention_indices_[i]});
+        attention_.Forward(
+            {target_phase, context, discarded, layer->attention.get(), attention_indices_[i], 1.f, true});
         TM_CUDA_CHECK(cudaGetLastError());
     }
     static std::atomic<bool> logged{false};

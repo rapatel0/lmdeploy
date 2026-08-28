@@ -294,29 +294,45 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
                                          int           rank)
 {
     const int batch = blockIdx.x;
-    if (batch >= batch_size || threadIdx.x != 0) {
+    if (batch >= batch_size) {
         return;
     }
-    int predecessor_id = anchors[batch];
+    __shared__ int predecessor_id;
+    __shared__ float candidate_scores[16];
+    if (threadIdx.x == 0) {
+        predecessor_id = anchors[batch];
+    }
+    __syncthreads();
     for (int slot = 0; slot < slots; ++slot) {
-        float best_score = -CUDART_INF_F;
-        int   best_index = 0;
-        const __half* pred = predecessor + predecessor_id * rank;
-        const __half* state = hidden + (batch * slots + slot) * rank;
-        for (int candidate_index = 0; candidate_index < top_k; ++candidate_index) {
+        const int candidate_index = threadIdx.x;
+        if (candidate_index < top_k) {
             const int token = candidates[(batch * slots + slot) * top_k + candidate_index];
+            const __half* pred = predecessor + predecessor_id * rank;
+            const __half* state = hidden + (batch * slots + slot) * rank;
             const __half* succ = successor + token * rank;
             float score = unary[(batch * slots + slot) * top_k + candidate_index];
+            // Preserve the former serial accumulation order exactly while
+            // evaluating all 16 candidates concurrently.
             for (int i = 0; i < rank; ++i) {
                 score += __half2float(pred[i]) * __half2float(state[i]) * __half2float(succ[i]);
             }
-            if (score > best_score || (score == best_score && candidate_index < best_index)) {
-                best_score = score;
-                best_index = candidate_index;
-            }
+            candidate_scores[candidate_index] = score;
         }
-        predecessor_id = candidates[(batch * slots + slot) * top_k + best_index];
-        output[batch * slots + slot] = predecessor_id;
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            float best_score = -CUDART_INF_F;
+            int best_index = 0;
+            for (int candidate_index = 0; candidate_index < top_k; ++candidate_index) {
+                const float score = candidate_scores[candidate_index];
+                if (score > best_score || (score == best_score && candidate_index < best_index)) {
+                    best_score = score;
+                    best_index = candidate_index;
+                }
+            }
+            predecessor_id = candidates[(batch * slots + slot) * top_k + best_index];
+            output[batch * slots + slot] = predecessor_id;
+        }
+        __syncthreads();
     }
 }
 
@@ -568,7 +584,7 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
     TM_CHECK_EQ(selector_hidden.shape(0), (ssize_t)batch_size * slots);
     TM_CHECK_EQ(predecessor_codebook.shape(1), rank);
     TM_CHECK_EQ(successor_codebook.shape(1), rank);
-    DFlashGreedySelectorHalf<<<batch_size, 1, 0, stream>>>(output.data(),
+    DFlashGreedySelectorHalf<<<batch_size, 32, 0, stream>>>(output.data(),
                                                            anchors.data(),
                                                            candidate_ids.data(),
                                                            unary_scores.data<float>(),

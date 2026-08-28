@@ -655,6 +655,14 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
 
     Tensor attn = [&]() -> Tensor { TM_DISPATCH_PRIMARY_DTYPES_RET(qkv.dtype(), invoke); }();
 
+    // Context materialization for DFlash only needs projected, normalized and
+    // rotated K/V in the cache. SGLang uses kv_proj_only here; running full
+    // attention and Wo for five draft layers discarded their outputs and cost
+    // several milliseconds every speculative cycle.
+    if (p.kv_only) {
+        return;
+    }
+
     // Apply sigmoid gating: attn *= sigmoid(gate)
     // Gate is stored at the end of each token's QKV: [Q|K|V|Gate]
     if (weights.output_gate) {
@@ -959,12 +967,14 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
             invokeProcessKV_v2_(params);
             TM_CUDA_CHECK(cudaGetLastError());
 
-            /// TODO: skip flattening for `sm_80`
-            invokeFlattenKV_v2_(params, d.prefill.k_sum);
-            TM_CUDA_CHECK(cudaGetLastError());
+            if (!p.kv_only) {
+                /// TODO: skip flattening for `sm_80`
+                invokeFlattenKV_v2_(params, d.prefill.k_sum);
+                TM_CUDA_CHECK(cudaGetLastError());
 
-            dispatchAttention(params);
-            TM_CUDA_CHECK(cudaGetLastError());
+                dispatchAttention(params);
+                TM_CUDA_CHECK(cudaGetLastError());
+            }
         }
     }
 

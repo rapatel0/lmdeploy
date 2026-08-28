@@ -54,6 +54,7 @@ public:
         const WeightType* weights;
         int               layer_id;
         float             output_input_scale{1.f};
+        bool              kv_only{false};
     };
 
     ~UnifiedAttentionLayer();

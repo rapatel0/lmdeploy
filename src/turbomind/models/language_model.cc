@@ -1131,6 +1131,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     }
 
     if (dflash_predictor_ && env.try_("dflash_target_hidden") && !unified_decoder_->is_warm_up()) {
+        NvtxScope scope("dflashContextKV");
         Tensor context = dflash_predictor_->ProjectContext(env.at("dflash_target_hidden"));
         dflash_predictor_->MaterializeContextKV(phase, context);
         env.produce("dflash_context_hidden", std::move(context));
