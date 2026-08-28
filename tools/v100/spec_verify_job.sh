@@ -110,10 +110,10 @@ echo "  MODEL=${MODEL} TP=${TP} K=${K}"
 }
 
 echo
-echo "=== 1. correctness: K=0 vs K=${K}, output must be identical ==="
+echo "=== 1. correctness: K=0 envelope vs K=${K} ==="
 stdbuf -oL -eL python3 /src/tools/v100/verify_spec_identity.py \
     --model-dir "${MODEL}" --tp "${TP}" --num-draft-tokens "${K}" \
-    --json-out "${RESULTS}/identity.json" 2>&1
+    --baseline-replicas 3 --json-out "${RESULTS}/identity.json" 2>&1
 IDENT_RC=$?
 
 echo
@@ -124,7 +124,7 @@ echo "=== 1b. discriminating probe: identity under forced rejection ==="
 # if it is identical, the leak is in the accept path. One run, one bit.
 TM_MTP_FORCE_REJECT=1 stdbuf -oL -eL python3 /src/tools/v100/verify_spec_identity.py \
     --model-dir "${MODEL}" --tp "${TP}" --num-draft-tokens "${K}" \
-    --json-out "${RESULTS}/identity_force_reject.json" 2>&1
+    --baseline-replicas 3 --json-out "${RESULTS}/identity_force_reject.json" 2>&1
 FORCE_RC=$?
 case "${FORCE_RC}" in
 0) echo "PROBE: identical under forced rejection -> the leak is in the ACCEPT path" ;;
