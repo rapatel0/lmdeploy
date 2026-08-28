@@ -1622,7 +1622,7 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
 
     static const float configured_ambiguity_margin = [] {
         const char* s = std::getenv("TM_MTP_AMBIGUITY_MARGIN");
-        return s ? std::max(0.f, (float)std::atof(s)) : -1.f;
+        return s && s[0] ? std::max(0.f, (float)std::atof(s)) : -1.f;
     }();
     // Same-process parity measured up to 0.0508 absolute FP16 logit drift
     // between block verification and canonical recurrent decode. Replay a
