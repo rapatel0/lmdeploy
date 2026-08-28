@@ -50,6 +50,7 @@
 #include "src/turbomind/models/llama/llama_utils.h"
 #include "src/turbomind/models/llama/mla_utils.h"
 #include "src/turbomind/models/llama/unified_attention_layer.h"
+#include "src/turbomind/models/llama/dflash_kernels.h"
 
 #include "src/turbomind/core/logger.h"
 #include "src/turbomind/core/scope.h"
@@ -684,6 +685,13 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
 
     //////////////////////////////////////////////
     /// output gemm <Bs,HD> -> <Bs,HD>
+    if (p.output_input_scale != 1.f) {
+        // DFlash's SM70 compatibility path transports wide attention branches
+        // through FP16 at 1/256 scale before Wo, then restores the branch in
+        // FP32 residual+norm. Scaling after Wo changes FP16 rounding and draft
+        // predictions, even though it is algebraically equivalent in FP32.
+        invokeDFlashScale(attn, p.output_input_scale, core::Context::stream().handle());
+    }
     TM_SCOPE_CALL(linear_.Forward(attn, *weights.wo, p.output));
 }
 

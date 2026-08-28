@@ -53,6 +53,7 @@ public:
         Tensor            output;
         const WeightType* weights;
         int               layer_id;
+        float             output_input_scale{1.f};
     };
 
     ~UnifiedAttentionLayer();

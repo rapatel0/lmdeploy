@@ -366,12 +366,10 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                             attn_input.output,
                             attn_output,
                             layer->attention.get(),
-                            attention_indices_[i]});
+                            attention_indices_[i],
+                            1.f / kResidualScale});
         report("layer" + std::to_string(i) + ".attention_raw", attn_output);
         attn_output = FinishGroupedConv(attn_output, attn_input.delta, *attn_conv);
-        // Laguna transports wide projection branches divided by 256 on SM70,
-        // then restores that exact power-of-two scale inside residual+norm.
-        invokeDFlashScale(attn_output, 1.f / kResidualScale, stream);
         report("layer" + std::to_string(i) + ".attention_finish", attn_output);
         residual_norm(attn_output, residual, layer->attention->wo->bias, *layer->ffn_norm, kResidualScale);
         report("layer" + std::to_string(i) + ".attention_residual_norm", attn_output);
