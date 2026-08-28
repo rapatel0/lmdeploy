@@ -317,6 +317,9 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                   first_layer->attention_norm->zero_centered_,
                   stream);
     TM_CUDA_CHECK(cudaGetLastError());
+    // The draft checkpoint's pre-norm boundaries are BF16. Preserve that
+    // rounding while storing FP16 activations for V100 GEMMs.
+    invokeDFlashRoundBFloat16(hidden, stream);
     report("block.initial_norm", hidden);
 
     auto residual_norm = [&](Tensor& value, Tensor& res, const Tensor& bias, const NormWeight& norm) {

@@ -17,6 +17,10 @@ void invokeGatherDFlashPredictions(Tensor& output, const Tensor& block_hidden, i
 
 void invokeDFlashCastToFloat(Tensor& output, const Tensor& input, cudaStream_t stream);
 
+/// Round FP16 activations through BF16 while retaining FP16 storage. DFlash2
+/// was trained with BF16 residual/norm boundaries, which affect draft quality.
+void invokeDFlashRoundBFloat16(Tensor& value, cudaStream_t stream);
+
 void invokeDFlashResidualRMSNorm(Tensor&       output,
                                  Tensor&       residual,
                                  const Tensor& reduced,

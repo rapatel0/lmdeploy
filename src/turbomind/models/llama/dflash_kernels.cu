@@ -31,11 +31,30 @@ __global__ void GatherDFlashPredictionsHalf(__half* output, const __half* input,
     }
 }
 
+__device__ __forceinline__ float RoundBFloat16(float value)
+{
+    uint32_t bits = __float_as_uint(value);
+    // Round-to-nearest-even at the BF16 mantissa boundary. Preserve Inf/NaN
+    // payloads instead of allowing the rounding increment to wrap them.
+    if ((bits & 0x7f800000u) != 0x7f800000u) {
+        bits += 0x7fffu + ((bits >> 16) & 1u);
+    }
+    return __uint_as_float(bits & 0xffff0000u);
+}
+
 __global__ void DFlashCastToFloat(float* output, const __half* input, int count)
 {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index < count) {
         output[index] = __half2float(input[index]);
+    }
+}
+
+__global__ void DFlashRoundBFloat16Half(__half* value, int count)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < count) {
+        value[index] = __float2half_rn(RoundBFloat16(__half2float(value[index])));
     }
 }
 
@@ -53,7 +72,11 @@ __global__ void DFlashResidualRMSNormHalf(__half*       output,
     float sum = 0.f;
     for (int channel = threadIdx.x; channel < hidden; channel += blockDim.x) {
         const int index = token * hidden + channel;
-        const float value = residual[index] + reduced[index] + (bias ? __half2float(bias[channel]) : 0.f);
+        // Match the BF16-trained model's residual boundary. V100 cannot use
+        // BF16 tensor cores, but it can preserve the checkpoint semantics by
+        // rounding in FP32 and retaining the rounded value in FP32 storage.
+        const float value = RoundBFloat16(
+            residual[index] + reduced[index] + (bias ? __half2float(bias[channel]) : 0.f));
         residual[index] = value;
         sum += value * value;
     }
@@ -69,7 +92,8 @@ __global__ void DFlashResidualRMSNormHalf(__half*       output,
     for (int channel = threadIdx.x; channel < hidden; channel += blockDim.x) {
         const int index = token * hidden + channel;
         const float gamma = __half2float(weight[channel]) + (zero_centered ? 1.f : 0.f);
-        output[index] = __float2half_rn(residual[index] * scale * gamma);
+        const float normalized = RoundBFloat16(residual[index] * scale * gamma);
+        output[index] = __float2half_rn(normalized);
     }
 }
 
@@ -246,6 +270,15 @@ void invokeDFlashCastToFloat(Tensor& output, const Tensor& input, cudaStream_t s
     const int blocks = (input.size() + threads - 1) / threads;
     DFlashCastToFloat<<<blocks, threads, 0, stream>>>(
         output.data<float>(), (const __half*)input.raw_data(), input.size());
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
+void invokeDFlashRoundBFloat16(Tensor& value, cudaStream_t stream)
+{
+    TM_CHECK_EQ(value.dtype(), kHalf);
+    constexpr int threads = 256;
+    const int blocks = (value.size() + threads - 1) / threads;
+    DFlashRoundBFloat16Half<<<blocks, threads, 0, stream>>>((__half*)value.raw_data(), value.size());
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
