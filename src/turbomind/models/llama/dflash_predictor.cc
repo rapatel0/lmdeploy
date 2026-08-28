@@ -357,6 +357,21 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
 
     constexpr float kResidualScale = 256.f;
     constexpr float kGateUpScale   = 32.f;
+    static const bool reduce_before_conv = [] {
+        const char* value = std::getenv("TM_DFLASH_REDUCE_BEFORE_CONV");
+        return value && value[0] == '1';
+    }();
+
+    auto reduce_branch = [&](Tensor& value) {
+        if (ctx_.comm.d_comm) {
+            ctx_.comm.d_comm->AllReduceSum(value.raw_data(),
+                                           value.raw_data(),
+                                           value.size(),
+                                           kHalf,
+                                           ctx_.comm.d_tp_group,
+                                           stream);
+        }
+    };
 
     auto residual_norm = [&](Tensor& value,
                              Tensor& res,
@@ -367,13 +382,8 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         // reduction in that dtype. The previous FP32 cast added a kernel,
         // doubled collective traffic, and changed reduction rounding relative
         // to the SGLang reference draft.
-        if (ctx_.comm.d_comm) {
-            ctx_.comm.d_comm->AllReduceSum(value.raw_data(),
-                                           value.raw_data(),
-                                           value.size(),
-                                           kHalf,
-                                           ctx_.comm.d_tp_group,
-                                           stream);
+        if (!reduce_before_conv) {
+            reduce_branch(value);
         }
         invokeDFlashResidualRMSNorm(value,
                                     res,
@@ -402,6 +412,10 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                             attention_indices_[i],
                             1.f / kResidualScale});
         report("layer" + std::to_string(i) + ".attention_raw", attn_output);
+        if (reduce_before_conv) {
+            reduce_branch(attn_output);
+            report("layer" + std::to_string(i) + ".attention_reduced", attn_output);
+        }
         attn_output = FinishGroupedConv(attn_output, attn_input.delta, *attn_conv);
         report("layer" + std::to_string(i) + ".attention_finish", attn_output);
         residual_norm(attn_output, residual, layer->attention->wo->bias, *layer->ffn_norm, kResidualScale);
@@ -426,6 +440,10 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         Tensor activation_scales{{token_num}, kFloat32, kDEVICE};
         invokeDFlashLagunaSilu(activated, activation_scales, gate_up, kGateUpScale, stream);
         linear_.Forward(activated, *mlp.w2, mlp_input.output);
+        if (reduce_before_conv) {
+            reduce_branch(mlp_input.output);
+            report("layer" + std::to_string(i) + ".mlp_reduced", mlp_input.output);
+        }
         invokeDFlashScaleRows(mlp_input.output, activation_scales, 1.f / kResidualScale, stream);
 
         report("layer" + std::to_string(i) + ".mlp_raw", mlp_input.output);
