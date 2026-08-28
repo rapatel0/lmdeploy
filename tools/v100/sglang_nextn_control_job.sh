@@ -77,7 +77,7 @@ run_arm() {
         --model-path "${MODEL_DIR}" \
         --dtype float16 \
         --kv-cache-dtype fp8_e5m2 \
-        --attention-backend tilelang_fa_v100 \
+        --attention-backend flash_attn_v100 \
         --linear-attn-prefill-backend tilelang \
         --linear-attn-decode-backend triton \
         --tensor-parallel-size "${TP}" \
