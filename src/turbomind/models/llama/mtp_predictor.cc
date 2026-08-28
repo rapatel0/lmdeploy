@@ -390,8 +390,8 @@ void MTPPredictor::RepairAcceptedSingle(const Tensor&       verifier_hidden_stat
     TM_CHECK_GE((int)verifier_hidden_states.shape(0), num_accepted);
     TM_CHECK_EQ((int)accepted_tokens.size(), num_accepted);
 
-    const auto stream    = core::Context::stream().handle();
-    auto       k_offsets = env.at("k_offsets").buffer().view<int>();
+    const auto   stream = core::Context::stream().handle();
+    Buffer_<int> k_offsets = env.at("k_offsets").buffer().view<int>();
 
     // After rollback, cu_k_len covers [old prefix, accepted drafts, bonus].
     // Rewind to the first accepted draft, overwrite each entry using the
