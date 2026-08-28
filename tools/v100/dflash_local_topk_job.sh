@@ -40,7 +40,10 @@ for local_topk in 0 1; do
 done
 
 echo "=== local-top-k exact identity ==="
-TM_DFLASH_LOCAL_TOPK=1 python3 /job/verify_dflash_runtime.py | tee "${RESULTS}/identity.log"
+TM_DFLASH_LOCAL_TOPK=1 python3 /job/verify_dflash_runtime.py \
+    --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
+    --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
+    --tp "${TP:-4}" --output-tokens 256 | tee "${RESULTS}/identity.log"
 grep -q '^DFLASH_RUNTIME_IDENTITY_PASS$' "${RESULTS}/identity.log"
 
 touch "${RESULTS}/completed"
