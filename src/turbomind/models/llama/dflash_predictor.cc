@@ -15,6 +15,7 @@
 #include "src/turbomind/models/llama/LlamaFfnLayer.h"
 #include "src/turbomind/models/llama/LlamaLinear.h"
 #include "src/turbomind/models/llama/dflash_kernels.h"
+#include "src/turbomind/models/llama/llama_kernels.h"
 #include "src/turbomind/models/llama/unified_attention_layer.h"
 #include "src/turbomind/models/norm_weight.h"
 #include "src/turbomind/utils/cuda_utils.h"
@@ -26,7 +27,8 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                                  std::vector<int>        attention_indices,
                                  int                     attention_phase_base,
                                  const EngineParam&      engine,
-                                 const Context&          ctx):
+                                 const Context&          ctx,
+                                 EmbedFn                 embed):
     weights_(weights),
     hidden_units_(weights.fc ? weights.fc->output_dim : 0),
     num_context_features_(weights.num_context_features),
@@ -35,8 +37,10 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
     attention_(attention),
     attention_indices_(std::move(attention_indices)),
     attention_phase_base_(attention_phase_base),
-    ctx_(ctx)
+    ctx_(ctx),
+    embed_fn_(std::move(embed))
 {
+    TM_CHECK(embed_fn_) << "DFlash2 needs the target token embedding";
     TM_CHECK(weights_.fc) << "DFlash2 context projection is missing";
     TM_CHECK(weights_.hidden_norm) << "DFlash2 hidden_norm is missing";
     TM_CHECK_GT(hidden_units_, 0);
@@ -158,6 +162,27 @@ Tensor DFlashPredictor::ApplyGroupedConv(const Tensor& input, const DFlashConvWe
 {
     auto prepared = PrepareGroupedConv(input, weights);
     return side == 0 ? std::move(prepared.output) : FinishGroupedConv(input, prepared.delta, weights);
+}
+
+Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, TensorMap& env) const
+{
+    const int batch_size = anchors.size();
+    TM_CHECK_GT(batch_size, 0);
+    TM_CHECK_GE(attention_phase_base_, 0);
+
+    Buffer_<int> block_ids{(ssize_t)batch_size * weights_.block_size, kDEVICE};
+    invokeBuildDFlashBlock(block_ids,
+                           anchors,
+                           weights_.block_size,
+                           weights_.mask_token_id,
+                           core::Context::stream().handle());
+    Tensor hidden = embed_fn_(block_ids);
+
+    Buffer_<int> k_offsets = env.at("k_offsets").buffer().view<int>();
+    AdvanceCuSeqLens(k_offsets.data(), batch_size, weights_.block_size, core::Context::stream().handle());
+    hidden = RunDraftLayers(std::move(hidden), phase);
+    AdvanceCuSeqLens(k_offsets.data(), batch_size, -weights_.block_size, core::Context::stream().handle());
+    return hidden;
 }
 
 Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const

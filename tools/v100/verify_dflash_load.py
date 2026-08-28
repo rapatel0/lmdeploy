@@ -76,7 +76,7 @@ def main() -> int:
     pipe = pipeline(args.model, backend_config=engine, log_level='INFO')
     try:
         output = pipe(
-            ['Explain in one sentence why the sky appears blue.'],
+            ['Hi'],
             gen_config=GenerationConfig(max_new_tokens=24, temperature=0.0, do_sample=False),
         )[0].text.strip()
         print(f'output={output!r}')

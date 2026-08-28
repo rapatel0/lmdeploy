@@ -7,6 +7,12 @@
 
 namespace turbomind {
 
+void invokeBuildDFlashBlock(Buffer_<int>&       output,
+                            const Buffer_<int>& anchors,
+                            int                 block_size,
+                            int                 mask_token_id,
+                            cudaStream_t        stream);
+
 /// Apply one side of DFlash2's dynamic grouped depthwise convolution.
 ///
 /// input/output: [token_num, hidden]

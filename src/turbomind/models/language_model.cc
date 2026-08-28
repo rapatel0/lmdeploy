@@ -461,7 +461,10 @@ LanguageModel::Impl::Impl(
                                                               unified_decoder_->dflash_attn_indices(),
                                                               unified_decoder_->dflash_phase(0),
                                                               engine,
-                                                              ctx);
+                                                              ctx,
+                                                              [this](const Buffer_<int>& ids) {
+                                                                  return LookupEmbedding(ids, symm_buf_);
+                                                              });
         if (engine.num_draft_tokens > 0) {
             // Never fall through to embedded MTP: Qwen3.8 carries both weight
             // families. Proposal execution replaces this guard.
@@ -791,6 +794,10 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
 
         mtp_predictor_->SetupAttention(phase, env);
     }
+    if (dflash_predictor_ && unified_decoder_->dflash_phase(phase) >= 0) {
+        copy.Run();
+        dflash_predictor_->SetupAttention(phase, env);
+    }
 }
 
 void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
@@ -884,6 +891,9 @@ void LanguageModel::Impl::Prepare(int phase, TensorMap& env)
     // where 15 is the plan's expected token count and 3 the draft's actual one.
     if (mtp_predictor_) {
         mtp_predictor_->PrepareAttention(phase, env);
+    }
+    if (dflash_predictor_ && unified_decoder_->dflash_phase(phase) >= 0) {
+        dflash_predictor_->PrepareAttention(phase, env);
     }
 }
 
@@ -1109,7 +1119,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             convolved.shape(1),
                             convolved_nonzero);
 
-                Tensor draft_hidden = dflash_predictor_->RunDraftLayers(context, phase);
+                auto input_ids = env.at("input_ids").buffer().view<int>();
+                TM_CHECK_EQ(d.rows.size(), 1) << "TM_DFLASH_CAPTURE block diagnostic requires batch size one";
+                Buffer_<int> anchors{1, kDEVICE};
+                core::Copy(input_ids.slice(input_ids.size() - 1, 1), 1, anchors);
+                Tensor draft_hidden = dflash_predictor_->DraftBlock(anchors, phase, env);
                 Tensor draft_host{{1, draft_hidden.shape(1)}, draft_hidden.dtype(), kCPU};
                 Copy(draft_hidden.slice(0, 1), draft_host);
                 core::Context::stream().Sync();

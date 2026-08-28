@@ -167,7 +167,7 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
             mtp_phase_base_ = attention_phases;
             attention_phases += phases;
         }
-        if (engine.num_draft_tokens > 0 && engine.speculative_algorithm == "dflash2"
+        if ((engine.num_draft_tokens > 0 || force_dflash_capture) && engine.speculative_algorithm == "dflash2"
             && !dflash_attn_indices_.empty()) {
             dflash_phase_base_ = attention_phases;
             attention_phases += phases;

@@ -1,6 +1,7 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -22,12 +23,15 @@ class UnifiedAttentionLayer;
 /// prompt KV materialization, the parallel draft block, and candidate choice.
 class DFlashPredictor {
 public:
+    using EmbedFn = std::function<Tensor(const Buffer_<int>&)>;
+
     DFlashPredictor(const DFlashWeight&        weights,
                     UnifiedAttentionLayer&    attention,
                     std::vector<int>           attention_indices,
                     int                        attention_phase_base,
                     const EngineParam&         engine,
-                    const Context&             ctx);
+                    const Context&             ctx,
+                    EmbedFn                    embed);
     ~DFlashPredictor();
 
     void SetupAttention(int phase, TensorMap& env);
@@ -51,6 +55,9 @@ public:
     /// Execute the five-layer draft backbone after its attention plan is prepared.
     Tensor RunDraftLayers(Tensor hidden, int phase) const;
 
+    /// Build [anchor, mask x 7] per row and execute one parallel draft block.
+    Tensor DraftBlock(const Buffer_<int>& anchors, int phase, TensorMap& env) const;
+
     /// Temporary correctness path: run full attention for each draft layer on
     /// projected target context, preserving its K/V in dedicated cache slots.
     void MaterializeContextKV(int target_phase, const Tensor& context) const;
@@ -66,6 +73,7 @@ private:
     int                    attention_phase_base_{-1};
     const Context&         ctx_;
     std::unique_ptr<LlamaFfnLayer> ffn_layer_;
+    EmbedFn                        embed_fn_;
 };
 
 }  // namespace turbomind

@@ -241,6 +241,9 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
     init_rope_kernel_param(rope_, rope_param_);
 
     const int bsz = engine.max_batch_size;
+    const int max_draft_block = engine.speculative_algorithm == "dflash2" ?
+                                    engine.speculative_dflash_block_size :
+                                    std::max(1, engine.num_draft_tokens + 1);
 
     if (rope_param_.mrope_mode != MropeMode::kNone) {
         mrope_default_buf_ = Buffer_<int>{std::max(bsz, 3), kDEVICE};
@@ -256,7 +259,7 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
         d->block_ptrs         = {max_blocks + 16, kDEVICE};
         d->block_ptrs_offsets = {bsz + 1, kDEVICE};
         d->decode_q_offsets  = {bsz + 1, kDEVICE};
-        d->decode_token_mask = {(ssize_t)bsz * std::max(1, engine.num_draft_tokens + 1), kDEVICE};
+        d->decode_token_mask = {(ssize_t)bsz * max_draft_block, kDEVICE};
         // Host staging is per phase for the same reason the device buffers
         // are: a copy enqueued from one phase's Setup may not have executed
         // when another phase's Setup runs on the host. See AttentionData.
@@ -273,7 +276,7 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
     // because rows that finished this step are excluded from drafting upstream
     // by skip_draft. Fill it once here rather than rebuilding it per step.
     {
-        const int mask_size = bsz * std::max(1, engine.num_draft_tokens + 1);
+        const int mask_size = bsz * max_draft_block;
         Buffer_<bool> ones{mask_size, kCPUpinned};
         std::fill_n(ones.data(), mask_size, true);
         for (auto& d : data_) {

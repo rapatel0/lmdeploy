@@ -10,6 +10,14 @@
 namespace turbomind {
 namespace {
 
+__global__ void BuildDFlashBlock(int* output, const int* anchors, int count, int block_size, int mask_token_id)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < count) {
+        output[index] = index % block_size == 0 ? anchors[index / block_size] : mask_token_id;
+    }
+}
+
 __global__ void DFlashGroupedConvHalf(__half*       output,
                                       const __half* input,
                                       const __half* delta,
@@ -45,6 +53,21 @@ __global__ void DFlashGroupedConvHalf(__half*       output,
 }
 
 }  // namespace
+
+void invokeBuildDFlashBlock(Buffer_<int>&       output,
+                            const Buffer_<int>& anchors,
+                            int                 block_size,
+                            int                 mask_token_id,
+                            cudaStream_t        stream)
+{
+    TM_CHECK_GT(block_size, 1);
+    TM_CHECK_EQ(output.size(), anchors.size() * block_size);
+    constexpr int threads = 256;
+    const int     blocks  = (output.size() + threads - 1) / threads;
+    BuildDFlashBlock<<<blocks, threads, 0, stream>>>(
+        output.data(), anchors.data(), output.size(), block_size, mask_token_id);
+    TM_CUDA_CHECK(cudaGetLastError());
+}
 
 void invokeDFlashGroupedConv(Tensor&       output,
                              const Tensor& input,
