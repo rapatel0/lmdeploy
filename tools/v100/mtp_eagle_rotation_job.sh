@@ -28,7 +28,7 @@ run_arm() {
     local k=$2
     local rotation=$3
     echo "=== ${label}: K=${k} eagle_rotation=${rotation} ==="
-    TM_MTP_LOCAL_TOP1=1 TM_MTP_FROZEN_KV=0 TM_MTP_EAGLE_ROTATION="${rotation}" \
+    TM_MTP_LOCAL_TOP1=1 TM_MTP_FROZEN_KV=0 TM_MTP_TP_REDUCE=1 TM_MTP_EAGLE_ROTATION="${rotation}" \
         python3 /job/bench_decode.py \
         --model "${MODEL_DIR}" --tp "${TP}" --num-draft-tokens "${k}" \
         --input-tokens 1024 --output-tokens 256 --trials 2 \
