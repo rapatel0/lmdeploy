@@ -31,6 +31,7 @@ struct ModelWeightConfig: ModuleConfig {
 namespace turbomind {
 
 class DecoderLayerWeight;
+class DFlashWeight;
 class MTPLayerWeight;
 
 /// Root weight module for a model. Owns the full weight tree.
@@ -55,15 +56,15 @@ public:
 
     // --- X-macro field lists ---
     //
-    // `mtp` is optional. It exists only when the checkpoint ships a
-    // Multi-Token Prediction module, so verify() does not require it and a
-    // model without one loads unchanged.
+    // `mtp` and `dflash` are optional. MTP may be embedded in the target
+    // checkpoint; DFlash2 is loaded from a separate draft checkpoint.
 #define MODEL_WEIGHT_CHILDREN(X)                                                                                       \
     X(LinearWeight, output)                                                                                            \
     X(NormWeight, norm)                                                                                                \
     X(core::ModuleList, layers)                                                                                        \
     X(core::ModuleList, meta_experts)                                                                                  \
-    X(MTPLayerWeight, mtp)
+    X(MTPLayerWeight, mtp)                                                                                             \
+    X(DFlashWeight, dflash)
 
 #define MODEL_WEIGHT_PARAMS(X) X(tok_embeddings)
 

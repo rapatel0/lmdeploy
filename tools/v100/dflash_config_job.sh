@@ -53,6 +53,19 @@ assert ec.speculative_algorithm == 'dflash2'
 assert ec.speculative_draft_model.endswith('Qwen3.8-27B-DFlash2')
 assert ec.speculative_dflash_block_size == 8
 assert ec.speculative_draft_window == 2048
+weight_cfg = tm.DFlashWeightConfig()
+weight_cfg.block_size = 8
+weight_cfg.draft_window = 2048
+weight_cfg.num_context_features = 3
+conv_cfg = tm.DFlashConvConfig()
+conv_cfg.taps = 4
+conv_cfg.group_size = 64
+selector_cfg = tm.DFlashSelectorConfig()
+selector_cfg.state_rank = 64
+selector_cfg.top_k = 16
+assert weight_cfg.module_type == 'DFlashWeight'
+assert conv_cfg.module_type == 'DFlashConvWeight'
+assert selector_cfg.module_type == 'DFlashSelectorWeight'
 print('DFLASH_NATIVE_CONFIG_PASS')
 PY
 [ "${PIPESTATUS[0]}" -eq 0 ] || exit 3

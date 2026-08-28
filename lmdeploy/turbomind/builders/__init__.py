@@ -5,6 +5,8 @@ from __future__ import annotations
 from ._base import Builder, BuiltModule, SplitSide, _act_type_id, _torch_dtype_to_cpp
 from .attention import AttentionBuilder
 from .decoder_layer import DecoderLayerBuilder, DecoderLayerConfig
+from .dflash import (DFlashConvBuilder, DFlashConvConfig, DFlashSelectorBuilder, DFlashSelectorConfig,
+                     DFlashWeightBuilder, DFlashWeightConfig)
 from .deltanet import DeltaNetBuilder
 from .ffn import FfnBuilder, fuse_w1w3
 from .mla import MLABuilder
@@ -22,12 +24,14 @@ __all__ = [
     # Builders
     'AttentionBuilder', 'FfnBuilder', 'MoeBuilder',
     'DeltaNetBuilder', 'MLABuilder',
-    'DecoderLayerBuilder', 'ModuleListBuilder', 'MTPLayerBuilder',
+    'DecoderLayerBuilder', 'DFlashConvBuilder', 'DFlashSelectorBuilder',
+    'DFlashWeightBuilder', 'ModuleListBuilder', 'MTPLayerBuilder',
     'NormBuilder', 'LayerNormBuilder',
     # Primitive config wrappers
     'make_norm_config', 'make_layer_norm_config',
     # C++ config re-exports
-    'DecoderLayerConfig', 'ModuleListConfig', 'MTPLayerConfig',
+    'DecoderLayerConfig', 'DFlashConvConfig', 'DFlashSelectorConfig',
+    'DFlashWeightConfig', 'ModuleListConfig', 'MTPLayerConfig',
     # Helper functions
     'fuse_w1w3',
 ]

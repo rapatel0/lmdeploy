@@ -12,6 +12,7 @@ add_library(models STATIC
         moe_weight.cc
         delta_net_weight.cc
         decoder_layer_weight.cc
+        dflash_weight.cc
         mtp_weight.cc
         model_weight.cc
         model_root.cc
