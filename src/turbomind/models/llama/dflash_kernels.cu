@@ -117,7 +117,7 @@ __global__ void DFlashScaleRowsHalf(__half* value, const float* row_scales, int 
 
 __global__ void DFlashResidualRMSNormHalf(__half*       output,
                                           float*        residual,
-                                          const float*  reduced,
+                                          const __half* reduced,
                                           const __half* bias,
                                           const __half* weight,
                                           int           hidden,
@@ -134,7 +134,7 @@ __global__ void DFlashResidualRMSNormHalf(__half*       output,
         // BF16 tensor cores, but it can preserve the checkpoint semantics by
         // rounding in FP32 and retaining the rounded value in FP32 storage.
         const float value = RoundBFloat16(
-            residual[index] + reduced[index] * reduced_scale
+            residual[index] + __half2float(reduced[index]) * reduced_scale
             + (bias ? __half2float(bias[channel]) : 0.f));
         residual[index] = value;
         sum += value * value;
@@ -400,7 +400,7 @@ void invokeDFlashResidualRMSNorm(Tensor&       output,
 {
     TM_CHECK_EQ(output.dtype(), kHalf);
     TM_CHECK_EQ(residual.dtype(), kFloat32);
-    TM_CHECK_EQ(reduced.dtype(), kFloat32);
+    TM_CHECK_EQ(reduced.dtype(), kHalf);
     TM_CHECK_EQ(weight.dtype(), kHalf);
     TM_CHECK_EQ(output.ndim(), 2);
     TM_CHECK_EQ(output.size(), residual.size());
@@ -408,7 +408,7 @@ void invokeDFlashResidualRMSNorm(Tensor&       output,
     TM_CHECK_EQ(output.shape(1), weight.size());
     DFlashResidualRMSNormHalf<<<output.shape(0), 256, 0, stream>>>((__half*)output.raw_data(),
                                                                   residual.data<float>(),
-                                                                  reduced.data<float>(),
+                                                                  (const __half*)reduced.raw_data(),
                                                                   (const __half*)bias.data_or((void*)nullptr),
                                                                   (const __half*)weight.raw_data(),
                                                                   output.shape(1),

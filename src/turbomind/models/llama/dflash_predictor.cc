@@ -332,19 +332,21 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                              const Tensor& bias,
                              const NormWeight& norm,
                              float reduced_scale) {
-        Tensor reduced{value.shape(), kFloat32, kDEVICE};
-        invokeDFlashCastToFloat(reduced, value, stream);
+        // Laguna transports each 1/256 branch in FP16 and performs the TP
+        // reduction in that dtype. The previous FP32 cast added a kernel,
+        // doubled collective traffic, and changed reduction rounding relative
+        // to the SGLang reference draft.
         if (ctx_.comm.d_comm) {
-            ctx_.comm.d_comm->AllReduceSum(reduced.raw_data(),
-                                           reduced.raw_data(),
-                                           reduced.size(),
-                                           kFloat32,
+            ctx_.comm.d_comm->AllReduceSum(value.raw_data(),
+                                           value.raw_data(),
+                                           value.size(),
+                                           kHalf,
                                            ctx_.comm.d_tp_group,
                                            stream);
         }
         invokeDFlashResidualRMSNorm(value,
                                     res,
-                                    reduced,
+                                    value,
                                     bias,
                                     norm.weight,
                                     norm.norm_eps_,
