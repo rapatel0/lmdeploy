@@ -357,11 +357,12 @@ def main() -> int:
                 gen_config=config,
             )
             result = None
-            async for item in engine.generate(request, stream_response=False):
-                result = item
+            async for item in engine.generate(request, stream_response=True):
+                response = item.to_response(0)
+                result = response if result is None else result.extend(response)
             if result is None:
                 raise RuntimeError("exact-id request returned no output")
-            return result.to_response(0)
+            return result
 
         return pipe._run(coro=run_ids()).result()
 
