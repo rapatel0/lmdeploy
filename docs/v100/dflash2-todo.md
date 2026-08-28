@@ -45,11 +45,13 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - SGLang resolves full versus sliding attention per layer. LMDeploy currently assigns one global causal/window configuration and ignores `layer_types`.
   - Done when: every loaded TurboMind draft layer matches SGLang's per-layer attention type and `sliding_window - 1` convention.
 
-- [ ] **Restore dynamic W2 row scales after TP all-reduce.**
-  - Classification: confirmed operation-order mismatch when a row scale exceeds one.
-  - SGLang reduces W2 output first and restores the row scale afterward. LMDeploy currently scales each rank's partial W2 output before the collective.
-  - First diagnostic: report the row-scale distribution on the audited prompt.
-  - Done when: order matches SGLang, identity passes, and acceptance impact is recorded.
+- [ ] **Move TP all-reduces before output grouped convolution and W2 row-scale restoration.**
+  - Classification: confirmed TP4 operation-order mismatch.
+  - Attention: SGLang performs local Wo, FP16 all-reduce, then output grouped convolution; LMDeploy performs local Wo, output convolution, then all-reduce inside residual norm.
+  - MLP: SGLang performs local W2, FP16 all-reduce, row-scale restoration, then output grouped convolution; LMDeploy restores row scale and applies output convolution before all-reduce.
+  - These operations commute only in exact arithmetic; FP16 stores and collectives create ten mismatched rounding boundaries across five layers.
+  - First diagnostic: capture local projection, post-reduce, post-scale, post-convolution, and post-norm tensors; report row-scale distribution.
+  - Done when: both branches match SGLang's collective boundary, double reduction is impossible, identity passes, and acceptance impact is recorded.
 
 - [ ] **Write only committed verifier context K/V, or prove rejected suffixes are invisible.**
   - Classification: lifecycle hypothesis.
@@ -66,6 +68,28 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - [ ] **Add first-block tensor parity against SGLang.**
   - Compare, in order: captured target features, context FC output, context norm output, each grouped-convolution output, attention output, residual norm, final draft hidden state, candidate IDs, unary scores, and selector scores.
   - Done when: the first numerical divergence is identified and either fixed or documented as intentional.
+
+- [ ] **Validate selector edge-score narrowing semantics.**
+  - Classification: runtime-codegen-dependent hypothesis.
+  - SGLang expresses `predecessor * hidden` as an FP16 tensor before contraction; LMDeploy promotes all three factors and accumulates serially in FP32.
+  - Compare every interaction score and top-two edge margin from shared tensors; inspect SGLang's generated kernel before changing LMDeploy.
+  - Done when: generated arithmetic is proven equivalent or LMDeploy matches the observed narrowing points.
+
+- [ ] **Validate draft RoPE ownership and post-RoPE K parity.**
+  - Classification: potentially catastrophic configuration hypothesis.
+  - Confirm draft layers do not inherit target-model RoPE metadata accidentally.
+  - Compare target versus draft base, scaling, rotary layout/dimension, and post-RoPE K near position 1000 and across all eight proposal positions.
+  - Done when: each draft layer demonstrably uses the draft checkpoint's RoPE contract.
+
+- [ ] **Run isolated grouped-convolution arithmetic parity.**
+  - Classification: lower-priority rounding hypothesis; indexing already appears aligned.
+  - Compare both convolution sides bitwise from identical FP16 inputs, deltas, and base kernels.
+  - Done when: arithmetic matches or required FP16/FP32 narrowing points are identified and reproduced.
+
+- [ ] **Compare residual RMSNorm reduction and rounding schedules.**
+  - Classification: deferred lower-level hypothesis.
+  - Investigate only if first-block parity first diverges at a residual norm after earlier boundaries match.
+  - Done when: the V100 SGLang kernel's reduction/rounding schedule is matched or shown immaterial.
 
 ## P1: speculative cycle cost
 
@@ -133,4 +157,4 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - Exact short-workload identity: pass
 - Cumulative audited runtime gain from completed selector/context work: about 17%
 
-The immediate execution order is: context-round A/B, raw acceptance counters, four-arm ambiguity matrix, checkpoint architecture/keys, then W2 collective ordering and per-layer attention configuration.
+The immediate execution order is: raw acceptance counters, context-round/ambiguity four-arm matrix, checkpoint architecture/keys, both branch collective boundaries, then per-layer attention and RoPE configuration.
