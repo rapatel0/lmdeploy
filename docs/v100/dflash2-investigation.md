@@ -138,15 +138,31 @@ SGLang constructs `hidden_norm` as `LagunaRMSNorm(..., scaled_residual_stream=Fa
 
 Therefore LMDeploy changes every projected context vector before building all five layers' draft K/V. This is a confirmed semantic mismatch and is capable of reducing draft fidelity across the entire seven-token block.
 
-Required experiment:
+The 2026-08-28 four-arm audited matrix showed that removing this round is semantically correct but not the dominant acceptance fix:
 
-- A/B the audited prompt with and without `invokeDFlashRoundBFloat16` after `hidden_norm`;
-- preserve every other setting;
-- report raw accepted prefix, ambiguity replay, committed length, throughput, and exact identity.
+- with the 0.0625 ambiguity margin, commit length changed from 1.832 to 1.871 and decode from 42.26 to 43.17 tok/s;
+- with zero ambiguity margin, commit length changed from 2.050 to 2.087 and decode from 47.46 to 47.39 tok/s;
+- raw commit length remained approximately 2.1 in every arm.
 
-The effect size has not yet been measured, so this document does not claim it is the sole acceptance cause.
+All four arms passed the existing 256-token short-prompt K=0/K=7 identity gate. Exact audited-prompt identity remains a separate required gate.
 
-## Likely acceptance-accounting amplifier
+## Confirmed TP4 draft-network mismatch
+
+### Collective boundary is on the wrong side of output convolution
+
+SGLang performs, for attention:
+
+`local Wo -> FP16 TP all-reduce -> output grouped convolution -> residual norm`
+
+LMDeploy performs:
+
+`local Wo -> output grouped convolution -> FP16 TP all-reduce inside residual norm`
+
+For MLP, SGLang likewise reduces raw W2 first, then restores dynamic row scale and applies the output convolution. LMDeploy restores the scale and convolves each rank's partial output before reduction.
+
+These forms commute in exact arithmetic but not across FP16 stores and FP16 NCCL. The mismatch occurs at ten branch boundaries across five layers and is now the strongest confirmed draft-fidelity defect.
+
+## Confirmed acceptance-accounting amplifier
 
 ### Whole-block ambiguity replay
 
@@ -156,22 +172,18 @@ The rejection kernel marks a path ambiguous when a competing target logit lies w
 - discard every otherwise accepted draft and verifier bonus;
 - run an ordinary target decode next.
 
-The published commit-length counter records only tokens retained after this replay. It does not currently expose:
+Commit `720c8e70` added raw-versus-final counters. The audited matrix measured:
 
-- the raw accepted prefix before replay;
-- ambiguous verification count;
-- raw accepted tokens discarded by replay.
+| Context BF16 round | Ambiguity margin | Final commit | Raw commit | Ambiguous steps | Discarded tokens | Decode tok/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| off | 0 | 2.087 | 2.087 | 0 | 0 | 47.39 |
+| off | 0.0625 | 1.871 | 2.116 | 36 | 93 | 43.17 |
+| on | 0 | 2.050 | 2.101 | 9 | 18 | 47.46 |
+| on | 0.0625 | 1.832 | 2.092 | 45 | 99 | 42.26 |
 
-SGLang does not impose the same whole-block exactness penalty. If near-ties are frequent on the audited corpus, LMDeploy's reported 1.862 can substantially understate draft-model fidelity.
+Thus the 0.0625 policy discards roughly 0.22-0.26 tokens per verification and costs about 4-5 tok/s. It explains a meaningful part of the low published acceptance, but raw fidelity is still only about 2.1 versus SGLang's 3.765. The remaining gap is predominantly draft-network fidelity, not accounting.
 
-Required instrumentation:
-
-- raw accepted drafts and raw commit length;
-- ambiguous verification count/rate;
-- accepted drafts discarded due to ambiguity;
-- final committed length after replay.
-
-Earlier zero-margin testing on the short synthetic prompt did not change its 2.696 commit length. That does not settle the audited 1,000-token workload and must not be generalized to it.
+A zero margin can still flag exact ties, as seen in the round-on arm. Permanently changing the default requires exact audited-prompt identity, not only the existing short-prompt gate.
 
 ## Acceptance gap
 
@@ -186,9 +198,9 @@ At LMDeploy's current cycle cost, immediately matching SGLang acceptance would i
 
 The next acceptance investigation is ordered as follows:
 
-1. remove the unmatched context BF16 round behind an A/B flag;
-2. add raw-versus-post-replay acceptance counters;
-3. run the exact audited 1,000-token prompt;
+1. run exact audited-prompt K=0/K=7 identity for no context round and zero ambiguity margin;
+2. move both branch TP reductions before output convolution and W2 row-scale restoration;
+3. inspect the checkpoint architecture, unmatched keys, per-layer attention contracts, and RoPE ownership;
 4. compare intermediate projected context, draft hidden states, candidates, and selected path against SGLang if the gap remains;
 5. only then pursue CUDA graph capture of fixed-shape target verification and draft execution.
 

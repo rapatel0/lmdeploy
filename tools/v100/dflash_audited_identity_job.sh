@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/null)"
+[ -n "${SRC_COMMIT}" ] || SRC_COMMIT=unknown
+RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-audited-identity-${SRC_COMMIT}
+mkdir -p "${RESULTS}"
+exec > >(tee -a "${RESULTS}/console.log") 2>&1
+finish() {
+    rc=$?
+    echo "${rc}" >"${RESULTS}/exit_code"
+    [ -f "${RESULTS}/completed" ] || echo KILLED >"${RESULTS}/incomplete"
+    echo "artifacts in ${RESULTS} (exit ${rc})"
+}
+trap finish EXIT
+
+cat /src/SOURCE_STAMP
+WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
+pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
+cd /
+export TM_LOG_LEVEL=INFO
+export TM_DFLASH_CONTEXT_BF16_ROUND=0
+export TM_MTP_AMBIGUITY_MARGIN=0
+python3 /job/verify_dflash_audited.py \
+    --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
+    --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
+    --corpus /sglang-corpus --tp "${TP:-4}" --input-tokens 1000 --output-tokens 256 \
+    --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01
+
+touch "${RESULTS}/completed"

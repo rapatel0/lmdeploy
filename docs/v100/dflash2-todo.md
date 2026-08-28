@@ -24,15 +24,13 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Experiment: audited A/B with context round on/off and no other change.
   - Done when: the matching no-round path passes identity and its acceptance/throughput effect is recorded.
 
-- [ ] **Expose raw acceptance separately from post-replay commits.**
-  - Classification: missing diagnostic for a confirmed policy difference.
-  - Add counters for raw accepted drafts, raw commit length, ambiguous verifications, zero-commit replays, and accepted drafts discarded by ambiguity replay.
-  - Done when: every audited result reports raw and final acceptance.
+- [x] **Expose raw acceptance separately from post-replay commits.**
+  - Commit `720c8e70` reports raw accepted drafts, raw commit length, ambiguous verifications, and accepted tokens discarded by ambiguity replay.
 
-- [ ] **Run the four-arm context-round/ambiguity matrix.**
-  - Arms: context round on/off crossed with ambiguity margin `0.0625/0`.
-  - Preserve an exact K=0 identity arm for each configuration.
-  - Done when: one table attributes fidelity loss to draft math versus exactness replay.
+- [x] **Run the four-arm context-round/ambiguity matrix.**
+  - Context round had little effect: raw commit remained approximately 2.1.
+  - Removing the 0.0625 ambiguity margin raised final commit from 1.83-1.87 to 2.05-2.09 and throughput from 42-43 to about 47.4 tok/s.
+  - Every arm passed the 256-token short-prompt identity gate; exact audited-prompt identity remains open.
 
 - [ ] **Inspect the draft checkpoint architecture and unmatched weight keys.**
   - Classification: high-impact conditional mismatch.
@@ -157,4 +155,4 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - Exact short-workload identity: pass
 - Cumulative audited runtime gain from completed selector/context work: about 17%
 
-The immediate execution order is: raw acceptance counters, context-round/ambiguity four-arm matrix, checkpoint architecture/keys, both branch collective boundaries, then per-layer attention and RoPE configuration.
+The immediate execution order is: exact audited-prompt identity for the no-round/zero-margin arm, both branch collective boundaries, checkpoint architecture/keys, then per-layer attention and RoPE configuration.

@@ -30,8 +30,8 @@ for context_round in 1 0; do
         arm="round${context_round}_margin${margin//./p}"
         echo "=== ACCEPTANCE_ARM ${arm} ==="
         TM_DFLASH_CONTEXT_BF16_ROUND="${context_round}" \
-        TM_MTP_AMBIGUITY_MARGIN="${margin}" \
-        python3 /job/bench_decode.py \
+            TM_MTP_AMBIGUITY_MARGIN="${margin}" \
+            python3 /job/bench_decode.py \
             --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
             --num-draft-tokens 7 --speculative-algorithm dflash2 \
             --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
@@ -45,8 +45,8 @@ for context_round in 1 0; do
 
         echo "=== IDENTITY_ARM ${arm} ==="
         TM_DFLASH_CONTEXT_BF16_ROUND="${context_round}" \
-        TM_MTP_AMBIGUITY_MARGIN="${margin}" \
-        python3 /job/verify_dflash_runtime.py \
+            TM_MTP_AMBIGUITY_MARGIN="${margin}" \
+            python3 /job/verify_dflash_runtime.py \
             --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
             --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
             --tp "${TP:-4}" --output-tokens 256 \
