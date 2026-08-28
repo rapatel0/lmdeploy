@@ -1,10 +1,11 @@
 # DFlash2 V100 investigation
 
-Status: active investigation  
-Last updated: 2026-08-28  
+Status: active investigation
+Last updated: 2026-08-28
 Target: Qwen3.8-27B-FP8, TP4 V100, DFlash2 block size 8
 
 Action tracker: [`dflash2-todo.md`](./dflash2-todo.md)
+Execution plan: [`dflash2-performance-plan.md`](./dflash2-performance-plan.md)
 
 ## Qualification target
 
@@ -20,15 +21,16 @@ LMDeploy must also preserve exact target-only output identity.
 
 ## Current result
 
-Latest audited LMDeploy result:
+Latest qualified audited LMDeploy result:
 
-- DFlash2 decode: 42.27 tok/s
-- Average committed length: 1.862
-- Exact short-workload K=0/K=7 identity: pass
-- Original audited DFlash2 result before the selector/context optimizations: 36.13 tok/s
-- Cumulative runtime improvement: about 17.0%
+- DFlash2 decode: 61.39 tok/s
+- Average committed length: 2.664
+- Verification cycle time: approximately 43.4 ms
+- Exact audited K=0/K=7 identity: pass
+- Original audited DFlash2 result: 36.13 tok/s
+- Cumulative runtime improvement: about 70%
 
-This remains unqualified. Acceptance is less than half of SGLang's, and cycle cost is also too high.
+This remains unqualified. SGLang commits 3.765 tokens per step and completes each cycle in approximately 27.6 ms.
 
 ## Confirmed runtime findings
 
@@ -246,7 +248,7 @@ Current audited comparison:
 | Runtime | Commit length |
 | --- | ---: |
 | SGLang DFlash2 | 3.765 |
-| LMDeploy DFlash2 | 1.862 |
+| LMDeploy DFlash2 | 2.664 |
 
 At LMDeploy's current cycle cost, immediately matching SGLang acceptance would improve throughput materially but still not guarantee 2.2x. Both fidelity and cycle cost need work.
 

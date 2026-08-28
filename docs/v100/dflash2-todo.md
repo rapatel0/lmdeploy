@@ -1,8 +1,9 @@
 # DFlash2 V100 fix backlog
 
-Status: active  
-Last updated: 2026-08-28  
+Status: active
+Last updated: 2026-08-28
 Companion evidence log: [`dflash2-investigation.md`](./dflash2-investigation.md)
+Execution plan: [`dflash2-performance-plan.md`](./dflash2-performance-plan.md)
 
 This is the accumulating, prioritized list of DFlash2 findings to fix or falsify. A checked item means the implementation and its required gates passed; it does not imply the overall DFlash2 path is qualified.
 
@@ -162,4 +163,4 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - Exact short-workload identity: pass
 - Cumulative audited gain from the original 36.13 tok/s: about 70%
 
-The immediate execution order is: capture first-block tensor parity, then investigate context-KV/metadata lifecycle if the fidelity gap remains.
+Run two tracks in parallel. Remove host barriers and stabilize workspaces on Track A. Capture first-block tensor parity on Track B.
