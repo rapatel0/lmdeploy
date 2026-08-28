@@ -96,6 +96,17 @@ public:
                       const int*          block_counts,
                       TensorMap&          env);
 
+    /// Rebuild one sequence's accepted draft KV entries from verifier hidden
+    /// states. Proposal-time entries were conditioned on draft hidden states;
+    /// EAGLE repairs them after verification before proposing the next chain.
+    /// This sequential implementation is a correctness/quality prototype for
+    /// batch size one; a variable-length extend kernel can later fuse the run.
+    void RepairAcceptedSingle(const Tensor&       verifier_hidden_states,
+                              const Buffer_<int>& accepted_tokens,
+                              int                 num_accepted,
+                              int                 phase,
+                              TensorMap&          env);
+
     /// Fill the draft layer's KV slot for the prompt positions of a prefill
     /// chunk. Runs against the TARGET's phase plan, not the draft's: the
     /// chunk shape (q_len per row, k_len, block pointers) is exactly the plan

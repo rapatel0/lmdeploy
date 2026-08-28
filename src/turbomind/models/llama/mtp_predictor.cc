@@ -208,7 +208,7 @@ void MTPPredictor::PrefillFill(int                 target_phase,
     // path measured 1.31/1.40, making this alignment a first-class A/B gate.
     static const bool eagle_rotation = [] {
         const char* value = std::getenv("TM_MTP_EAGLE_ROTATION");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
 
     Tensor projected;
@@ -335,7 +335,9 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
     // too; omitting it collapsed K=1 acceptance from 0.83 to about 0.31.
     static const bool tp_reduce = [] {
         const char* value = std::getenv("TM_MTP_TP_REDUCE");
-        return value && value[0] == '1';
+        // Correct by default. Value 0 retains the broken rank-local path only
+        // for the matched regression benchmark.
+        return !value || value[0] != '0';
     }();
     auto residual_norm = [&](Tensor& x, Tensor& r, const Tensor& bias, const NormWeight& norm) {
         if (tp_reduce && ctx_.comm.d_comm) {
@@ -376,6 +378,35 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
     residual_norm(hidden, residual, {}, *weights_.final_norm);
 
     return hidden;
+}
+
+void MTPPredictor::RepairAcceptedSingle(const Tensor&       verifier_hidden_states,
+                                        const Buffer_<int>& accepted_tokens,
+                                        int                 num_accepted,
+                                        int                 phase,
+                                        TensorMap&          env)
+{
+    TM_CHECK_GT(num_accepted, 0);
+    TM_CHECK_GE((int)verifier_hidden_states.shape(0), num_accepted);
+    TM_CHECK_EQ((int)accepted_tokens.size(), num_accepted);
+
+    const auto stream    = core::Context::stream().handle();
+    auto       k_offsets = env.at("k_offsets").buffer().view<int>();
+
+    // After rollback, cu_k_len covers [old prefix, accepted drafts, bonus].
+    // Rewind to the first accepted draft, overwrite each entry using the
+    // TARGET verifier hidden state that predicted it, then leave cu_k_len at
+    // its original value. The following EAGLE-rotated Draft step overwrites
+    // the bonus slot and produces the first proposal for the next chain.
+    AdvanceCuSeqLens(k_offsets.data(), 1, -num_accepted, stream);
+    for (int i = 0; i < num_accepted; ++i) {
+        auto token     = accepted_tokens.slice(i, 1);
+        auto hidden    = verifier_hidden_states.slice(i, 1);
+        auto embedding = embed_fn_(token);
+        auto projected = Project(embedding, hidden, 1);
+        DecodeStep(std::move(projected), phase, env);
+        AdvanceCuSeqLens(k_offsets.data(), 1, 1, stream);
+    }
 }
 
 MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
@@ -636,7 +667,9 @@ MTPPredictor::DraftResult MTPPredictor::Draft(int                 batch_size,
 
     static const bool eagle_rotation = [] {
         const char* value = std::getenv("TM_MTP_EAGLE_ROTATION");
-        return value && value[0] == '1';
+        // SGLang's EAGLE contract is the production default. Value 0 exists
+        // only for matched regression measurements of the legacy +1 shift.
+        return !value || value[0] != '0';
     }();
 
     for (int step = 0; step < effective_drafts; ++step) {

@@ -1184,6 +1184,32 @@ void LanguageModel::Impl::DraftTokens(int phase, TensorMap& env)
     // aborts in the first RMSNorm on `out.shape() == x.shape()`.
     auto hidden = env.at("hidden_states");
 
+    // SGLang's EAGLE lifecycle repairs every accepted draft KV entry with the
+    // target verifier hidden state that predicted that token. Proposal-time KV
+    // was conditioned on draft hidden states and is only provisional. Keeping
+    // it after acceptance poisons later chains even though the accepted token
+    // IDs themselves were correct.
+    //
+    // Start with the batch-one reference path used by the V100 benchmark. It
+    // replays accepted entries sequentially; a variable-length extend plan can
+    // fuse mixed-batch repair once this A/B establishes the quality effect.
+    static const bool repair_accepted = [] {
+        const char* value = std::getenv("TM_MTP_ACCEPTED_REPAIR");
+        return value && value[0] == '1';
+    }();
+    if (repair_accepted && bsz == 1 && hidden.shape(0) != bsz && !d.skip_draft[0]) {
+        const int n = d.last_accepted[0];
+        if (n > 0) {
+            Buffer_<int> host_tokens{n, kCPU};
+            for (int k = 0; k < n; ++k) {
+                host_tokens[k] = d.rows[0]->draft_tokens[k];
+            }
+            Buffer_<int> device_tokens{n, kDEVICE};
+            Copy(host_tokens, device_tokens);
+            mtp_predictor_->RepairAcceptedSingle(hidden.slice(0, n), device_tokens, n, phase, env);
+        }
+    }
+
     if (hidden.shape(0) != bsz) {
         const int rows_per_seq = (int)hidden.shape(0) / bsz;
         TM_CHECK_EQ(rows_per_seq * bsz, (int)hidden.shape(0))
