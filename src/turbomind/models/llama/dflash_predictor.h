@@ -1,6 +1,7 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "src/turbomind/core/core.h"
@@ -11,6 +12,7 @@ namespace turbomind {
 
 class DFlashConvWeight;
 class DFlashWeight;
+class LlamaFfnLayer;
 class LlamaLinear;
 class UnifiedAttentionLayer;
 
@@ -35,8 +37,19 @@ public:
     /// draft hidden width, then apply hidden_norm.
     Tensor ProjectContext(const Tensor& target_hidden) const;
 
-    /// Apply the input or output side of one local convolution adapter.
+    struct ConvState {
+        Tensor output;
+        Tensor delta;
+    };
+
+    ConvState PrepareGroupedConv(const Tensor& input, const DFlashConvWeight& weights) const;
+    Tensor FinishGroupedConv(const Tensor& input, const Tensor& delta, const DFlashConvWeight& weights) const;
+
+    /// Apply one convolution side for diagnostics.
     Tensor ApplyGroupedConv(const Tensor& input, const DFlashConvWeight& weights, int side) const;
+
+    /// Execute the five-layer draft backbone after its attention plan is prepared.
+    Tensor RunDraftLayers(Tensor hidden, int phase) const;
 
     /// Temporary correctness path: run full attention for each draft layer on
     /// projected target context, preserving its K/V in dedicated cache slots.
@@ -51,6 +64,8 @@ private:
     UnifiedAttentionLayer& attention_;
     std::vector<int>       attention_indices_;
     int                    attention_phase_base_{-1};
+    const Context&         ctx_;
+    std::unique_ptr<LlamaFfnLayer> ffn_layer_;
 };
 
 }  // namespace turbomind

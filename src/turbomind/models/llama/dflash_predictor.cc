@@ -5,12 +5,14 @@
 #include <cuda_runtime.h>
 
 #include <utility>
+#include <vector>
 
 #include "src/turbomind/core/check.h"
 #include "src/turbomind/kernels/norm/rms_norm.h"
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/dflash_weight.h"
 #include "src/turbomind/models/linear_weight.h"
+#include "src/turbomind/models/llama/LlamaFfnLayer.h"
 #include "src/turbomind/models/llama/LlamaLinear.h"
 #include "src/turbomind/models/llama/dflash_kernels.h"
 #include "src/turbomind/models/llama/unified_attention_layer.h"
@@ -32,7 +34,8 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
     linear_(*ctx.linear),
     attention_(attention),
     attention_indices_(std::move(attention_indices)),
-    attention_phase_base_(attention_phase_base)
+    attention_phase_base_(attention_phase_base),
+    ctx_(ctx)
 {
     TM_CHECK(weights_.fc) << "DFlash2 context projection is missing";
     TM_CHECK(weights_.hidden_norm) << "DFlash2 hidden_norm is missing";
@@ -43,6 +46,7 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
         TM_CHECK_EQ(attention_indices_.size(), 5);
         TM_CHECK_GE(attention_phase_base_, 0);
     }
+    ffn_layer_ = std::make_unique<LlamaFfnLayer>(ctx);
     TM_LOG_INFO("[DFlash2] context projector ready: features={} input={} hidden={}",
                 num_context_features_,
                 weights_.fc->input_dim,
@@ -108,7 +112,8 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
                 target_phase);
 }
 
-Tensor DFlashPredictor::ApplyGroupedConv(const Tensor& input, const DFlashConvWeight& weights, int side) const
+DFlashPredictor::ConvState DFlashPredictor::PrepareGroupedConv(const Tensor& input,
+                                                                 const DFlashConvWeight& weights) const
 {
     TM_CHECK(weights.kernel_projection) << "DFlash2 convolution projection is missing";
     TM_CHECK(weights.base_kernel) << "DFlash2 base kernel is missing";
@@ -124,12 +129,113 @@ Tensor DFlashPredictor::ApplyGroupedConv(const Tensor& input, const DFlashConvWe
                             input,
                             delta,
                             weights.base_kernel,
-                            side,
+                            0,
+                            weights_.block_size,
+                            weights.taps,
+                            weights.group_size,
+                            core::Context::stream().handle());
+    return {std::move(output), std::move(delta)};
+}
+
+Tensor DFlashPredictor::FinishGroupedConv(const Tensor&             input,
+                                           const Tensor&             delta,
+                                           const DFlashConvWeight& weights) const
+{
+    Tensor output{input.shape(), dtype_, kDEVICE};
+    invokeDFlashGroupedConv(output,
+                            input,
+                            delta,
+                            weights.base_kernel,
+                            1,
                             weights_.block_size,
                             weights.taps,
                             weights.group_size,
                             core::Context::stream().handle());
     return output;
+}
+
+Tensor DFlashPredictor::ApplyGroupedConv(const Tensor& input, const DFlashConvWeight& weights, int side) const
+{
+    auto prepared = PrepareGroupedConv(input, weights);
+    return side == 0 ? std::move(prepared.output) : FinishGroupedConv(input, prepared.delta, weights);
+}
+
+Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
+{
+    TM_CHECK_EQ(attention_indices_.size(), 5);
+    const int  attention_phase = attention_phase_base_ >= 0 ? attention_phase_base_ + phase : phase;
+    const int  token_num       = hidden.shape(0);
+    const auto stream          = core::Context::stream().handle();
+
+    Tensor residual{hidden.shape(), dtype_, kDEVICE};
+    TM_CUDA_CHECK(cudaMemcpyAsync(
+        residual.raw_data(), hidden.raw_data(), hidden.byte_size(), cudaMemcpyDeviceToDevice, stream));
+
+    auto* first_layer = TM_CHECK_NOTNULL(weights_.layer(0));
+    invokeRMSNorm(hidden,
+                  hidden,
+                  first_layer->attention_norm->weight,
+                  first_layer->attention_norm->norm_eps_,
+                  first_layer->attention_norm->zero_centered_,
+                  stream);
+    TM_CUDA_CHECK(cudaGetLastError());
+
+    auto residual_norm = [&](Tensor& value, Tensor& res, const Tensor& bias, const NormWeight& norm) {
+        if (ctx_.comm.d_comm) {
+            ctx_.comm.d_comm->AllreduceResidualBiasRMSnorm(value.raw_data(),
+                                                           res.raw_data(),
+                                                           bias.data_or((void*)nullptr),
+                                                           norm.weight.raw_data(),
+                                                           norm.norm_eps_,
+                                                           norm.zero_centered_,
+                                                           hidden_units_,
+                                                           token_num,
+                                                           dtype_,
+                                                           ctx_.comm.d_tp_group,
+                                                           stream);
+        }
+        else {
+            invokeResidualBiasRMSNorm(value.raw_data(),
+                                      res.raw_data(),
+                                      norm.weight.raw_data(),
+                                      bias.data_or((void*)nullptr),
+                                      dtype_,
+                                      hidden_units_,
+                                      token_num,
+                                      norm.norm_eps_,
+                                      norm.zero_centered_,
+                                      stream);
+        }
+        TM_CUDA_CHECK(cudaGetLastError());
+    };
+
+    for (int i = 0; i < (int)attention_indices_.size(); ++i) {
+        auto* layer     = TM_CHECK_NOTNULL(weights_.layer(i));
+        auto* attn_conv = TM_CHECK_NOTNULL(weights_.attention_conv(i));
+        auto* mlp_conv  = TM_CHECK_NOTNULL(weights_.mlp_conv(i));
+        TM_CHECK(layer->attention && layer->feed_forward);
+
+        auto attn_input = PrepareGroupedConv(hidden, *attn_conv);
+        Tensor attn_output{{token_num, hidden_units_}, dtype_, kDEVICE};
+        attention_.Forward({attention_phase,
+                            attn_input.output,
+                            attn_output,
+                            layer->attention.get(),
+                            attention_indices_[i]});
+        attn_output = FinishGroupedConv(attn_output, attn_input.delta, *attn_conv);
+        residual_norm(attn_output, residual, layer->attention->wo->bias, *layer->ffn_norm);
+        hidden = std::move(attn_output);
+
+        auto mlp_input = PrepareGroupedConv(hidden, *mlp_conv);
+        ffn_layer_->forward({mlp_input.output, mlp_input.output, layer->feed_forward.get(), attention_indices_[i]});
+        Tensor mlp_output = FinishGroupedConv(mlp_input.output, mlp_input.delta, *mlp_conv);
+
+        const NormWeight& output_norm =
+            i + 1 < (int)attention_indices_.size() ? *weights_.layer(i + 1)->attention_norm : *weights_.final_norm;
+        residual_norm(mlp_output, residual, {}, output_norm);
+        hidden = std::move(mlp_output);
+    }
+    return hidden;
 }
 
 }  // namespace turbomind

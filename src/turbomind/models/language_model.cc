@@ -1108,6 +1108,20 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                             convolved.shape(0),
                             convolved.shape(1),
                             convolved_nonzero);
+
+                Tensor draft_hidden = dflash_predictor_->RunDraftLayers(context, phase);
+                Tensor draft_host{{1, draft_hidden.shape(1)}, draft_hidden.dtype(), kCPU};
+                Copy(draft_hidden.slice(0, 1), draft_host);
+                core::Context::stream().Sync();
+                const char* draft_data = (const char*)draft_host.raw_data();
+                ssize_t     draft_nonzero = 0;
+                for (ssize_t i = 0; i < draft_host.byte_size(); ++i) {
+                    draft_nonzero += draft_data[i] != 0;
+                }
+                TM_LOG_INFO("[DFlash2] five-layer draft shape=[{},{}] nonzero_bytes={}",
+                            draft_hidden.shape(0),
+                            draft_hidden.shape(1),
+                            draft_nonzero);
                 env.produce("dflash_context_hidden", std::move(context));
                 capture_logged = true;
             }
