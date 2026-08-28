@@ -143,12 +143,16 @@ class TurboMind:
             logger.info(f'dist_init_addr={_engine_config.dist_init_addr}')
             assert _engine_config.dist_init_addr is not None
             hostname, port = _engine_config.dist_init_addr.split(':')
+            try:
+                dist_port = int(port)
+            except ValueError as e:
+                raise ValueError(f'invalid dist_init_addr port: {port}') from e
             os.environ['LMDEPLOY_DIST_INIT_ADDR'] = hostname
             os.environ['LMDEPLOY_DIST_INIT_PORT'] = port
             # this will block the process and ignore signals until all ranks done
             from torch.distributed import TCPStore
             self.store = TCPStore(host_name=hostname,
-                                  port=int(port),
+                                  port=dist_port,
                                   world_size=_engine_config.nnodes,
                                   is_master=_engine_config.node_rank == 0)
 
@@ -256,6 +260,10 @@ class TurboMind:
         ec.enable_metrics = engine_config.enable_metrics
         ec.num_tokens_per_iter = engine_config.num_tokens_per_iter
         ec.num_draft_tokens = engine_config.num_draft_tokens
+        ec.speculative_algorithm = engine_config.speculative_algorithm
+        ec.speculative_draft_model = engine_config.speculative_draft_model or ''
+        ec.speculative_dflash_block_size = engine_config.speculative_dflash_block_size
+        ec.speculative_draft_window = engine_config.speculative_draft_window
         ec.max_prefill_iters = engine_config.max_prefill_iters
         ec.async_ = engine_config.async_
         ec.outer_dp_size = engine_config.outer_dp_size
@@ -350,7 +358,7 @@ class TurboMind:
 
         if request.finished:
             self._process_weights()
-            if self._engine_created is False:
+            if not self._engine_created:
                 self._create_engine()
 
     @classmethod
@@ -498,7 +506,7 @@ def _get_logprobs_impl(logprob_vals: torch.Tensor, logprob_idxs: torch.Tensor, l
                 val[:valid_n][idx[:valid_n] == token_id].item()
         ids = list(tok_res.keys())
         for k in ids:
-            if tok_res[k] == float('-inf'):
+            if math.isinf(tok_res[k]) and tok_res[k] < 0:
                 tok_res.pop(k)
         out_logprobs.append(tok_res)
     return out_logprobs
@@ -718,6 +726,7 @@ class TurboMindInstance:
             try:
                 compiler = self.tm_model.grammar_compiler
                 decode_grammar_type = gen_config.response_format['type']
+                decode_grammar = None
                 if decode_grammar_type == 'json_schema':
                     decode_grammar = gen_config.response_format[decode_grammar_type]['schema']
                 elif decode_grammar_type == 'regex_schema':

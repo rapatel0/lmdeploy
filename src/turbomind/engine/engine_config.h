@@ -30,8 +30,13 @@ struct EngineConfig {
     X(std::string, cache_generation, "auto")                                                                           \
     X(bool, enable_metrics, false)                                                                                     \
     X(int, num_tokens_per_iter, 0)                                                                                     \
-    /* Multi-Token Prediction draft depth. 0 disables speculation. */                                                  \
+    /* Number of speculative proposals. 0 disables speculation. */                                                    \
     X(int, num_draft_tokens, 0)                                                                                        \
+    /* Separate draft backend. "mtp" retains the embedded one-layer path. */                                           \
+    X(std::string, speculative_algorithm, "mtp")                                                                       \
+    X(std::string, speculative_draft_model, "")                                                                        \
+    X(int, speculative_dflash_block_size, 8)                                                                           \
+    X(int, speculative_draft_window, 2048)                                                                             \
     X(int, max_prefill_iters, 1)                                                                                       \
     X(int, async_, 0)                                                                                                  \
     X(int, outer_dp_size)                                                                                              \

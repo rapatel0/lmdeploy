@@ -334,6 +334,10 @@ class TurbomindEngineConfig:
     max_prefill_token_num: int = 8192
     num_tokens_per_iter: int = 0
     num_draft_tokens: int = 0
+    speculative_algorithm: str = 'mtp'
+    speculative_draft_model: str | None = None
+    speculative_dflash_block_size: int = 8
+    speculative_draft_window: int = 2048
     max_prefill_iters: int = 1
     async_: int = 1
     devices: list[int] | None = None
@@ -353,20 +357,31 @@ class TurbomindEngineConfig:
             self.quant_policy = QuantPolicy(self.quant_policy)
         except ValueError as e:
             raise ValueError(f'invalid quant_policy: {self.quant_policy}') from e
-        assert self.quant_policy not in (
-            QuantPolicy.FP8,
-            QuantPolicy.FP8_E5M2,
-        ), 'invalid quant_policy for TurboMind, FP8 quantization is not supported'
+        if self.quant_policy in (QuantPolicy.FP8, QuantPolicy.FP8_E5M2):
+            raise ValueError('invalid quant_policy for TurboMind, FP8 quantization is not supported')
         assert self.rope_scaling_factor >= 0, 'invalid rope_scaling_factor'
         assert self.max_prefill_token_num >= 0, \
             'invalid max_prefill_token_num'
         assert self.num_tokens_per_iter >= 0, 'invalid num_tokens_per_iter'
         assert self.num_draft_tokens >= 0, 'invalid num_draft_tokens'
-        assert self.cache_prompt in ('all', 'auto'), 'invalid cache_prompt'
-        assert self.cache_generation in ('all', 'auto', 'none'), 'invalid cache_generation'
+        if self.speculative_algorithm not in ('mtp', 'dflash2'):
+            raise ValueError('speculative_algorithm must be "mtp" or "dflash2"')
+        assert self.speculative_dflash_block_size >= 2, \
+            'speculative_dflash_block_size must include an anchor and at least one proposal'
+        assert self.speculative_draft_window > 0, 'invalid speculative_draft_window'
+        if self.speculative_algorithm == 'dflash2':
+            assert self.speculative_draft_model, \
+                'speculative_draft_model is required for dflash2'
+            if self.num_draft_tokens not in (0, self.speculative_dflash_block_size - 1):
+                raise ValueError('dflash2 num_draft_tokens must equal block_size - 1')
+        if self.cache_prompt not in ('all', 'auto'):
+            raise ValueError('invalid cache_prompt')
+        if self.cache_generation not in ('all', 'auto', 'none'):
+            raise ValueError('invalid cache_generation')
         assert self.cache_checkpoint_interval > 0, 'invalid cache_checkpoint_interval'
         assert self.cache_prompt_boundary_skip >= 1, 'invalid cache_prompt_boundary_skip'
-        assert self.async_ in (0, 1), 'async_ must be 0 (disabled) or 1 (enabled)'
+        if self.async_ not in (0, 1):
+            raise ValueError('async_ must be 0 (disabled) or 1 (enabled)')
 
 
 @dataclass
@@ -623,7 +638,7 @@ class Response:
                 return [f'{name}=None']
             try:
                 return [f'{name}.shape={tensor.shape}', f'{name}={tensor}']
-            except:  # noqa
+            except Exception:  # noqa
                 # in case tensor is not torch.Tensor or has no shape
                 return [f'{name}={tensor}']
 
