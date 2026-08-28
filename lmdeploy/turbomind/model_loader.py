@@ -2,8 +2,12 @@
 """ModelLoader: coordinates loading a model's weights into the TurboMind runtime."""
 import torch
 
+from lmdeploy.utils import get_logger
+
 from .builders._base import Context, ParallelGroup
 from .checkpoint import Prefix, create_checkpoint
+
+logger = get_logger('lmdeploy')
 
 
 class ModelLoader:
@@ -70,7 +74,13 @@ class ModelLoader:
         )
         draft_model = DFlash2Model(draft_cfg, resolver=resolver)
         draft_model.bind_runtime(**self._runtime)
-        return draft_model.draft(Prefix(draft_ckpt))
+        built = draft_model.draft(Prefix(draft_ckpt))
+        logger.info('[DFlash2] draft weights loaded: %s layers, block=%s, window=%s, checkpoint=%s',
+                    draft_cfg.num_hidden_layers,
+                    self.engine_config.speculative_dflash_block_size,
+                    self.engine_config.speculative_draft_window,
+                    draft_path)
+        return built
 
     def _export_model(self):
         ckpt = create_checkpoint(
