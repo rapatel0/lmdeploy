@@ -20,6 +20,7 @@ pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd / || exit $?
 export TM_LOG_LEVEL=INFO
 export TM_DFLASH_CAPTURE=1
+export TM_DFLASH_TRACE_SELECTOR=1
 python3 /job/verify_dflash_load.py \
     --model "${MODEL}" \
     --draft-model "${DRAFT_MODEL}" \

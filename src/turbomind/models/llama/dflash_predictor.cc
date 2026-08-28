@@ -6,9 +6,11 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,6 +28,50 @@
 #include "src/turbomind/utils/cuda_utils.h"
 
 namespace turbomind {
+namespace {
+
+bool TraceDFlashSelector()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_TRACE_SELECTOR");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
+void ReportDFlashTensor(const std::string& name, const Tensor& value)
+{
+    Tensor host{{1, value.shape(1)}, kHalf, kCPU};
+    Copy(value.slice(0, 1), host);
+    core::Context::stream().Sync();
+    const auto* data = (const __half*)host.raw_data();
+    ssize_t finite = 0;
+    ssize_t nan = 0;
+    ssize_t infinite = 0;
+    float minimum = std::numeric_limits<float>::infinity();
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (ssize_t i = 0; i < host.size(); ++i) {
+        const float item = __half2float(data[i]);
+        if (std::isfinite(item)) {
+            ++finite;
+            minimum = std::min(minimum, item);
+            maximum = std::max(maximum, item);
+        }
+        else {
+            nan += std::isnan(item);
+            infinite += std::isinf(item);
+        }
+    }
+    TM_LOG_INFO("[DFlash2] tensor {} finite={} nan={} inf={} range=[{},{}]",
+                name,
+                finite,
+                nan,
+                infinite,
+                minimum,
+                maximum);
+}
+
+}  // namespace
 
 DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                                  UnifiedAttentionLayer& attention,
@@ -206,37 +252,10 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor& block_hidden, const
         prediction_hidden, block_hidden, weights_.block_size, core::Context::stream().handle());
 
     Tensor logits = logits_fn_(prediction_hidden);
-    static const bool trace_selector = [] {
-        const char* value = std::getenv("TM_DFLASH_TRACE_SELECTOR");
-        return value && value[0] == '1';
-    }();
-    if (TM_UNLIKELY(trace_selector)) {
-        Tensor hidden_host{{1, hidden_units_}, kHalf, kCPU};
-        Tensor logits_host{{1, logits.shape(1)}, kHalf, kCPU};
-        Copy(prediction_hidden.slice(0, 1), hidden_host);
-        Copy(logits.slice(0, 1), logits_host);
-        core::Context::stream().Sync();
-        auto report = [](const char* name, const Tensor& host) {
-            const auto* data = (const __half*)host.raw_data();
-            ssize_t finite = 0;
-            ssize_t nan = 0;
-            float minimum = std::numeric_limits<float>::infinity();
-            float maximum = -std::numeric_limits<float>::infinity();
-            for (ssize_t i = 0; i < host.size(); ++i) {
-                const float value = __half2float(data[i]);
-                if (std::isfinite(value)) {
-                    ++finite;
-                    minimum = std::min(minimum, value);
-                    maximum = std::max(maximum, value);
-                }
-                else {
-                    nan += std::isnan(value);
-                }
-            }
-            TM_LOG_INFO("[DFlash2] selector {} finite={} nan={} range=[{},{}]", name, finite, nan, minimum, maximum);
-        };
-        report("hidden", hidden_host);
-        report("logits", logits_host);
+    static std::atomic<bool> selector_reported{false};
+    if (TM_UNLIKELY(TraceDFlashSelector() && !selector_reported.exchange(true))) {
+        ReportDFlashTensor("selector.hidden", prediction_hidden);
+        ReportDFlashTensor("selector.logits", logits);
     }
     Buffer_<int> candidate_ids{(ssize_t)rows * selector->top_k, kDEVICE};
     Tensor unary_scores{{rows, selector->top_k}, kFloat32, kDEVICE};
@@ -272,6 +291,14 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     const int  attention_phase = attention_phase_base_ >= 0 ? attention_phase_base_ + phase : phase;
     const int  token_num       = hidden.shape(0);
     const auto stream          = core::Context::stream().handle();
+    static std::atomic<bool> block_reported{false};
+    const bool trace_block = TraceDFlashSelector() && !block_reported.exchange(true);
+    auto report = [&](const std::string& stage, const Tensor& value) {
+        if (TM_UNLIKELY(trace_block)) {
+            ReportDFlashTensor(stage, value);
+        }
+    };
+    report("block.embedding", hidden);
 
     Tensor residual{hidden.shape(), dtype_, kDEVICE};
     TM_CUDA_CHECK(cudaMemcpyAsync(
@@ -285,6 +312,7 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                   first_layer->attention_norm->zero_centered_,
                   stream);
     TM_CUDA_CHECK(cudaGetLastError());
+    report("block.initial_norm", hidden);
 
     auto residual_norm = [&](Tensor& value, Tensor& res, const Tensor& bias, const NormWeight& norm) {
         if (ctx_.comm.d_comm) {
@@ -322,23 +350,31 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         TM_CHECK(layer->attention && layer->feed_forward);
 
         auto attn_input = PrepareGroupedConv(hidden, *attn_conv);
+        report("layer" + std::to_string(i) + ".attention_prepare", attn_input.output);
         Tensor attn_output{{token_num, hidden_units_}, dtype_, kDEVICE};
         attention_.Forward({attention_phase,
                             attn_input.output,
                             attn_output,
                             layer->attention.get(),
                             attention_indices_[i]});
+        report("layer" + std::to_string(i) + ".attention_raw", attn_output);
         attn_output = FinishGroupedConv(attn_output, attn_input.delta, *attn_conv);
+        report("layer" + std::to_string(i) + ".attention_finish", attn_output);
         residual_norm(attn_output, residual, layer->attention->wo->bias, *layer->ffn_norm);
+        report("layer" + std::to_string(i) + ".attention_residual_norm", attn_output);
         hidden = std::move(attn_output);
 
         auto mlp_input = PrepareGroupedConv(hidden, *mlp_conv);
+        report("layer" + std::to_string(i) + ".mlp_prepare", mlp_input.output);
         ffn_layer_->forward({mlp_input.output, mlp_input.output, layer->feed_forward.get(), attention_indices_[i]});
+        report("layer" + std::to_string(i) + ".mlp_raw", mlp_input.output);
         Tensor mlp_output = FinishGroupedConv(mlp_input.output, mlp_input.delta, *mlp_conv);
+        report("layer" + std::to_string(i) + ".mlp_finish", mlp_output);
 
         const NormWeight& output_norm =
             i + 1 < (int)attention_indices_.size() ? *weights_.layer(i + 1)->attention_norm : *weights_.final_norm;
         residual_norm(mlp_output, residual, {}, output_norm);
+        report("layer" + std::to_string(i) + ".mlp_residual_norm", mlp_output);
         hidden = std::move(mlp_output);
     }
     return hidden;
