@@ -39,6 +39,27 @@ Run both tracks in parallel after the baseline gate.
 8. Remove variants that fail confirmation.
 9. Record every artifact path in the evidence log.
 
+## Execution priority
+
+Use two passes. Finish low-risk changes that need no new attention algorithm, then move directly to structural gains.
+
+### Pass 1: easiest changes
+
+1. Stabilize proposal and selector buffers per phase.
+2. Replace the rejection kernel's second vocabulary scan with one deterministic top-2 reduction.
+3. Stabilize draft-layer convolution, projection, activation, and residual buffers.
+4. Keep only changes that pass identity and either reduce cycle time or provide required graph-safe addresses.
+
+### Pass 2: largest speedups
+
+1. Capture the complete draft and selector path in a CUDA graph.
+2. Capture fixed-shape target verification after its addresses are stable.
+3. Add a direct paged Q=8 verification attention path that removes KV flattening and exposes more V100 CTAs.
+4. Move proposal eligibility, rollback, and publication to device kernels to remove the remaining host boundaries.
+5. Use first-block parity to fix the earliest TurboMind draft mismatch and raise commit length toward 3.765.
+
+Do not spend another build on changes whose measured ceiling is below one percent unless they are graph prerequisites.
+
 ## Track A: cycle speed
 
 ### A0. Freeze the measurement contract — complete

@@ -1,9 +1,12 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 
 #include "src/turbomind/models/llama/rejection_sampling.h"
+#include "src/turbomind/kernels/reduce_kernel_utils.cuh"
 
 #include <climits>
+#include <cstdlib>
 
+#include <cub/block/block_reduce.cuh>
 #include <cuda_fp16.h>
 #ifdef ENABLE_BF16
 #include <cuda_bf16.h>
@@ -14,7 +17,7 @@ namespace turbomind {
 // Greedy rejection sampling kernel: one block per batch element.
 // Each block processes K+1 logit vectors sequentially, computing argmax for each,
 // then compares against draft tokens to find the first mismatch.
-template<typename T>
+template<typename T, bool OnePassAmbiguity>
 __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
                                    int*       bonus_tokens,    // [batch]
                                    int*       bonus_ambiguous, // [batch]
@@ -34,12 +37,16 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
     const T*   batch_logits = logits + (size_t)b * (K + 1) * vocab_size_padded;
     const int* batch_drafts = draft_tokens + (size_t)b * K;
 
-    // Shared memory for block-level argmax reduction
+    // Shared memory for the legacy argmax reduction and the one-pass top-2 arm.
     __shared__ float s_max_val[32];
     __shared__ int   s_max_idx[32];
-    // Shared memory for broadcasting argmax result to all threads
+    using BlockTop2 = cub::BlockReduce<TopK<float, 2>, 256>;
+    __shared__ typename BlockTop2::TempStorage s_top2_storage;
+    // Shared memory for broadcasting the selected token and ambiguity boundary.
     __shared__ int   s_argmax_token;
     __shared__ float s_argmax_value;
+    __shared__ int   s_second_token;
+    __shared__ float s_second_value;
 
     const int warp_id   = threadIdx.x / 32;
     const int lane_id   = threadIdx.x % 32;
@@ -59,115 +66,113 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
         // next-best token.
         const bool eos_disabled = pos < eos_enable_positions[b];
 
-        // Each thread finds local max over its strided elements
-        float max_val = -1e30f;
-        // INT_MAX for the same reason as the padding lanes below: a thread
-        // whose strided range is empty (blockDim > vocab_size) never assigns
-        // max_idx, and an index of 0 would win the lowest-index tie-break
-        // against threads that also hold the sentinel.
-        int max_idx = INT_MAX;
-        // Strict `>` here already prefers the lower index, since i increases.
-        for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
-            bool skip = false;
-            if (eos_disabled) {
-                for (int e = 0; e < eos_ids_size; ++e) {
-                    skip |= i == eos_ids[b * eos_ids_size + e];
+        int target_ambiguous = 0;
+        if constexpr (OnePassAmbiguity) {
+            // The second entry of a deterministic top-2 reduction is exactly
+            // the strongest alternative needed by the ambiguity predicate.
+            // This removes the second full-vocabulary scan.
+            TopK<float, 2> partial;
+            partial.init();
+            for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
+                bool skip = false;
+                if (eos_disabled) {
+                    for (int e = 0; e < eos_ids_size; ++e) {
+                        skip |= i == eos_ids[b * eos_ids_size + e];
+                    }
+                }
+                if (!skip) {
+                    partial.insert(static_cast<float>(pos_logits[i]), i);
                 }
             }
-            if (skip) {
-                continue;
+            const TopK<float, 2> total =
+                BlockTop2(s_top2_storage).Reduce(partial, reduce_topk_op<float, 2>);
+            if (threadIdx.x == 0) {
+                s_argmax_token = total.p[0] < 0 ? 0 : total.p[0];
+                s_argmax_value = total.u[0];
+                s_second_token = total.p[1];
+                s_second_value = total.u[1];
             }
-            float val = static_cast<float>(pos_logits[i]);
-            if (val > max_val) {
-                max_val = val;
-                max_idx = i;
-            }
-        }
-
-        // Warp-level reduction
-        for (int mask = 16; mask > 0; mask >>= 1) {
-            float other_val = __shfl_xor_sync(0xffffffff, max_val, mask);
-            int   other_idx = __shfl_xor_sync(0xffffffff, max_idx, mask);
-            // Ties go to the LOWER index, deterministically. The ordinary
-            // top-k sampler uses the same total order in reduce_topk_op_2, so
-            // verifier and baseline make the same greedy decision regardless
-            // of CUDA's reduction tree.
-            if (other_val > max_val || (other_val == max_val && other_idx < max_idx)) {
-                max_val = other_val;
-                max_idx = other_idx;
-            }
-        }
-
-        // Block-level reduction via shared memory
-        if (lane_id == 0) {
-            s_max_val[warp_id] = max_val;
-            s_max_idx[warp_id] = max_idx;
-        }
-        __syncthreads();
-
-        if (threadIdx.x < num_warps) {
-            max_val = s_max_val[threadIdx.x];
-            max_idx = s_max_idx[threadIdx.x];
+            __syncthreads();
+            target_ambiguous = s_second_token >= 0 && s_second_value >= s_argmax_value - ambiguity_margin;
         }
         else {
-            // INT_MAX, not 0.
-            //
-            // These lanes carry no candidate. With a lowest-index tie-break,
-            // an idx of 0 at the sentinel value would beat a real candidate
-            // whenever that candidate also sat at -1e30f -- and every logit is
-            // below the sentinel only in degenerate cases, but the padding
-            // lanes tie with EACH OTHER on every single reduction. Giving them
-            // the largest possible index makes them lose every tie they take
-            // part in.
-            max_val = -1e30f;
-            max_idx = INT_MAX;
-        }
+            // Each thread finds its local maximum over strided vocabulary rows.
+            float max_val = -1e30f;
+            int   max_idx = INT_MAX;
+            for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
+                bool skip = false;
+                if (eos_disabled) {
+                    for (int e = 0; e < eos_ids_size; ++e) {
+                        skip |= i == eos_ids[b * eos_ids_size + e];
+                    }
+                }
+                if (skip) {
+                    continue;
+                }
+                const float val = static_cast<float>(pos_logits[i]);
+                if (val > max_val) {
+                    max_val = val;
+                    max_idx = i;
+                }
+            }
 
-        if (threadIdx.x < 32) {
             for (int mask = 16; mask > 0; mask >>= 1) {
-                float other_val = __shfl_xor_sync(0xffffffff, max_val, mask);
-                int   other_idx = __shfl_xor_sync(0xffffffff, max_idx, mask);
-                // Same lower-index tie-break as the warp reduction above.
+                const float other_val = __shfl_xor_sync(0xffffffff, max_val, mask);
+                const int   other_idx = __shfl_xor_sync(0xffffffff, max_idx, mask);
                 if (other_val > max_val || (other_val == max_val && other_idx < max_idx)) {
                     max_val = other_val;
                     max_idx = other_idx;
                 }
             }
-        }
 
-        // Thread 0 broadcasts the argmax token
-        if (threadIdx.x == 0) {
-            // Clamp the sentinel. max_idx stays INT_MAX only if no thread ever
-            // saw a logit above -1e30f, which needs an all-(-inf) or corrupt
-            // row. Committing INT_MAX as a token id would index the embedding
-            // table out of bounds on the NEXT forward -- a crash far from the
-            // cause. Falling back to 0 keeps it in range; the draft still gets
-            // rejected, because a real draft will not equal 0 by chance.
-            s_argmax_token = (max_idx == INT_MAX) ? 0 : max_idx;
-            s_argmax_value = max_val;
-        }
-        __syncthreads();
+            if (lane_id == 0) {
+                s_max_val[warp_id] = max_val;
+                s_max_idx[warp_id] = max_idx;
+            }
+            __syncthreads();
 
-        // Detect an exact tie for the selected maximum. A K+1 target forward
-        // and a one-token target forward can resolve a numerically sensitive
-        // FP16 tie differently even though both reductions are deterministic.
-        // The caller may replay only this rare bonus through the canonical
-        // one-token path instead of replaying every zero-accept verification.
-        bool tied = false;
-        for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
-            bool skip = false;
-            if (eos_disabled) {
-                for (int e = 0; e < eos_ids_size; ++e) {
-                    skip |= i == eos_ids[b * eos_ids_size + e];
+            if (threadIdx.x < num_warps) {
+                max_val = s_max_val[threadIdx.x];
+                max_idx = s_max_idx[threadIdx.x];
+            }
+            else {
+                max_val = -1e30f;
+                max_idx = INT_MAX;
+            }
+
+            if (threadIdx.x < 32) {
+                for (int mask = 16; mask > 0; mask >>= 1) {
+                    const float other_val = __shfl_xor_sync(0xffffffff, max_val, mask);
+                    const int   other_idx = __shfl_xor_sync(0xffffffff, max_idx, mask);
+                    if (other_val > max_val || (other_val == max_val && other_idx < max_idx)) {
+                        max_val = other_val;
+                        max_idx = other_idx;
+                    }
                 }
             }
-            if (!skip && i != s_argmax_token
-                && static_cast<float>(pos_logits[i]) >= s_argmax_value - ambiguity_margin) {
-                tied = true;
-                break;
+
+            if (threadIdx.x == 0) {
+                s_argmax_token = max_idx == INT_MAX ? 0 : max_idx;
+                s_argmax_value = max_val;
             }
+            __syncthreads();
+
+            bool tied = false;
+            for (int i = threadIdx.x; i < vocab_size; i += blockDim.x) {
+                bool skip = false;
+                if (eos_disabled) {
+                    for (int e = 0; e < eos_ids_size; ++e) {
+                        skip |= i == eos_ids[b * eos_ids_size + e];
+                    }
+                }
+                if (!skip && i != s_argmax_token
+                    && static_cast<float>(pos_logits[i]) >= s_argmax_value - ambiguity_margin) {
+                    tied = true;
+                    break;
+                }
+            }
+            target_ambiguous = __syncthreads_or(tied);
         }
-        const int target_ambiguous = __syncthreads_or(tied);
         // Exact replay requires every committed decision in the prefix to be
         // numerically stable, not only the final bonus row. A draft can match
         // a chunked verifier's near-tied argmax while the canonical one-token
@@ -241,51 +246,55 @@ RejectionResult GreedyReject(const void*  verification_logits,
     int* d_bonus_tokens    = result.bonus_tokens.data();
     int* d_bonus_ambiguous = result.bonus_ambiguous.data();
 
+    static const bool one_pass_ambiguity = [] {
+        const char* value = std::getenv("TM_DFLASH_ONE_PASS_REJECT");
+        return value && value[0] == '1';
+    }();
+
+#define TM_LAUNCH_GREEDY_REJECT(Type)                                                                                  \
+    do {                                                                                                               \
+        if (one_pass_ambiguity) {                                                                                      \
+            GreedyRejectKernel<Type, true><<<grid, block, 0, stream>>>(d_num_accepted,                                \
+                                                                        d_bonus_tokens,                                \
+                                                                        d_bonus_ambiguous,                             \
+                                                                        (const Type*)verification_logits,              \
+                                                                        draft_tokens,                                  \
+                                                                        K,                                             \
+                                                                        vocab_size,                                    \
+                                                                        vocab_size_padded,                             \
+                                                                        eos_ids,                                       \
+                                                                        eos_ids_size,                                  \
+                                                                        eos_enable_positions,                          \
+                                                                        ambiguity_margin);                             \
+        }                                                                                                              \
+        else {                                                                                                         \
+            GreedyRejectKernel<Type, false><<<grid, block, 0, stream>>>(d_num_accepted,                               \
+                                                                         d_bonus_tokens,                               \
+                                                                         d_bonus_ambiguous,                            \
+                                                                         (const Type*)verification_logits,             \
+                                                                         draft_tokens,                                 \
+                                                                         K,                                            \
+                                                                         vocab_size,                                   \
+                                                                         vocab_size_padded,                            \
+                                                                         eos_ids,                                      \
+                                                                         eos_ids_size,                                 \
+                                                                         eos_enable_positions,                         \
+                                                                         ambiguity_margin);                            \
+        }                                                                                                              \
+    } while (0)
+
     if (dtype == DataType::kFloat16) {
-        GreedyRejectKernel<<<grid, block, 0, stream>>>(d_num_accepted,
-                                                       d_bonus_tokens,
-                                                       d_bonus_ambiguous,
-                                                       (const half*)verification_logits,
-                                                       draft_tokens,
-                                                       K,
-                                                       vocab_size,
-                                                       vocab_size_padded,
-                                                       eos_ids,
-                                                       eos_ids_size,
-                                                       eos_enable_positions,
-                                                       ambiguity_margin);
+        TM_LAUNCH_GREEDY_REJECT(half);
     }
 #ifdef ENABLE_BF16
     else if (dtype == DataType::kBfloat16) {
-        GreedyRejectKernel<<<grid, block, 0, stream>>>(d_num_accepted,
-                                                       d_bonus_tokens,
-                                                       d_bonus_ambiguous,
-                                                       (const __nv_bfloat16*)verification_logits,
-                                                       draft_tokens,
-                                                       K,
-                                                       vocab_size,
-                                                       vocab_size_padded,
-                                                       eos_ids,
-                                                       eos_ids_size,
-                                                       eos_enable_positions,
-                                                       ambiguity_margin);
+        TM_LAUNCH_GREEDY_REJECT(__nv_bfloat16);
     }
 #endif
     else {
-        // Fallback: treat as float
-        GreedyRejectKernel<<<grid, block, 0, stream>>>(d_num_accepted,
-                                                       d_bonus_tokens,
-                                                       d_bonus_ambiguous,
-                                                       (const float*)verification_logits,
-                                                       draft_tokens,
-                                                       K,
-                                                       vocab_size,
-                                                       vocab_size_padded,
-                                                       eos_ids,
-                                                       eos_ids_size,
-                                                       eos_enable_positions,
-                                                       ambiguity_margin);
+        TM_LAUNCH_GREEDY_REJECT(float);
     }
+#undef TM_LAUNCH_GREEDY_REJECT
 
     return result;
 }
