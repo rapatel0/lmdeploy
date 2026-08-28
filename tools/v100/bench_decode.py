@@ -80,6 +80,19 @@ def main() -> int:
     )
     parser.add_argument("--json-out", default="")
     parser.add_argument(
+        "--speculative-algorithm",
+        default="mtp",
+        choices=("mtp", "dflash2"),
+        help="speculative runtime selected when --num-draft-tokens is nonzero",
+    )
+    parser.add_argument(
+        "--speculative-draft-model",
+        default="",
+        help="draft checkpoint required by dflash2",
+    )
+    parser.add_argument("--speculative-dflash-block-size", type=int, default=8)
+    parser.add_argument("--speculative-draft-window", type=int, default=2048)
+    parser.add_argument(
         "--cuda-profiler-range",
         action="store_true",
         help="bracket the first measured request with cudaProfilerStart/Stop for nsys",
@@ -111,17 +124,32 @@ def main() -> int:
     # speculative arm runs a different number of forwards, so cache hits shift
     # the K=0 and K=4 timings by different amounts and the ratio stops meaning
     # what it claims to mean.
+    speculative_options = {}
+    if args.num_draft_tokens > 0:
+        speculative_options["speculative_algorithm"] = args.speculative_algorithm
+        if args.speculative_algorithm == "dflash2":
+            if not args.speculative_draft_model:
+                parser.error("--speculative-draft-model is required for dflash2")
+            speculative_options.update(
+                speculative_draft_model=args.speculative_draft_model,
+                speculative_dflash_block_size=args.speculative_dflash_block_size,
+                speculative_draft_window=args.speculative_draft_window,
+            )
     engine_config = TurbomindEngineConfig(
         model_format=args.model_format,
         tp=args.tp,
+        max_batch_size=1,
         cache_max_entry_count=args.cache_max_entry_count,
         session_len=session_len,
         num_draft_tokens=args.num_draft_tokens,
         enable_prefix_caching=False,
+        async_=0,
+        **speculative_options,
     )
     print(
         f"engine: tp={args.tp} model_format={args.model_format} "
-        f"session_len={session_len} num_draft_tokens={args.num_draft_tokens}",
+        f"session_len={session_len} num_draft_tokens={args.num_draft_tokens} "
+        f"speculative_algorithm={args.speculative_algorithm}",
         flush=True,
     )
 
