@@ -256,6 +256,19 @@ struct LanguageModel::Impl {
     Impl(
         CacheRegistry& registry, const EngineParam& engine, const Context& ctx, const ModelWeight& weights, int phases);
 
+    ~Impl()
+    {
+        if (mtp_steps_ != 0) {
+            TM_LOG_INFO("[spec] final accept length {:.3f} over {} verification steps "
+                        "({} committed, {} accepted drafts, {} full accepts)",
+                        (double)mtp_committed_ / (double)mtp_steps_,
+                        mtp_steps_,
+                        mtp_committed_,
+                        mtp_accepted_,
+                        mtp_full_accepts_);
+        }
+    }
+
     Tensor LookupEmbedding(const Buffer_<int>& input_ids, Buffer symm_buf);
     Tensor PostEmbedding(const Tensor& features, Buffer symm_buf);
     void   DraftTop1(Buffer_<int>& out, const Tensor& features);
