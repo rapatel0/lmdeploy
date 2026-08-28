@@ -43,7 +43,7 @@ bool UseLocalDFlashTopK()
 {
     static const bool enabled = [] {
         const char* value = std::getenv("TM_DFLASH_LOCAL_TOPK");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     return enabled;
 }
