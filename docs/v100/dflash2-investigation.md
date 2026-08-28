@@ -227,6 +227,12 @@ Explicitly FP16-rounding the selector's `predecessor * hidden` intermediate did 
 
 Matching PyTorch's apparent FP16 operation boundaries inside grouped convolution did not change acceptance: both the original FP32-accumulation arm and the FP16-step arm committed 2.664 tokens/step with identical counters. Decode was 61.40 versus 60.90 tok/s, respectively. The FP16-step arm passed the audited 256-token K=0/K=7 identity gate. This hypothesis is closed and the experimental branch was removed.
 
+## Corrected-path Nsight profile
+
+A fresh Nsight Systems capture at commit `948484b9` localized the current K=7 GPU time. The generic SM70 target-verification attention kernel (`head_dim=256`, Q64/KV64) consumed **11.9%** of aggregate GPU kernel time, while all five draft `head_dim=128` attention calls together consumed only **1.2%**. The target verifier therefore has much more tile-tuning headroom than the draft attention itself. Full/fragmented GEMMs remained dominant, and the trace also confirmed substantial verifier rejection, selector, NCCL, and recurrent-kernel costs. Artifacts: `/results/20260828_201555-nsys-dflash-948484b97678`.
+
+SGLang's V100 backend contains dedicated small-Q attention designs using Q16, KV32/KV64, split context, and 80-SM-aware launch geometry. LMDeploy's SM70 attention registry was extended with runtime-selectable Q16/Q32 and KV32 variants for both the draft's 128-dimensional heads and the target verifier's 256-dimensional heads. A single-build attribution matrix tests draft-only, target-only, and combined changes.
+
 ## Acceptance gap
 
 Current audited comparison:
