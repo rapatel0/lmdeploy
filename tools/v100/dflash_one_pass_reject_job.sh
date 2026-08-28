@@ -25,9 +25,10 @@ pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd /
 export TM_LOG_LEVEL=INFO
 
-for one_pass in 0 1; do
-    echo "=== TM_DFLASH_ONE_PASS_REJECT=${one_pass} ==="
-    TM_DFLASH_PERSISTENT_WORKSPACE=1 \
+run_arm() {
+    local name=$1 workspace=$2 one_pass=$3
+    echo "=== ${name}: WORKSPACE=${workspace} ONE_PASS=${one_pass} ==="
+    TM_DFLASH_PERSISTENT_WORKSPACE="${workspace}" \
         TM_DFLASH_ONE_PASS_REJECT="${one_pass}" \
         python3 /job/bench_decode.py \
         --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
@@ -38,8 +39,12 @@ for one_pass in 0 1; do
         --sglang-corpus /sglang-corpus \
         --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
         --cache-max-entry-count 0.05 \
-        --json-out "${RESULTS}/one_pass_${one_pass}.json"
-done
+        --json-out "${RESULTS}/${name}.json"
+}
+
+run_arm dynamic 0 0
+run_arm workspace 1 0
+run_arm one_pass 1 1
 
 echo "=== persistent workspace parity trace smoke ==="
 mkdir -p "${RESULTS}/parity"
@@ -87,6 +92,45 @@ for directory in dirs:
         assert data.stat().st_size == record["bytes"], (data, data.stat().st_size, record["bytes"])
 print(f"DFLASH_PARITY_TRACE_PASS ranks={len(dirs)}")
 PY
+
+echo "=== matched Nsight profiles ==="
+NSYS="$(command -v nsys 2>/dev/null || true)"
+if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then
+    NSYS=/opt/nsys/nsys
+fi
+[ -n "${NSYS}" ] || {
+    echo "FAIL: nsys unavailable" >&2
+    exit 2
+}
+export FT_NVTX=ON
+for arm in "dynamic 0 0" "workspace 1 0" "one_pass 1 1"; do
+    read -r name workspace one_pass <<<"${arm}"
+    echo "=== profile ${name} ==="
+    TM_DFLASH_PERSISTENT_WORKSPACE="${workspace}" \
+        TM_DFLASH_ONE_PASS_REJECT="${one_pass}" \
+        "${NSYS}" profile \
+        --force-overwrite=true --trace=cuda,nvtx,osrt --cuda-memory-usage=true \
+        --capture-range=cudaProfilerApi --capture-range-end=stop \
+        --output="${RESULTS}/profile_${name}" \
+        python3 /job/bench_decode.py \
+        --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
+        --num-draft-tokens 7 --speculative-algorithm dflash2 \
+        --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
+        --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
+        --input-tokens 1000 --output-tokens 128 --trials 1 \
+        --sglang-corpus /sglang-corpus \
+        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
+        --cache-max-entry-count 0.05 --cuda-profiler-range \
+        --json-out "${RESULTS}/profile_${name}.json"
+    "${NSYS}" stats \
+        --report nvtx_sum,cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,osrt_sum \
+        --format csv --output "${RESULTS}/profile_${name}_stats" \
+        "${RESULTS}/profile_${name}.nsys-rep" >"${RESULTS}/profile_${name}_stats.log" 2>&1 || {
+        echo "WARN: nsys stats failed for ${name}"
+        tail -40 "${RESULTS}/profile_${name}_stats.log"
+    }
+done
+unset FT_NVTX
 
 echo "=== one-pass exact identity ==="
 TM_DFLASH_PERSISTENT_WORKSPACE=1 TM_DFLASH_ONE_PASS_REJECT=1 \

@@ -283,7 +283,7 @@ struct LanguageModel::Impl {
         }
     }
 
-    Tensor LookupEmbedding(const Buffer_<int>& input_ids, Buffer symm_buf);
+    Tensor LookupEmbedding(const Buffer_<int>& input_ids, Buffer symm_buf, Tensor output = {});
     Tensor PostEmbedding(const Tensor& features, Buffer symm_buf);
     void   DraftTop1(Buffer_<int>& out, const Tensor& features);
     void   DraftTopK16(Buffer_<int>& out,
@@ -497,8 +497,8 @@ LanguageModel::Impl::Impl(
                                                               engine,
                                                               phases,
                                                               ctx,
-                                                              [this](const Buffer_<int>& ids) {
-                                                                  return LookupEmbedding(ids, symm_buf_);
+                                                              [this](const Buffer_<int>& ids, Tensor output) {
+                                                                  return LookupEmbedding(ids, symm_buf_, std::move(output));
                                                               },
                                                               [this](const Tensor& hidden) {
                                                                   return PostEmbedding(hidden, symm_buf_);
@@ -568,7 +568,7 @@ LanguageModel::Impl::Impl(
     });
 }
 
-Tensor LanguageModel::Impl::LookupEmbedding(const Buffer_<int>& input_ids, Buffer symm_buf)
+Tensor LanguageModel::Impl::LookupEmbedding(const Buffer_<int>& input_ids, Buffer symm_buf, Tensor output)
 {
     TM_FUNCTION_SCOPE();
     const auto st = core::Context::stream().handle();
@@ -603,7 +603,12 @@ Tensor LanguageModel::Impl::LookupEmbedding(const Buffer_<int>& input_ids, Buffe
         }
     }
 
-    Tensor input_embeds{{token_num, hidden_units}, weights_.data_type, kDEVICE};
+    Tensor input_embeds = output ? std::move(output) : Tensor{{token_num, hidden_units}, weights_.data_type, kDEVICE};
+    TM_CHECK_EQ(input_embeds.ndim(), 2);
+    TM_CHECK_EQ(input_embeds.shape(0), token_num);
+    TM_CHECK_EQ(input_embeds.shape(1), hidden_units);
+    TM_CHECK_EQ(input_embeds.dtype(), weights_.data_type);
+    TM_CHECK_EQ(input_embeds.device().type, kDEVICE);
 
     if (token_num == 0) {
         return input_embeds;
@@ -1150,7 +1155,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         if (d.rows.size() == 1 && engine_param_.num_draft_tokens == 7) {
             dflash_predictor_->ArmParityContext(d.uids[0]);
         }
-        Tensor context = dflash_predictor_->ProjectContext(env.at("dflash_target_hidden"));
+        Tensor context = dflash_predictor_->ProjectContext(env.at("dflash_target_hidden"), phase);
         dflash_predictor_->MaterializeContextKV(phase, context);
         env.produce("dflash_context_hidden", std::move(context));
     }

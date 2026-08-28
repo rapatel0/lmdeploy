@@ -24,7 +24,7 @@ class UnifiedAttentionLayer;
 /// prompt KV materialization, the parallel draft block, and candidate choice.
 class DFlashPredictor {
 public:
-    using EmbedFn = std::function<Tensor(const Buffer_<int>&)>;
+    using EmbedFn = std::function<Tensor(const Buffer_<int>&, Tensor)>;
     using LogitsFn = std::function<Tensor(const Tensor&)>;
     using CandidatesFn =
         std::function<void(Buffer_<int>&, Tensor&, const Tensor&, float, float)>;
@@ -46,15 +46,21 @@ public:
 
     /// Project [tokens, context_features * hidden] target residuals to the
     /// draft hidden width, then apply hidden_norm.
-    Tensor ProjectContext(const Tensor& target_hidden) const;
+    Tensor ProjectContext(const Tensor& target_hidden, int phase) const;
 
     struct ConvState {
         Tensor output;
         Tensor delta;
     };
 
-    ConvState PrepareGroupedConv(const Tensor& input, const DFlashConvWeight& weights) const;
-    Tensor FinishGroupedConv(const Tensor& input, const Tensor& delta, const DFlashConvWeight& weights) const;
+    ConvState PrepareGroupedConv(const Tensor&          input,
+                                 const DFlashConvWeight& weights,
+                                 Tensor                  output = {},
+                                 Tensor                  delta  = {}) const;
+    Tensor FinishGroupedConv(const Tensor&             input,
+                             const Tensor&             delta,
+                             const DFlashConvWeight& weights,
+                             Tensor                    output = {}) const;
 
     /// Apply one convolution side for diagnostics.
     Tensor ApplyGroupedConv(const Tensor& input, const DFlashConvWeight& weights, int side) const;
@@ -86,14 +92,33 @@ public:
 private:
     struct ParityTrace;
 
+    struct LayerWorkspace {
+        Tensor attention_conv_delta;
+        Tensor attention_conv_output;
+        Tensor attention_output;
+        Tensor attention_conv_finished;
+        Tensor mlp_conv_delta;
+        Tensor mlp_conv_output;
+        Tensor gate_up;
+        Tensor activated;
+        Tensor activation_scales;
+        Tensor mlp_conv_finished;
+    };
+
     struct Workspace {
-        Buffer_<int> block_ids;
-        Tensor       prediction_hidden;
-        Buffer_<int> candidate_ids;
-        Tensor       unary_scores;
-        Tensor       selector_hidden;
-        Buffer_<int> selected_ids;
-        Tensor       selector_scores;
+        Tensor                      context_projected;
+        Tensor                      context_normalized;
+        std::vector<Tensor>         context_attention_outputs;
+        Buffer_<int>                block_ids;
+        Tensor                      embedding;
+        Tensor                      residual;
+        std::vector<LayerWorkspace> layers;
+        Tensor                      prediction_hidden;
+        Buffer_<int>                candidate_ids;
+        Tensor                      unary_scores;
+        Tensor                      selector_hidden;
+        Buffer_<int>                selected_ids;
+        Tensor                      selector_scores;
     };
 
     void CaptureParityTensor(const char* name, const Tensor& value) const;
@@ -113,6 +138,7 @@ private:
     LogitsFn                       logits_fn_;
     CandidatesFn                   candidates_fn_;
     bool                           persistent_workspace_{};
+    int                            max_workspace_rows_{};
     mutable std::vector<Workspace> workspaces_;
     mutable std::unique_ptr<ParityTrace> parity_trace_;
 };

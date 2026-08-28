@@ -311,23 +311,79 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
         TM_CHECK_GT(engine.max_batch_size, 0);
         auto* selector = TM_CHECK_NOTNULL(weights_.selector.get());
         TM_CHECK(selector->hidden_projection);
-        const int slots = weights_.block_size - 1;
-        const int rows  = engine.max_batch_size * slots;
+        const int slots         = weights_.block_size - 1;
+        const int selector_rows = engine.max_batch_size * slots;
+        max_workspace_rows_     = engine.max_batch_size * weights_.block_size;
         workspaces_.resize(phases);
         for (int phase = 0; phase < phases; ++phase) {
             auto& workspace               = workspaces_[phase];
-            workspace.block_ids           = {(ssize_t)engine.max_batch_size * weights_.block_size, kDEVICE};
-            workspace.prediction_hidden   = {{rows, hidden_units_}, dtype_, kDEVICE};
-            workspace.candidate_ids       = {(ssize_t)rows * selector->top_k, kDEVICE};
-            workspace.unary_scores        = {{rows, selector->top_k}, kFloat32, kDEVICE};
-            workspace.selector_hidden     = {{rows, selector->state_rank}, dtype_, kDEVICE};
-            workspace.selected_ids        = {rows, kDEVICE};
-            workspace.selector_scores     = {{engine.max_batch_size, slots, selector->top_k}, kFloat32, kDEVICE};
+            workspace.context_projected    = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+            workspace.context_normalized   = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+            workspace.context_attention_outputs.resize(attention_indices_.size());
+            workspace.block_ids            = {(ssize_t)max_workspace_rows_, kDEVICE};
+            workspace.embedding            = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+            workspace.residual             = {{max_workspace_rows_, hidden_units_}, kFloat32, kDEVICE};
+            workspace.layers.resize(attention_indices_.size());
+            for (int i = 0; i < (int)attention_indices_.size(); ++i) {
+                auto* layer     = TM_CHECK_NOTNULL(weights_.layer(i));
+                auto* attn_conv = TM_CHECK_NOTNULL(weights_.attention_conv(i));
+                auto* mlp_conv  = TM_CHECK_NOTNULL(weights_.mlp_conv(i));
+                TM_CHECK(layer->attention && layer->feed_forward);
+                TM_CHECK(attn_conv->kernel_projection && mlp_conv->kernel_projection);
+                auto& mlp   = *layer->feed_forward;
+                auto* fused = TM_CHECK_NOTNULL(mlp.w1w3.get());
+                TM_CHECK(fused->weight);
+
+                workspace.context_attention_outputs[i] = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+                auto& layer_workspace = workspace.layers[i];
+                layer_workspace.attention_conv_delta =
+                    {{max_workspace_rows_, attn_conv->kernel_projection->output_dim}, dtype_, kDEVICE};
+                layer_workspace.attention_conv_output = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+                layer_workspace.attention_output      = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+                layer_workspace.attention_conv_finished = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+                layer_workspace.mlp_conv_delta =
+                    {{max_workspace_rows_, mlp_conv->kernel_projection->output_dim}, dtype_, kDEVICE};
+                layer_workspace.mlp_conv_output   = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+                layer_workspace.gate_up           = {{max_workspace_rows_, fused->output_dim}, dtype_, kDEVICE};
+                layer_workspace.activated         = {{max_workspace_rows_, mlp.inter_size}, dtype_, kDEVICE};
+                layer_workspace.activation_scales = {{max_workspace_rows_}, kFloat32, kDEVICE};
+                layer_workspace.mlp_conv_finished = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
+
+                if (trace_workspace) {
+                    TM_LOG_INFO("[DFlash2] workspace phase={} layer={} context_attn={} attn_delta={} attn_side0={} "
+                                "attn_output={} attn_side1={} mlp_delta={} mlp_side0={} gate_up={} activated={} "
+                                "scales={} mlp_side1={}",
+                                phase,
+                                i,
+                                (uintptr_t)workspace.context_attention_outputs[i].raw_data(),
+                                (uintptr_t)layer_workspace.attention_conv_delta.raw_data(),
+                                (uintptr_t)layer_workspace.attention_conv_output.raw_data(),
+                                (uintptr_t)layer_workspace.attention_output.raw_data(),
+                                (uintptr_t)layer_workspace.attention_conv_finished.raw_data(),
+                                (uintptr_t)layer_workspace.mlp_conv_delta.raw_data(),
+                                (uintptr_t)layer_workspace.mlp_conv_output.raw_data(),
+                                (uintptr_t)layer_workspace.gate_up.raw_data(),
+                                (uintptr_t)layer_workspace.activated.raw_data(),
+                                (uintptr_t)layer_workspace.activation_scales.raw_data(),
+                                (uintptr_t)layer_workspace.mlp_conv_finished.raw_data());
+                }
+            }
+            workspace.prediction_hidden = {{selector_rows, hidden_units_}, dtype_, kDEVICE};
+            workspace.candidate_ids = {(ssize_t)selector_rows * selector->top_k, kDEVICE};
+            workspace.unary_scores    = {{selector_rows, selector->top_k}, kFloat32, kDEVICE};
+            workspace.selector_hidden = {{selector_rows, selector->state_rank}, dtype_, kDEVICE};
+            workspace.selected_ids    = {selector_rows, kDEVICE};
+            workspace.selector_scores = {{engine.max_batch_size, slots, selector->top_k}, kFloat32, kDEVICE};
             if (trace_workspace) {
-                TM_LOG_INFO("[DFlash2] workspace phase={} block_ids={} prediction_hidden={} candidate_ids={} "
-                            "unary_scores={} selector_hidden={} selected_ids={} selector_scores={}",
+                TM_LOG_INFO("[DFlash2] workspace phase={} context_fc={} context_norm={} block_ids={} embedding={} "
+                            "residual={} prediction_hidden={} candidate_ids={} unary_scores={} selector_hidden={} "
+                            "selected_ids={} selector_scores={}",
                             phase,
+                            (uintptr_t)workspace.context_projected.raw_data(),
+                            (uintptr_t)workspace.context_normalized.raw_data(),
                             (uintptr_t)workspace.block_ids.raw_data(),
+                            (uintptr_t)workspace.embedding.raw_data(),
+                            (uintptr_t)workspace.residual.raw_data(),
                             (uintptr_t)workspace.prediction_hidden.raw_data(),
                             (uintptr_t)workspace.candidate_ids.raw_data(),
                             (uintptr_t)workspace.unary_scores.raw_data(),
@@ -336,9 +392,10 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                             (uintptr_t)workspace.selector_scores.raw_data());
             }
         }
-        TM_LOG_INFO("[DFlash2] persistent workspace ready: phases={} max_batch={} block={} slots={}",
+        TM_LOG_INFO("[DFlash2] persistent workspace ready: phases={} max_batch={} max_rows={} block={} slots={}",
                     phases,
                     engine.max_batch_size,
+                    max_workspace_rows_,
                     weights_.block_size,
                     slots);
     }
@@ -450,18 +507,23 @@ void DFlashPredictor::PrepareAttention(int phase, TensorMap& env)
     attention_.Run(BatchOp::kPrepare, attention_phase_base_ + phase, env);
 }
 
-Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden) const
+Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden, int phase) const
 {
     TM_CHECK_EQ(target_hidden.ndim(), 2);
     TM_CHECK_EQ(target_hidden.shape(1), (ssize_t)num_context_features_ * hidden_units_);
     TM_CHECK_EQ(target_hidden.dtype(), dtype_);
 
     const int token_num = target_hidden.shape(0);
-    Tensor    projected{{token_num, hidden_units_}, dtype_, kDEVICE};
+    // Prompt projection can exceed the fixed K=7 capacity. Only the steady
+    // speculative shape uses phase-owned storage.
+    Workspace* workspace = persistent_workspace_ && token_num <= max_workspace_rows_ ? &workspaces_.at(phase) : nullptr;
+    Tensor projected = workspace ? workspace->context_projected.slice(0, token_num) :
+                                   Tensor{{token_num, hidden_units_}, dtype_, kDEVICE};
     linear_.Forward(target_hidden, *weights_.fc, projected);
     TM_CUDA_CHECK(cudaGetLastError());
 
-    Tensor normalized{{token_num, hidden_units_}, dtype_, kDEVICE};
+    Tensor normalized = workspace ? workspace->context_normalized.slice(0, token_num) :
+                                    Tensor{{token_num, hidden_units_}, dtype_, kDEVICE};
     invokeRMSNorm(normalized,
                   projected,
                   weights_.hidden_norm->weight,
@@ -489,10 +551,14 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
     TM_CHECK_EQ(context.ndim(), 2);
     TM_CHECK_EQ(context.shape(1), hidden_units_);
 
+    Workspace* workspace = persistent_workspace_ && context.shape(0) <= max_workspace_rows_ ?
+                               &workspaces_.at(target_phase) :
+                               nullptr;
     for (int i = 0; i < (int)attention_indices_.size(); ++i) {
         auto* layer = TM_CHECK_NOTNULL(weights_.layer(i));
         TM_CHECK(layer->attention);
-        Tensor discarded{{context.shape(0), hidden_units_}, dtype_, kDEVICE};
+        Tensor discarded = workspace ? workspace->context_attention_outputs.at(i).slice(0, context.shape(0)) :
+                                       Tensor{{context.shape(0), hidden_units_}, dtype_, kDEVICE};
         attention_.Forward(
             {target_phase, context, discarded, layer->attention.get(), attention_indices_[i], 1.f, true});
         TM_CUDA_CHECK(cudaGetLastError());
@@ -506,19 +572,33 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
     }
 }
 
-DFlashPredictor::ConvState DFlashPredictor::PrepareGroupedConv(const Tensor& input,
-                                                                 const DFlashConvWeight& weights) const
+DFlashPredictor::ConvState DFlashPredictor::PrepareGroupedConv(const Tensor&          input,
+                                                                 const DFlashConvWeight& weights,
+                                                                 Tensor                  output,
+                                                                 Tensor                  delta) const
 {
     TM_CHECK(weights.kernel_projection) << "DFlash2 convolution projection is missing";
     TM_CHECK(weights.base_kernel) << "DFlash2 base kernel is missing";
     TM_CHECK_EQ(input.ndim(), 2);
     TM_CHECK_EQ(input.shape(1), hidden_units_);
 
-    Tensor delta{{input.shape(0), weights.kernel_projection->output_dim}, dtype_, kDEVICE};
+    if (!delta) {
+        delta = {{input.shape(0), weights.kernel_projection->output_dim}, dtype_, kDEVICE};
+    }
+    TM_CHECK_EQ(delta.ndim(), 2);
+    TM_CHECK_EQ(delta.shape(0), input.shape(0));
+    TM_CHECK_EQ(delta.shape(1), weights.kernel_projection->output_dim);
+    TM_CHECK_EQ(delta.dtype(), dtype_);
     linear_.Forward(input, *weights.kernel_projection, delta);
     TM_CUDA_CHECK(cudaGetLastError());
 
-    Tensor output{input.shape(), dtype_, kDEVICE};
+    if (!output) {
+        output = {input.shape(), dtype_, kDEVICE};
+    }
+    TM_CHECK_EQ(output.ndim(), input.ndim());
+    TM_CHECK_EQ(output.shape(0), input.shape(0));
+    TM_CHECK_EQ(output.shape(1), input.shape(1));
+    TM_CHECK_EQ(output.dtype(), dtype_);
     invokeDFlashGroupedConv(output,
                             input,
                             delta,
@@ -533,9 +613,16 @@ DFlashPredictor::ConvState DFlashPredictor::PrepareGroupedConv(const Tensor& inp
 
 Tensor DFlashPredictor::FinishGroupedConv(const Tensor&             input,
                                            const Tensor&             delta,
-                                           const DFlashConvWeight& weights) const
+                                           const DFlashConvWeight& weights,
+                                           Tensor                    output) const
 {
-    Tensor output{input.shape(), dtype_, kDEVICE};
+    if (!output) {
+        output = {input.shape(), dtype_, kDEVICE};
+    }
+    TM_CHECK_EQ(output.ndim(), input.ndim());
+    TM_CHECK_EQ(output.shape(0), input.shape(0));
+    TM_CHECK_EQ(output.shape(1), input.shape(1));
+    TM_CHECK_EQ(output.dtype(), dtype_);
     invokeDFlashGroupedConv(output,
                             input,
                             delta,
@@ -569,7 +656,8 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
                            weights_.mask_token_id,
                            core::Context::stream().handle());
     CaptureParityTensor("block.ids", Tensor{block_ids, {(ssize_t)batch_size, weights_.block_size}});
-    Tensor hidden = embed_fn_(block_ids);
+    Tensor embedding = persistent_workspace_ ? workspaces_.at(phase).embedding.slice(0, block_ids.size()) : Tensor{};
+    Tensor hidden    = embed_fn_(block_ids, std::move(embedding));
 
     Buffer_<int> k_offsets = env.at("k_offsets").buffer().view<int>();
     AdvanceCuSeqLens(k_offsets.data(), batch_size, weights_.block_size, core::Context::stream().handle());
@@ -667,6 +755,7 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     const int  attention_phase = attention_phase_base_ >= 0 ? attention_phase_base_ + phase : phase;
     const int  token_num       = hidden.shape(0);
     const auto stream          = core::Context::stream().handle();
+    Workspace* workspace = persistent_workspace_ && token_num <= max_workspace_rows_ ? &workspaces_.at(phase) : nullptr;
     static std::atomic<bool> block_reported{false};
     const bool trace_block  = TraceDFlashSelector() && !block_reported.exchange(true);
     const bool report_block = trace_block || ParityActive();
@@ -691,7 +780,8 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     // DFlash2 was trained in BF16 and its unnormalized residual can exceed
     // FP16's 65,504 limit on V100. Keep the residual and TP reduction in FP32,
     // then emit the normalized activation in FP16 for GEMMs.
-    Tensor residual{hidden.shape(), kFloat32, kDEVICE};
+    Tensor residual = workspace ? workspace->residual.slice(0, token_num) :
+                                  Tensor{hidden.shape(), kFloat32, kDEVICE};
     invokeDFlashCastToFloat(residual, hidden, stream);
     report_named("block.initial_residual", residual);
 
@@ -757,13 +847,20 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         auto* attn_conv = TM_CHECK_NOTNULL(weights_.attention_conv(i));
         auto* mlp_conv  = TM_CHECK_NOTNULL(weights_.mlp_conv(i));
         TM_CHECK(layer->attention && layer->feed_forward);
+        LayerWorkspace* layer_workspace = workspace ? &workspace->layers.at(i) : nullptr;
 
         report_layer(i, ".input.hidden", hidden);
         report_layer(i, ".input.residual", residual);
-        auto attn_input = PrepareGroupedConv(hidden, *attn_conv);
+        Tensor attn_conv_output =
+            layer_workspace ? layer_workspace->attention_conv_output.slice(0, token_num) : Tensor{};
+        Tensor attn_conv_delta =
+            layer_workspace ? layer_workspace->attention_conv_delta.slice(0, token_num) : Tensor{};
+        auto attn_input = PrepareGroupedConv(
+            hidden, *attn_conv, std::move(attn_conv_output), std::move(attn_conv_delta));
         report_layer(i, ".attention.conv_delta", attn_input.delta);
         report_layer(i, ".attention.conv_side0", attn_input.output);
-        Tensor attn_output{{token_num, hidden_units_}, dtype_, kDEVICE};
+        Tensor attn_output = layer_workspace ? layer_workspace->attention_output.slice(0, token_num) :
+                                                Tensor{{token_num, hidden_units_}, dtype_, kDEVICE};
         attention_.Forward({attention_phase,
                             attn_input.output,
                             attn_output,
@@ -775,7 +872,10 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
             reduce_branch(attn_output);
             report_layer(i, ".attention.tp_reduced_pre_conv", attn_output);
         }
-        attn_output = FinishGroupedConv(attn_output, attn_input.delta, *attn_conv);
+        Tensor attn_finished =
+            layer_workspace ? layer_workspace->attention_conv_finished.slice(0, token_num) : Tensor{};
+        attn_output =
+            FinishGroupedConv(attn_output, attn_input.delta, *attn_conv, std::move(attn_finished));
         report_layer(i, ".attention.conv_side1", attn_output);
         residual_norm(attn_output,
                       residual,
@@ -788,7 +888,10 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         report_layer(i, ".attention.residual_state", residual);
         hidden = std::move(attn_output);
 
-        auto mlp_input = PrepareGroupedConv(hidden, *mlp_conv);
+        Tensor mlp_conv_output = layer_workspace ? layer_workspace->mlp_conv_output.slice(0, token_num) : Tensor{};
+        Tensor mlp_conv_delta = layer_workspace ? layer_workspace->mlp_conv_delta.slice(0, token_num) : Tensor{};
+        auto mlp_input =
+            PrepareGroupedConv(hidden, *mlp_conv, std::move(mlp_conv_output), std::move(mlp_conv_delta));
         report_layer(i, ".mlp.conv_delta", mlp_input.delta);
         report_layer(i, ".mlp.conv_side0", mlp_input.output);
 
@@ -801,12 +904,14 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         TM_CHECK(!mlp.is_fused_silu) << "DFlash2 Laguna path requires unfused SwiGLU activation";
         invokeDFlashScale(mlp_input.output, 1.f / kGateUpScale, stream);
         report_layer(i, ".mlp.scaled_input", mlp_input.output);
-        Tensor gate_up;
+        Tensor gate_up = layer_workspace ? layer_workspace->gate_up.slice(0, token_num) : Tensor{};
         linear_.Forward(mlp_input.output, *fused, gate_up);
         report_layer(i, ".mlp.gate_up", gate_up);
         TM_CHECK_EQ(gate_up.shape(1), 2 * mlp.inter_size);
-        Tensor activated{{token_num, mlp.inter_size}, dtype_, kDEVICE};
-        Tensor activation_scales{{token_num}, kFloat32, kDEVICE};
+        Tensor activated = layer_workspace ? layer_workspace->activated.slice(0, token_num) :
+                                              Tensor{{token_num, mlp.inter_size}, dtype_, kDEVICE};
+        Tensor activation_scales = layer_workspace ? layer_workspace->activation_scales.slice(0, token_num) :
+                                                    Tensor{{token_num}, kFloat32, kDEVICE};
         invokeDFlashLagunaSilu(activated, activation_scales, gate_up, kGateUpScale, stream);
         report_layer(i, ".mlp.activated", activated);
         report_layer(i, ".mlp.activation_scales", activation_scales);
@@ -818,7 +923,9 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         }
         invokeDFlashScaleRows(mlp_input.output, activation_scales, 1.f / kResidualScale, stream);
         report_layer(i, ".mlp.scaled_w2", mlp_input.output);
-        Tensor mlp_output = FinishGroupedConv(mlp_input.output, mlp_input.delta, *mlp_conv);
+        Tensor mlp_finished = layer_workspace ? layer_workspace->mlp_conv_finished.slice(0, token_num) : Tensor{};
+        Tensor mlp_output =
+            FinishGroupedConv(mlp_input.output, mlp_input.delta, *mlp_conv, std::move(mlp_finished));
         report_layer(i, ".mlp.conv_side1", mlp_output);
 
         const NormWeight& output_norm =
