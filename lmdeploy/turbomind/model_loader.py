@@ -41,7 +41,7 @@ class ModelLoader:
         model_tp = ParallelGroup(ec.attn_tp_size * ec.attn_cp_size,
                                  [mc.model_tp_rank(g) for g in range(self.gpu_count)])
 
-        self.model.bind_runtime(
+        self._runtime = dict(
             ctx=ctx,
             root_handles=[mc.root(g) for g in range(self.gpu_count)],
             attn_tp=attn_tp,
@@ -49,24 +49,51 @@ class ModelLoader:
             ep=ep,
             model_tp=model_tp,
         )
+        self.model.bind_runtime(**self._runtime)
 
-    def export(self):
+    def _build_dflash(self, draft_ckpt):
+        if not getattr(self.model, 'supports_dflash2', False):
+            raise ValueError(f'{type(self.model).__name__} does not support a DFlash2 draft')
+
+        from transformers import AutoConfig
+
+        from .models.dflash import DFlash2Model
+        from .weight_format import TrivialFormat, WeightFormatResolver
+
+        draft_path = self.engine_config.speculative_draft_model
+        draft_cfg = AutoConfig.from_pretrained(draft_path, trust_remote_code=False)
+        if 'DFlash2DraftModel' not in getattr(draft_cfg, 'architectures', []):
+            raise ValueError(f'{draft_path} is not a DFlash2DraftModel checkpoint')
+        resolver = WeightFormatResolver(
+            data_type=self.data_type,
+            formats=[TrivialFormat()],
+        )
+        draft_model = DFlash2Model(draft_cfg, resolver=resolver)
+        draft_model.bind_runtime(**self._runtime)
+        return draft_model.draft(Prefix(draft_ckpt))
+
+    def _export_model(self):
         ckpt = create_checkpoint(
             self.model_path,
             mappings=getattr(self.model, '_loader_mappings', []))
+        draft_ckpt = None
         try:
-            self.model.model(Prefix(ckpt))
+            if self.engine_config.speculative_algorithm == 'dflash2':
+                draft_ckpt = create_checkpoint(self.engine_config.speculative_draft_model)
+                dflash = self._build_dflash(draft_ckpt)
+                self.model.model(Prefix(ckpt), dflash=dflash)
+            else:
+                self.model.model(Prefix(ckpt))
         finally:
+            if draft_ckpt is not None:
+                draft_ckpt.close()
             ckpt.close()
+
+    def export(self):
+        self._export_model()
         torch.cuda.empty_cache()
 
     def export_iter(self):
-        ckpt = create_checkpoint(
-            self.model_path,
-            mappings=getattr(self.model, '_loader_mappings', []))
-        try:
-            self.model.model(Prefix(ckpt))
-            yield -1
-        finally:
-            ckpt.close()
+        self._export_model()
+        yield -1
         torch.cuda.empty_cache()

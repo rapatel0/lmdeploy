@@ -162,6 +162,16 @@ class TurboMind:
 
         if not osp.exists(model_path):
             model_path = get_model(model_path, _engine_config.download_dir, _engine_config.revision)
+        if _engine_config.speculative_algorithm == 'dflash2':
+            draft_model = _engine_config.speculative_draft_model
+            if draft_model is None:
+                raise ValueError('speculative_draft_model is required for dflash2')
+            if not osp.exists(draft_model):
+                _engine_config.speculative_draft_model = get_model(
+                    draft_model,
+                    _engine_config.download_dir,
+                    _engine_config.revision,
+                )
         self.model_comm, model_loader = self._from_hf(model_path=model_path, engine_config=_engine_config,
                                                       trust_remote_code=trust_remote_code)
         self.source_model = model_loader.model

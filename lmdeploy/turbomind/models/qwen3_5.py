@@ -89,7 +89,6 @@ class Qwen3_5TextModel(TextModel):
 
     # pi-lens-ignore: python-mutable-class-attr
     _loader_mappings = [map_packed_qwen35_experts]
-    cfg: Qwen3_5TextConfig | Qwen3_5MoeTextConfig
 
     def __init__(self, cfg: Qwen3_5TextConfig | Qwen3_5MoeTextConfig, *, resolver):
         super().__init__(cfg, resolver=resolver)
@@ -133,7 +132,7 @@ class Qwen3_5TextModel(TextModel):
     # model() — same topology as old code
     # ------------------------------------------------------------------
 
-    def model(self, pfx):
+    def model(self, pfx, *, dflash=None):
         root_cfg = make_model_weight_config(self.cfg)
         builder = TextModelBuilder(
             root_cfg, self._ctx,
@@ -153,6 +152,8 @@ class Qwen3_5TextModel(TextModel):
         mtp = self.mtp(pfx + 'mtp')
         if mtp is not None:
             builder.mtp = mtp
+        if dflash is not None:
+            builder.dflash = dflash
         builder.build()
 
     # ------------------------------------------------------------------
@@ -751,9 +752,11 @@ class Qwen3_5Model:
             raise ValueError('Qwen3.5 TurboMind vision encoder is not available.')
         return self.vision_model.to_turbomind_multimodal(multimodal)
 
-    def model(self, pfx):
+    supports_dflash2 = True
+
+    def model(self, pfx, *, dflash=None):
         # Text root child must be attached before the vision one, since both
         # use the shared root_handles.
-        self.text_model.model(pfx)
+        self.text_model.model(pfx, dflash=dflash)
         if self.vision_model is not None:
             self.vision_model.model(pfx)
