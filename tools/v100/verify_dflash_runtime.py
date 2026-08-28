@@ -6,7 +6,7 @@ import argparse
 import time
 
 
-def run(model: str, draft_model: str, tp: int, drafts: int):
+def run(model: str, draft_model: str, tp: int, drafts: int, output_tokens: int):
     from lmdeploy import GenerationConfig, TurbomindEngineConfig, pipeline
 
     config = TurbomindEngineConfig(
@@ -23,7 +23,13 @@ def run(model: str, draft_model: str, tp: int, drafts: int):
     )
     pipe = pipeline(model, backend_config=config, log_level='INFO')
     try:
-        generation = GenerationConfig(max_new_tokens=32, temperature=0.0, do_sample=False)
+        generation = GenerationConfig(
+            max_new_tokens=output_tokens,
+            min_new_tokens=output_tokens,
+            ignore_eos=True,
+            temperature=0.0,
+            do_sample=False,
+        )
         start = time.perf_counter()
         response = pipe(['Write one short sentence about sunlight.'], gen_config=generation)[0]
         elapsed = time.perf_counter() - start
@@ -41,10 +47,11 @@ def main() -> int:
     parser.add_argument('--model', required=True)
     parser.add_argument('--draft-model', required=True)
     parser.add_argument('--tp', type=int, default=4)
+    parser.add_argument('--output-tokens', type=int, default=32)
     args = parser.parse_args()
 
-    baseline_ids, baseline_text = run(args.model, args.draft_model, args.tp, 0)
-    draft_ids, draft_text = run(args.model, args.draft_model, args.tp, 7)
+    baseline_ids, baseline_text = run(args.model, args.draft_model, args.tp, 0, args.output_tokens)
+    draft_ids, draft_text = run(args.model, args.draft_model, args.tp, 7, args.output_tokens)
     if draft_ids != baseline_ids:
         print('DFLASH_RUNTIME_IDENTITY_FAIL')
         print(f'baseline={baseline_text!r}')

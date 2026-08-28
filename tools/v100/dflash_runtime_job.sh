@@ -26,7 +26,8 @@ export TM_LOG_LEVEL=INFO
 python3 /job/verify_dflash_runtime.py \
     --model "${MODEL}" \
     --draft-model "${DRAFT_MODEL}" \
-    --tp "${TP:-4}" 2>&1 | tee "${RESULTS}/driver.log"
+    --tp "${TP:-4}" \
+    --output-tokens "${OUTPUT_TOKENS:-256}" 2>&1 | tee "${RESULTS}/driver.log"
 [ "${PIPESTATUS[0]}" -eq 0 ] || exit 3
 grep -q 'DFLASH_RUNTIME_IDENTITY_PASS' "${RESULTS}/driver.log" || exit 4
 echo DFLASH_RUNTIME_COMPLETE
