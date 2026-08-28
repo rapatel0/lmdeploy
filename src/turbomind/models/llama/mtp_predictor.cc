@@ -328,37 +328,52 @@ Tensor MTPPredictor::DecodeStep(Tensor hidden, int phase, TensorMap& env)
     attn_layer_.Forward({attn_phase_base_ + phase, hidden, hidden, layer.attention.get(), attn_index_});
     TM_CUDA_CHECK(cudaGetLastError());
 
-    // Fused residual-add plus the pre-FFN norm. This writes the post-add value
-    // back into `residual` and the normalised value into `hidden`, so both are
-    // carried forward correctly for the next residual.
-    invokeResidualBiasRMSNorm(hidden.raw_data(),
-                              residual.raw_data(),
-                              layer.ffn_norm->weight.raw_data(),
-                              nullptr,
-                              dtype_,
-                              hidden_units_,
-                              batch_size,
-                              layer.ffn_norm->norm_eps_,
-                              layer.ffn_norm->zero_centered_,
-                              stream);
-    TM_CUDA_CHECK(cudaGetLastError());
+    // wo and w2 are row-parallel. Their outputs are partial sums, so applying
+    // residual RMSNorm locally makes every TP rank normalize a different
+    // hidden state. The target decoder performs this same fused all-reduce +
+    // residual + norm after both row-parallel projections. Native SGLang does
+    // too; omitting it collapsed K=1 acceptance from 0.83 to about 0.31.
+    static const bool tp_reduce = [] {
+        const char* value = std::getenv("TM_MTP_TP_REDUCE");
+        return value && value[0] == '1';
+    }();
+    auto residual_norm = [&](Tensor& x, Tensor& r, const Tensor& bias, const NormWeight& norm) {
+        if (tp_reduce && ctx_.comm.d_comm) {
+            ctx_.comm.d_comm->AllreduceResidualBiasRMSnorm(x.raw_data(),
+                                                           r.raw_data(),
+                                                           bias.data_or((void*)nullptr),
+                                                           norm.weight.raw_data(),
+                                                           norm.norm_eps_,
+                                                           norm.zero_centered_,
+                                                           hidden_units_,
+                                                           batch_size,
+                                                           dtype_,
+                                                           ctx_.comm.d_tp_group,
+                                                           stream);
+        }
+        else {
+            invokeResidualBiasRMSNorm(x.raw_data(),
+                                      r.raw_data(),
+                                      norm.weight.raw_data(),
+                                      bias.data_or((void*)nullptr),
+                                      dtype_,
+                                      hidden_units_,
+                                      batch_size,
+                                      norm.norm_eps_,
+                                      norm.zero_centered_,
+                                      stream);
+        }
+        TM_CUDA_CHECK(cudaGetLastError());
+    };
+    residual_norm(hidden, residual, layer.attention->wo->bias, *layer.ffn_norm);
 
     ffn_layer_->forward({hidden, hidden, layer.feed_forward.get(), attn_index_});
     TM_CUDA_CHECK(cudaGetLastError());
 
     // Final residual add followed by the MTP block's own final_norm, leaving
-    // `hidden` ready for the shared lm_head.
-    invokeResidualBiasRMSNorm(hidden.raw_data(),
-                              residual.raw_data(),
-                              weights_.final_norm->weight.raw_data(),
-                              nullptr,
-                              dtype_,
-                              hidden_units_,
-                              batch_size,
-                              weights_.final_norm->norm_eps_,
-                              weights_.final_norm->zero_centered_,
-                              stream);
-    TM_CUDA_CHECK(cudaGetLastError());
+    // `hidden` ready for the shared lm_head. w2 is row-parallel as well, so it
+    // needs the second TP reduction before the final norm.
+    residual_norm(hidden, residual, {}, *weights_.final_norm);
 
     return hidden;
 }

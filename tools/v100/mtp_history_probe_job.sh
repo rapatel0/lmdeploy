@@ -10,7 +10,10 @@ trap 'rc=$?; echo "$rc" >"${RESULTS}/exit_code"; echo "artifacts in ${RESULTS} (
 
 cat /src/SOURCE_STAMP
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo 'FAIL: no staged wheel' >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo 'FAIL: no staged wheel' >&2
+    exit 2
+}
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 
 run_arm() {
