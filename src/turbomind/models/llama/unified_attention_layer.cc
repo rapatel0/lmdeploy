@@ -851,14 +851,28 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                          Tensor{{q_count, local_head_num * size_per_head}, dtype, device};
 
     const bool is_mla = weights.is_mla();
+    static const bool enable_dflash_paged_q8 = [] {
+        const char* value = std::getenv("TM_DFLASH_PAGED_Q8");
+        return value && value[0] == '1';
+    }();
+    const int dflash_block = engine_param_.speculative_dflash_block_size > 0 ?
+                                 engine_param_.speculative_dflash_block_size :
+                                 engine_param_.num_draft_tokens + 1;
+    const bool use_dflash_paged_q8 = enable_dflash_paged_q8 &&
+                                     engine_param_.speculative_algorithm == "dflash2" && arch_ == 70 && !is_mla &&
+                                     weights.causal && quant_policy_ == 0 &&
+                                     d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == dflash_block;
 
-    Tensor tmp_kv = use_dflash_workspace ? d.dflash_workspace.flattened_kv :
-                                           Tensor{{local_kv_head_num,
-                                                   is_mla ? 1 : 2,
-                                                   d.prefill.k_sum + MAX_CTA_S,
-                                                   size_per_head},
-                                                  dtype,
-                                                  device};
+    Tensor tmp_kv;
+    if (!use_dflash_paged_q8) {
+        tmp_kv = use_dflash_workspace ? d.dflash_workspace.flattened_kv :
+                                        Tensor{{local_kv_head_num,
+                                                is_mla ? 1 : 2,
+                                                d.prefill.k_sum + MAX_CTA_S,
+                                                size_per_head},
+                                               dtype,
+                                               device};
+    }
 
     auto CreateParams = [&](int offset, AttentionData::Stat stat, int max_kv_splits, cudaStream_t stream) {
         AttentionParams<T> params{};
@@ -1030,11 +1044,14 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
             TM_CUDA_CHECK(cudaGetLastError());
 
             if (!p.kv_only) {
-                /// TODO: skip flattening for `sm_80`
-                invokeFlattenKV_v2_(params, d.prefill.k_sum);
-                TM_CUDA_CHECK(cudaGetLastError());
-
-                dispatchAttention(params);
+                if (use_dflash_paged_q8) {
+                    dispatchPagedAttention(params);
+                }
+                else {
+                    invokeFlattenKV_v2_(params, d.prefill.k_sum);
+                    TM_CUDA_CHECK(cudaGetLastError());
+                    dispatchAttention(params);
+                }
                 TM_CUDA_CHECK(cudaGetLastError());
             }
         }

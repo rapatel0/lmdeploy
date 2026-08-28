@@ -119,8 +119,9 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 - [ ] **Make target-verification temporary buffers stable.**
   - Phase-owned TurboMind workspaces now cover context projection, embeddings, draft residual/convolution/MLP tensors, proposal/selector tensors, and—at commit `d277060f`—local LM-head and TP top-16 exchange buffers.
-  - The first profiled slice reduced steady allocator/free calls from 108,040 to 94,556 per captured rank aggregate and reduced `dflashDraftAndSelect` from 7.46 to 7.04 ms.
-  - UnifiedAttention qkv/output/flattened-KV and target-verification buffers remain.
+  - The first profiled slice reduced steady allocator/free calls from 108,040 to 94,556 per captured aggregate. The expanded top-16 and UnifiedAttention qkv/output/flattened-KV workspaces reduced them further to 90,476, a total 16.3% reduction.
+  - Four-rank parity and exact audited identity passed. Matched profiling improved normalized cycle time by 0.7%; five-trial unprofiled normalization improved by 1.6%.
+  - Target-verification and lower-level library workspaces remain.
   - Done when: allocator calls disappear from steady-state verification traces.
 
 - [x] **Combine rejection argmax and ambiguity detection into one vocabulary pass.**

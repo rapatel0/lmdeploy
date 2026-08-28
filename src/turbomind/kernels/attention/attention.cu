@@ -9,13 +9,13 @@
 namespace turbomind {
 
 template<class T>
-void dispatchAttention(const AttentionParams<T>& params)
+void dispatchAttentionImpl(const AttentionParams<T>& params, attention::AttnDesc::Mode mode)
 {
     using namespace attention;
 
     auto&    reg = Registry::instance();
     AttnDesc desc{};
-    desc.mode      = AttnDesc::kPrefill;
+    desc.mode      = mode;
     desc.head_dim  = params.size_per_head;
     desc.data_type = data_type_v<T>;
     desc.causal    = params.causal;
@@ -27,9 +27,23 @@ void dispatchAttention(const AttentionParams<T>& params)
     TM_SCOPE_CALL(kernel->Launch(&params, reg.sm_count()));
 }
 
+template<class T>
+void dispatchAttention(const AttentionParams<T>& params)
+{
+    dispatchAttentionImpl(params, attention::AttnDesc::kPrefill);
+}
+
+template<class T>
+void dispatchPagedAttention(const AttentionParams<T>& params)
+{
+    dispatchAttentionImpl(params, attention::AttnDesc::kPagedPrefill);
+}
+
 template void dispatchAttention(const AttentionParams<half>& params);
+template void dispatchPagedAttention(const AttentionParams<half>& params);
 #if ENABLE_BF16
 template void dispatchAttention(const AttentionParams<nv_bfloat16>& params);
+template void dispatchPagedAttention(const AttentionParams<nv_bfloat16>& params);
 #endif
 
 }  // namespace turbomind

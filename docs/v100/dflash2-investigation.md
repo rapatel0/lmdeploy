@@ -249,6 +249,8 @@ The one-pass deterministic top-2 rejection kernel removed the second vocabulary 
 
 Artifacts: `/results/20260828_230149-dflash-one-pass-reject-622e491b2e4a`.
 
+A second stacked qualification at commit `014fcebd` added phase-owned local/TP top-16 tensors and `UnifiedAttentionLayer` qkv, attention-output, and flattened-KV arenas. Four-rank parity and audited identity passed. The expanded workspace reduced profiled allocator/free calls from 108,040 to 90,476 per captured aggregate (16.3%). Matched commit-length profiling improved normalized cycle time from 48.72 to 48.37 ms (0.7%); five-trial unprofiled normalization improved from 43.26 to 42.57 ms (1.6%). The direct gain is modest, but the DFlash draft path now has stable addresses through attention and candidate selection. Artifacts: `/results/20260828_231817-dflash-one-pass-reject-014fcebdbe49`.
+
 ## Current speculative-cycle attribution
 
 A matched K=0/K=7 Nsight Systems run at commit `930baf48` profiled the audited prompt from one wheel. K=7 decoded at 47.59 tok/s under profiler overhead with commit length 2.311, which implies 48.6 ms per verification cycle.

@@ -13,6 +13,7 @@ struct AttnDesc {
     enum Mode
     {
         kPrefill,
+        kPagedPrefill,
         kDecoding
     };
     Mode     mode;
@@ -26,7 +27,8 @@ struct AttnDesc {
 inline std::string to_string(const AttnDesc& d)
 {
     std::ostringstream ss;
-    ss << (d.mode == AttnDesc::kPrefill ? "prefill" : "decode");
+    ss << (d.mode == AttnDesc::kPrefill ? "prefill" :
+               d.mode == AttnDesc::kPagedPrefill ? "paged_prefill" : "decode");
     ss << "_d" << d.head_dim;
     ss << "_" << to_string(d.data_type);
     if (d.mode == AttnDesc::kDecoding) {
@@ -63,7 +65,8 @@ struct KernelInfo {
 inline std::string to_string(const KernelDesc& d)
 {
     std::ostringstream ss;
-    ss << (d.mode == AttnDesc::kPrefill ? "prefill" : "decode");
+    ss << (d.mode == AttnDesc::kPrefill ? "prefill" :
+               d.mode == AttnDesc::kPagedPrefill ? "paged_prefill" : "decode");
     ss << "_sm" << d.arch / 10;
     ss << "_d" << d.head_dim;
     ss << "_" << to_string(d.data_type);

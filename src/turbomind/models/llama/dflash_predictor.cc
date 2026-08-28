@@ -54,6 +54,24 @@ bool UseLocalDFlashTopK()
     return enabled;
 }
 
+bool UseDFlashSelectorGraph()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_SELECTOR_GRAPH");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
+bool TraceDFlashGraph()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_GRAPH_TRACE");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
 void ReportDFlashTensor(const std::string& name, const Tensor& value)
 {
     Tensor host{{1, value.shape(1)}, kHalf, kCPU};
@@ -211,6 +229,8 @@ struct DFlashPredictor::ParityTrace {
             manifest << "],\"policies\":{";
             constexpr const char* flags[] = {"TM_DFLASH_LOCAL_TOPK",
                                              "TM_DFLASH_CUB_TOPK",
+                                             "TM_DFLASH_SELECTOR_GRAPH",
+                                             "TM_DFLASH_PAGED_Q8",
                                              "TM_DFLASH_REDUCE_BEFORE_CONV",
                                              "TM_DFLASH_CONTEXT_BF16_ROUND",
                                              "TM_DFLASH_LEGACY_ATTENTION_POLICY",
@@ -259,6 +279,28 @@ struct DFlashPredictor::ParityTrace {
     Tensor      pending_norm;
     std::vector<int> feature_ids;
     std::vector<Entry> entries;
+};
+
+struct DFlashPredictor::SelectorGraph {
+    ~SelectorGraph()
+    {
+        if (exec) {
+            cudaGraphExecDestroy(exec);
+        }
+        if (graph) {
+            cudaGraphDestroy(graph);
+        }
+    }
+
+    cudaGraph_t     graph{};
+    cudaGraphExec_t exec{};
+    int             warmups{};
+    bool            disabled{};
+    bool            capture_logged{};
+    bool            replay_logged{};
+    const void*     hidden_ptr{};
+    const void*     anchors_ptr{};
+    const void*     output_ptr{};
 };
 
 DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
@@ -398,6 +440,13 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                     max_workspace_rows_,
                     weights_.block_size,
                     slots);
+    }
+
+    if (UseDFlashSelectorGraph()) {
+        selector_graphs_.reserve(phases);
+        for (int phase = 0; phase < phases; ++phase) {
+            selector_graphs_.push_back(std::make_unique<SelectorGraph>());
+        }
     }
 
     ffn_layer_ = std::make_unique<LlamaFfnLayer>(ctx);
@@ -669,6 +718,123 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
 Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor&       block_hidden,
                                                 const Buffer_<int>& anchors,
                                                 int                 phase) const
+{
+    TM_CHECK_NOTNULL(weights_.selector.get());
+    const int slots = weights_.block_size - 1;
+    const bool eligible = UseDFlashSelectorGraph() && persistent_workspace_ && anchors.size() == 1
+                          && weights_.block_size == 8 && slots == 7 && UseLocalDFlashTopK()
+                          && !TraceDFlashSelector() && !ParityActive();
+    if (!eligible) {
+        return SelectCandidatesImpl(block_hidden, anchors, phase);
+    }
+
+    TM_CHECK_GE(phase, 0);
+    TM_CHECK_LT(phase, (int)selector_graphs_.size());
+    TM_CHECK_LT(phase, (int)workspaces_.size());
+    TM_CHECK_EQ(block_hidden.ndim(), 2);
+    TM_CHECK_EQ(block_hidden.shape(0), weights_.block_size);
+
+    auto& workspace = workspaces_.at(phase);
+    TM_CHECK(!workspace.layers.empty());
+    Tensor stable_hidden = workspace.layers.back().mlp_conv_finished.slice(0, block_hidden.shape(0));
+    TM_CHECK_EQ(block_hidden.raw_data(), stable_hidden.raw_data())
+        << "DFlash selector graph requires the phase-owned final draft output";
+
+    const int rows = slots;
+    Buffer_<int> output = workspace.selected_ids.slice(0, rows);
+    auto& graph = *selector_graphs_.at(phase);
+    if (graph.disabled) {
+        return SelectCandidatesImpl(block_hidden, anchors, phase);
+    }
+
+    if (!graph.hidden_ptr) {
+        graph.hidden_ptr = block_hidden.raw_data();
+        graph.anchors_ptr = anchors.raw_data();
+        graph.output_ptr = output.raw_data();
+    }
+    TM_CHECK_EQ(graph.hidden_ptr, block_hidden.raw_data());
+    TM_CHECK_EQ(graph.anchors_ptr, anchors.raw_data())
+        << "DFlash selector graph requires the stable autoregressive token buffer";
+    TM_CHECK_EQ(graph.output_ptr, output.raw_data());
+
+    const auto stream = core::Context::stream().handle();
+    if (graph.exec) {
+        TM_CUDA_CHECK(cudaGraphLaunch(graph.exec, stream));
+        if (TraceDFlashGraph() && !graph.replay_logged) {
+            graph.replay_logged = true;
+            TM_LOG_INFO("[DFlash2] selector graph replay phase={} exec={} hidden={} anchors={} output={}",
+                        phase,
+                        (uintptr_t)graph.exec,
+                        (uintptr_t)graph.hidden_ptr,
+                        (uintptr_t)graph.anchors_ptr,
+                        (uintptr_t)graph.output_ptr);
+        }
+        return output;
+    }
+
+    // Two ordinary calls initialize cuBLAS, NCCL, and lazy kernel state before
+    // global stream capture. Full DraftBlock capture is deferred because
+    // AttentionParams embeds changing host scalars such as k_sum and max_k_len;
+    // it needs device-owned dynamic metadata or graph-node parameter updates.
+    if (graph.warmups++ < 2) {
+        return SelectCandidatesImpl(block_hidden, anchors, phase);
+    }
+
+    cudaError_t status = cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+    if (status != cudaSuccess) {
+        graph.disabled = true;
+        TM_LOG_WARNING("[DFlash2] selector graph capture disabled at begin: {}", cudaGetErrorString(status));
+        cudaGetLastError();
+        return SelectCandidatesImpl(block_hidden, anchors, phase);
+    }
+
+    Buffer_<int> captured_output = SelectCandidatesImpl(block_hidden, anchors, phase);
+    TM_CHECK_EQ(captured_output.raw_data(), output.raw_data());
+
+    cudaGraph_t captured_graph{};
+    status = cudaStreamEndCapture(stream, &captured_graph);
+    if (status != cudaSuccess || !captured_graph) {
+        if (captured_graph) {
+            cudaGraphDestroy(captured_graph);
+        }
+        graph.disabled = true;
+        TM_LOG_WARNING("[DFlash2] selector graph capture disabled at end: {}", cudaGetErrorString(status));
+        cudaGetLastError();
+        return SelectCandidatesImpl(block_hidden, anchors, phase);
+    }
+
+    cudaGraphExec_t captured_exec{};
+    status = cudaGraphInstantiate(&captured_exec, captured_graph, nullptr, nullptr, 0);
+    if (status != cudaSuccess || !captured_exec) {
+        if (captured_exec) {
+            cudaGraphExecDestroy(captured_exec);
+        }
+        cudaGraphDestroy(captured_graph);
+        graph.disabled = true;
+        TM_LOG_WARNING("[DFlash2] selector graph capture disabled at instantiate: {}", cudaGetErrorString(status));
+        cudaGetLastError();
+        return SelectCandidatesImpl(block_hidden, anchors, phase);
+    }
+
+    graph.graph = captured_graph;
+    graph.exec = captured_exec;
+    TM_CUDA_CHECK(cudaGraphLaunch(graph.exec, stream));
+    if (TraceDFlashGraph() && !graph.capture_logged) {
+        graph.capture_logged = true;
+        TM_LOG_INFO("[DFlash2] selector graph captured phase={} graph={} exec={} hidden={} anchors={} output={}",
+                    phase,
+                    (uintptr_t)graph.graph,
+                    (uintptr_t)graph.exec,
+                    (uintptr_t)graph.hidden_ptr,
+                    (uintptr_t)graph.anchors_ptr,
+                    (uintptr_t)graph.output_ptr);
+    }
+    return output;
+}
+
+Buffer_<int> DFlashPredictor::SelectCandidatesImpl(const Tensor&       block_hidden,
+                                                    const Buffer_<int>& anchors,
+                                                    int                 phase) const
 {
     auto* selector = TM_CHECK_NOTNULL(weights_.selector.get());
     TM_CHECK(selector->hidden_projection);

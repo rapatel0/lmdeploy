@@ -28,14 +28,23 @@ constexpr int kv_quant_from_type()
     }
 }
 
+template<class T, class = void>
+struct IsPagedCacheIterator: std::false_type {};
+
+template<class T>
+struct IsPagedCacheIterator<T, std::void_t<typename T::BlockLayout>>: std::true_type {};
+
 template<class K>
 class KernelImpl: public Kernel {
     static constexpr bool kIsDecoding = std::is_same_v<typename K::CtaMap, DecodingCtaMap>;
+    static constexpr bool kIsPagedPrefill =
+        !kIsDecoding && IsPagedCacheIterator<typename K::CacheIteratorFactory>::value;
 
 public:
     KernelImpl()
     {
-        desc_.mode      = kIsDecoding ? AttnDesc::kDecoding : AttnDesc::kPrefill;
+        desc_.mode = kIsDecoding ? AttnDesc::kDecoding :
+                         kIsPagedPrefill ? AttnDesc::kPagedPrefill : AttnDesc::kPrefill;
         desc_.arch      = K::Arch::value;
         desc_.head_dim  = K::kHeadDim;
         desc_.data_type = data_type_v<typename K::T>;

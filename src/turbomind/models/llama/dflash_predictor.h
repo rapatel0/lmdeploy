@@ -91,6 +91,7 @@ public:
 
 private:
     struct ParityTrace;
+    struct SelectorGraph;
 
     struct LayerWorkspace {
         Tensor attention_conv_delta;
@@ -121,6 +122,7 @@ private:
         Tensor                      selector_scores;
     };
 
+    Buffer_<int> SelectCandidatesImpl(const Tensor& block_hidden, const Buffer_<int>& anchors, int phase) const;
     void CaptureParityTensor(const char* name, const Tensor& value) const;
     void PrepareParityContext(const Tensor& target_hidden, const Tensor& projected, const Tensor& normalized) const;
 
@@ -140,6 +142,7 @@ private:
     bool                           persistent_workspace_{};
     int                            max_workspace_rows_{};
     mutable std::vector<Workspace> workspaces_;
+    mutable std::vector<std::unique_ptr<SelectorGraph>> selector_graphs_;
     mutable std::unique_ptr<ParityTrace> parity_trace_;
 };
 
