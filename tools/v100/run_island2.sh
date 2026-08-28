@@ -183,7 +183,7 @@ manifest = {
                 # "SUCCEEDED" with no readable output is not evidence of
                 # anything. Jobs copy their artifacts here.
                 {"name": "results", "hostPath": {"path": "/localpool/lmdeploy-v100-next/results", "type": "DirectoryOrCreate"}},
-                {"name": "nsys", "hostPath": {"path": "/localpool/lmdeploy-v100-next/nsys-cli-2025.6.3", "type": "Directory"}},
+                {"name": "nsys", "hostPath": {"path": "/localpool/lmdeploy-v100-next/nsys-cli-2025.1.3", "type": "Directory"}},
                 {"name": "sglang-corpus", "hostPath": {"path": "/localpool/lmdeploy-v100-next/sglang-corpus", "type": "Directory"}},
             ]}}}}
 print(json.dumps(manifest))
