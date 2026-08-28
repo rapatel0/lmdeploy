@@ -170,10 +170,7 @@ def main() -> int:
     # choose either token. Multiple baseline replicas form the target-only
     # numerical envelope; speculation must match one complete target-only row,
     # never a token-wise mixture of different baseline continuations.
-    matches = [
-        [candidate[i]["token_ids"] == s["token_ids"] for candidate in baselines]
-        for i, s in enumerate(spec)
-    ]
+    matches = [[candidate[i]["token_ids"] == s["token_ids"] for candidate in baselines] for i, s in enumerate(spec)]
     failures: list[str] = []
     for i, (b, s) in enumerate(zip(base, spec)):
         if not any(matches[i]):
@@ -246,8 +243,7 @@ def main() -> int:
         print("  narrowing: re-running at K=1", file=sys.stderr)
         k1 = run_config(args.model_dir, args.tp, 1, args.max_new_tokens, "k1")
         k1_same = all(
-            any(candidate[i]["token_ids"] == row["token_ids"] for candidate in baselines)
-            for i, row in enumerate(k1)
+            any(candidate[i]["token_ids"] == row["token_ids"] for candidate in baselines) for i, row in enumerate(k1)
         )
         if k1_same:
             print(
@@ -266,8 +262,7 @@ def main() -> int:
 
     print()
     print(
-        f"  all {len(base)} rows match a complete output from the "
-        f"{args.baseline_replicas}-run K=0 numerical envelope"
+        f"  all {len(base)} rows match a complete output from the {args.baseline_replicas}-run K=0 numerical envelope"
     )
     print("VERIFY_SPEC_IDENTITY_PASS")
     return 0
