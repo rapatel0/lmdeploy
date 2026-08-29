@@ -3,6 +3,7 @@
 #pragma once
 
 #include <numeric>
+#include <type_traits>
 
 #include "src/turbomind/kernels/gemm/arch.h"
 #include "src/turbomind/kernels/gemm/arch/mma_sm70.h"
@@ -56,7 +57,8 @@ struct Sm70_s884 {
              int  GroupSizeU = 1,
              int  GroupSizeV = 1,
              int  TILE_C_M_  = -1,
-             int  TILE_C_N_  = -1>
+             int  TILE_C_N_  = -1,
+             bool ReuseGroupV = false>
     struct Type {
 
         // (TM, TN, TK) = R(MMA_Atom, SmemCopy_Atom)
@@ -66,6 +68,8 @@ struct Sm70_s884 {
         using MMA_Map   = MMA_Map<CTA_M, CTA_N, CTA_K, SMEM_M, SMEM_N, SMEM_K, Partition, TG_K>;
 
         using MMA = Tiled_MMA_v2<MMA_Atom, MMA_Map>;
+
+        static constexpr bool PrepareGroupV = std::is_same_v<TransformB, Transform_HMMA_SIMT_E4M3_B>;
 
         using Mainloop = MainloopSm70<MMA,
                                       A,
@@ -79,7 +83,9 @@ struct Sm70_s884 {
                                       V,
                                       GroupSizeV,
                                       Stages,
-                                      true>;  // FusePrefetch_
+                                      true,
+                                      ReuseGroupV,
+                                      PrepareGroupV>;  // FusePrefetch_, grouped-V reuse, adjusted E4M3 scale
 
         static constexpr int CHUNK_K = std::lcm(std::lcm(GroupSizeU, GroupSizeV), CTA_K);
 
@@ -150,6 +156,18 @@ using Config_E4M3 = Sm70_s884<Operand_A<half>,             // A
                               half,                        // Tc
                               raster_order,
                               group_axis>;
+
+template<Order raster_order, int group_axis = -1>
+using Config_E4M3_Fused = Sm70_s884<Operand_A<half>,             // A
+                                    Transform_Default,           // transform A
+                                    VoidOperand,                 // U
+                                    Operand_B_Pack<fp8_e4m3_t>,  // B
+                                    Transform_HMMA_SIMT_E4M3_B, // fused transform B
+                                    Operand_V_Pack<uint16_t>,    // V
+                                    kRowMajor,                   // order_C
+                                    half,                        // Tc
+                                    raster_order,
+                                    group_axis>;
 
 template<Order raster_order, int group_axis = -1>
 using Config_F16 = Sm70_s884<Operand_A<half>,       // A

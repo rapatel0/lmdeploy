@@ -1,5 +1,6 @@
 // Standalone single-GPU driver for profiling TurboMind's SM70 block-FP8 M=8 GEMM.
 #include "src/turbomind/kernels/gemm/gemm.h"
+#include "src/turbomind/kernels/gemm/transform.h"
 
 #include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
@@ -18,6 +19,60 @@ void Check(cudaError_t ec, const char* what)
     if (ec != cudaSuccess) {
         std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(ec));
         std::exit(2);
+    }
+}
+
+__global__ void VerifyFusedDecodeKernel(unsigned int* mismatches)
+{
+    constexpr int scale_count = 1 + 22 * 4;
+    const int     index       = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= 256 * scale_count) {
+        return;
+    }
+    const int code        = index % 256;
+    const int scale_index = index / 256;
+    uint16_t  scale_bits  = 0;
+    if (scale_index) {
+        constexpr uint16_t mantissas[] = {0x000, 0x001, 0x1ff, 0x3ff};
+        const int          exponent     = (scale_index - 1) / 4 + 1;
+        scale_bits = static_cast<uint16_t>((exponent << 10) | mantissas[(scale_index - 1) % 4]);
+    }
+
+    tb::Array<tb::fp8_e4m3_t, 4> input;
+    PRAGMA_UNROLL
+    for (int i = 0; i < 4; ++i) {
+        reinterpret_cast<uint8_t*>(&input)[i] = static_cast<uint8_t>(code + i * 67);
+    }
+    auto baseline = tb::cvt_f16x4_e4m3(input);
+    auto fused    = gemm::cvt_f16x4_e4m3_raw(input);
+    const half scale          = __ushort_as_half(scale_bits);
+    const half adjusted_scale = __hmul(scale, __ushort_as_half(0x5c00));
+    PRAGMA_UNROLL
+    for (int i = 0; i < 4; ++i) {
+        baseline[i] = __hmul(baseline[i], scale);
+        fused[i]    = __hmul(fused[i], adjusted_scale);
+        if (__half_as_ushort(baseline[i]) != __half_as_ushort(fused[i])) {
+            const int byte_code = (code + i * 67) & 255;
+            atomicAdd(&mismatches[byte_code == 0x7f || byte_code == 0xff], 1U);
+        }
+    }
+}
+
+void VerifyFusedDecode()
+{
+    unsigned int* device_mismatches{};
+    unsigned int  mismatches[2]{};
+    Check(cudaMalloc(&device_mismatches, sizeof(mismatches)), "cudaMalloc decode mismatches");
+    Check(cudaMemset(device_mismatches, 0, sizeof(mismatches)), "cudaMemset decode mismatches");
+    constexpr int count = 256 * (1 + 22 * 4);
+    VerifyFusedDecodeKernel<<<(count + 255) / 256, 256>>>(device_mismatches);
+    Check(cudaGetLastError(), "VerifyFusedDecodeKernel");
+    Check(cudaMemcpy(mismatches, device_mismatches, sizeof(mismatches), cudaMemcpyDeviceToHost),
+          "cudaMemcpy decode mismatches");
+    cudaFree(device_mismatches);
+    std::printf("SM70_FP8_M8_FUSED_DECODE_PARITY finite=%u special=%u\n", mismatches[0], mismatches[1]);
+    if (mismatches[0] != 0) {
+        std::exit(5);
     }
 }
 
@@ -170,6 +225,7 @@ int main()
 {
     constexpr int m = 8;
     Check(cudaSetDevice(0), "cudaSetDevice");
+    VerifyFusedDecode();
 
     cudaStream_t stream{};
     Check(cudaStreamCreate(&stream), "cudaStreamCreate");

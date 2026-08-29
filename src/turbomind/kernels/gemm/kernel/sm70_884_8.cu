@@ -4,6 +4,11 @@
 #include "src/turbomind/kernels/gemm/registrar.h"
 #include "src/turbomind/kernels/gemm/types.h"
 
+#include <cuda_runtime_api.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
 namespace turbomind::gemm {
 
 using namespace sm70_s884;
@@ -20,7 +25,27 @@ Registrar reg([](Collector& c, int /*arch*/) {
         c.add<C::Type< 64, 128,  32, 1, 4, 1, D, S, 2, true, 1, 128,  32, 128>>();
         c.add<C::Type< 32, 128,  32, 1, 4, 1, D, S, 2, true, 1, 128>>();
         c.add<C::Type< 16, 128,  32, 1, 4, 1, D, S, 2, true, 1, 128>>();
-        c.add<C::Type<  8, 128,  64, 1, 4, 1, D, S, 2, true, 1, 128>>();
+        const char* fused_decode = std::getenv("TM_SM70_FP8_M8_FUSED_DECODE");
+        if (fused_decode && std::strcmp(fused_decode, "1") == 0) {
+            using F = Config_E4M3_Fused<kColMajor, 0>;
+            c.add<F::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 128>>();
+        }
+        else if (fused_decode && std::strcmp(fused_decode, "2") == 0) {
+            using F = Config_E4M3_Fused<kColMajor, 0>;
+            c.add<F::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 128, -1, -1, true>>();
+        }
+        else {
+            c.add<C::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 128>>();
+        }
+        if (fused_decode
+            && (std::strcmp(fused_decode, "1") == 0 || std::strcmp(fused_decode, "2") == 0)) {
+            int device = -1;
+            cudaGetDevice(&device);
+            std::fprintf(stderr,
+                         "SM70_FP8_M8_FUSED_DECODE_REGISTERED device=%d mode=%s\n",
+                         device,
+                         fused_decode);
+        }
         // clang-format on
     }
 });

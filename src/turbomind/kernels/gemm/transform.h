@@ -104,6 +104,70 @@ struct Transform_HMMA_16816 {
     }
 };
 
+__device__ inline Array<half, 4> cvt_f16x4_e4m3_raw(const Array<fp8_e4m3_t, 4>& vi)
+{
+    const uint32_t& x = (const uint32_t&)vi;
+
+    constexpr uint32_t S  = 0x80008000U;
+    constexpr uint32_t EM = 0x3F803F80U;
+
+    Array<uint32_t, 2> vo;
+    vo[0] = (x << 8 & S) | (x << 7 & EM);
+    vo[1] = (x << 0 & S) | (x >> 1 & EM);
+    return (Array<half, 4>&)vo;
+}
+
+// SM70 E4M3 specialization. The raw bit expansion represents value / 256,
+// so prepare() folds the exact power-of-two correction into each K128 scale.
+// This removes the fixed conversion multiply before the regular scale multiply.
+struct Transform_HMMA_SIMT_E4M3_B {
+    template<class S, int Ns, int Ms>
+    __device__ static void prepare(Array<S, Ns> (&stat)[Ms])
+    {
+        static_assert(std::is_same_v<S, uint16_t>);
+        const half factor = __ushort_as_half(0x5c00);  // 256
+        PRAGMA_UNROLL
+        for (int m = 0; m < Ms; ++m) {
+            PRAGMA_UNROLL
+            for (int i = 0; i < Ns; ++i) {
+                const half scale = __ushort_as_half(stat[m][i]);
+                stat[m][i]       = __half_as_ushort(__hmul(scale, factor));
+            }
+        }
+    }
+
+    template<class F, int Nf, int Mf, int K, class D, int Nd, int Md, class S, int Ns, int Ms, int Ks>
+    __device__ static void
+    apply(Array<F, Nf> (&frag)[K][Mf], int k, Array<D, Nd> (&data)[K][Md], Array<S, Ns> (&stat)[Ks][Ms], int div)
+    {
+        static_assert(std::is_same_v<F, half>);
+        static_assert(std::is_same_v<D, fp8_e4m3_t>);
+        static_assert(std::is_same_v<S, uint16_t>);
+        static_assert(Nf * Mf == Nd * Md);
+        static_assert(Nd % Nf == 0 && Mf % Md == 0);
+
+        auto& frag_k = reinterpret_cast<Array<F, Nd>(&)[Md]>(frag[k]);
+        auto& stat_k = reinterpret_cast<Array<S, 1>(&)[Ns * Ms]>(stat[k / div]);
+        auto& data_k = data[k];
+
+        PRAGMA_UNROLL
+        for (int m = 0; m < Md; ++m) {
+            Array<half, Nd> tmp;
+            PRAGMA_UNROLL
+            for (int i = 0; i < Nd; i += 4) {
+                (Array<half, 4>&)tmp[i] = cvt_f16x4_e4m3_raw((Array<fp8_e4m3_t, 4>&)data_k[m][i]);
+            }
+            PRAGMA_UNROLL
+            for (int i = 0; i < Nd; i += 2) {
+                uint32_t& pair       = (uint32_t&)tmp[i];
+                const uint32_t scale = stat_k[(m * Nd + i) / Nf][0] * 0x00010001U;
+                asm("mul.rn.f16x2 %0, %1, %2;" : "=r"(pair) : "r"(pair), "r"(scale));
+            }
+            frag_k[m] = tmp;
+        }
+    }
+};
+
 // Used by SM70 MMA
 struct Transform_HMMA_SIMT_B {
     template<class F, int Nf, int Mf, int K, class D, int Nd, int Md, class S, int Ns, int Ms, int Ks>
