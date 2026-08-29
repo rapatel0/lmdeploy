@@ -64,12 +64,12 @@ expected_graphs="${TM_DFLASH_EXPECTED_TARGET_GRAPHS:-16}"
 echo "TARGET_ATTENTION_GRAPH_COUNTS captured=${capture_count} replay=${replay_count} expected=${expected_graphs}"
 [ "${capture_count}" -ge "${expected_graphs}" ] || {
     echo "FAIL: expected every TP-rank/layer target attention graph to capture; " \
-         "wanted ${expected_graphs}, got ${capture_count}" >&2
+        "wanted ${expected_graphs}, got ${capture_count}" >&2
     exit 3
 }
 [ "${replay_count}" -ge "${expected_graphs}" ] || {
     echo "FAIL: expected every TP-rank/layer target attention graph to replay; " \
-         "wanted ${expected_graphs}, got ${replay_count}" >&2
+        "wanted ${expected_graphs}, got ${replay_count}" >&2
     exit 3
 }
 
