@@ -11,12 +11,14 @@
 #include "src/turbomind/kernels/gemm/tuner/params.h"
 #include "src/turbomind/kernels/gemm/tuner/sampler.h"
 #include "src/turbomind/kernels/gemm/types.h"
+#include <cuda_runtime_api.h>
 #include <algorithm>
 #include <iostream>
 #include <iterator>
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <sstream>
 #include <vector>
 
 namespace turbomind::gemm {
@@ -196,11 +198,16 @@ struct Gemm::Impl {
         specs = Sampler{*measurer_, tuning_.clusters}.Run(specs, launch_func, st);
 
         if (std::getenv("TM_GEMM_TUNE_VERBOSE")) {
+            int device = -1;
+            cudaGetDevice(&device);
             for (const auto& s : specs) {
-                std::cout << "[tune] " << to_string(ctx.desc()) << " " << s.kernel->name()  //
-                          << " swizzle=" << s.swizzle                                       //
-                          << " splits=" << s.splits                                         //
-                          << " measured=" << s.measured << "\n";
+                std::ostringstream line;
+                line << "[tune] device=" << device << " " << to_string(ctx.desc()) << " "
+                     << s.kernel->name()                //
+                     << " swizzle=" << s.swizzle       //
+                     << " splits=" << s.splits         //
+                     << " measured=" << s.measured << "\n";
+                std::cout << line.str();
             }
         }
 
