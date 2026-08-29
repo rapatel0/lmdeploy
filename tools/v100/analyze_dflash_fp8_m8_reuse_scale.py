@@ -18,6 +18,8 @@ TUNE_RE = re.compile(
 )
 M8_FP8_MARKERS = ("gemm_kernel", "MMA_Map<(int)8,", "Operand_B_Pack<__nv_fp8_e4m3>")
 EXPECTED_SHAPES = ((8704, 5120), (5120, 4352), (5120, 1536))
+
+
 def fail(message: str) -> NoReturn:
     raise SystemExit(f"DFLASH_FP8_M8_REUSE_SCALE_ANALYSIS_FAIL: {message}")
 

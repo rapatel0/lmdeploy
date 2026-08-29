@@ -43,6 +43,9 @@ pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 NCU="$(command -v ncu 2>/dev/null || true)"
 NVCC="$(command -v nvcc 2>/dev/null || true)"
 NSYS="$(command -v nsys 2>/dev/null || true)"
+if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then
+    NSYS=/opt/nsys/nsys
+fi
 [ -n "${NCU}" ] || {
     echo "FAIL: ncu unavailable" >&2
     exit 2
