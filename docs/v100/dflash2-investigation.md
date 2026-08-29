@@ -308,6 +308,14 @@ The tile sweep did not improve execution. Five-trial acceptance-normalized cycle
 
 The job stopped before candidate identity because its first analyzer incorrectly required three shapes not served by this catalog. The captured performance evidence is sufficient to reject the arm; no candidate kernel is retained or claimed correct. Corrected analysis is stored beside the incomplete run. Future FP8 GEMM work should start with Nsight Compute on the baseline kernel or pursue structural fusion/layout changes, not another tile-only sweep. Artifacts: `/results/20260829_054609-dflash-fp8-m8-tiles-a546ab05061f`.
 
+## SM70 block-FP8 M=8 Nsight Compute characterization
+
+A standalone single-GPU driver now invokes TurboMind's real `Gemm` implementation and production autotuner without bringing NCCL under Nsight Compute replay. DCGM was paused through the cluster's `profiling-paused` node label only while collecting counters, then restored. The production 8x128x64 kernel selected split-K 5/8/8 for gate-up/down/output. Its measured durations were 67.39, 46.98, and 25.57 microseconds respectively.
+
+All three launches are latency- and eligibility-limited rather than DRAM-bandwidth-limited. Compute throughput was 21.38-31.77%, DRAM throughput only 1.51-2.73%, and L2 hit rate 94.31-96.28%. Each scheduler had 3.56-4.10 active warps but only 0.42-0.51 eligible warps, issuing 0.26-0.34 warps per cycle. The kernel uses 94 registers per thread and 18.98 KiB shared memory per CTA; both independently cap residency at five CTAs, giving 31.25% theoretical and 21.79-25.30% achieved occupancy. L1/TEX throughput was much higher at 47.17-73.62%, consistent with the packed E4M3 load, software FP8-to-FP16 conversion, and scale path being the structural target.
+
+This evidence closes blind tile exploration. The next FP8 experiment must reduce conversion/scale dependency work or resource lifetime while preserving the tuned 8x128x64 geometry and split-K choices. Artifacts: `/results/20260829_102845-dflash-fp8-m8-ncu-a546ab05061f`.
+
 ## Rollback barrier merge
 
 A five-trial A/B queued rollback verdict, published-length, and tip readbacks behind one barrier instead of two. The change did not improve acceptance-normalized cycle time: the legacy path took 43.11 ms per step and the combined path took 43.13 ms. Raw decode differed because separate processes followed different acceptance trajectories. The combined arm also hit the known audited position-220 near-tie. Since the normalized result showed no gain, the implementation and runtime flag were removed. Artifacts: `/results/20260828_205537-dflash-rollback-sync-e49a2f50daff`.

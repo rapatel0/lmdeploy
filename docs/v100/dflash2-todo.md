@@ -156,8 +156,9 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - [ ] **Optimize target verification kernels in measured order.**
   - Per-cycle launch attribution was approximately 9.87 ms FP8 GEMM, 5.99 ms target attention, 4.19 ms CUTLASS GEMM, 3.86 ms chunked GDN, and 2.51 ms NCCL; sums may overlap.
   - Grouped direct-paged attention is complete. The M=8 block-FP8 tile sweep is rejected after a 3.74% aggregate kernel regression.
-  - Next use Nsight Compute to characterize the baseline FP8 kernel, then inspect the 4.19 ms CUTLASS class and 3.86 ms recurrent kernel for structural opportunities.
-  - Draft attention is only about 0.62 ms/cycle and remains low priority.
+  - Nsight Compute characterization is complete. The production-autotuned 8x128x64 FP8 kernel reaches only 21.38-31.77% compute and 1.51-2.73% DRAM throughput, with 0.42-0.51 eligible warps per scheduler. Its 94 registers/thread and 18.98 KiB shared memory independently cap theoretical occupancy at 31.25%; achieved occupancy is 21.79-25.30%.
+  - Next preserve the tuned tile and split-K choices while reducing packed E4M3 conversion/scaling dependencies or resource lifetime; do not repeat tile-only exploration. Then inspect the 4.19 ms CUTLASS class and 3.86 ms recurrent kernel.
+  - Draft attention is only about 0.62 ms/cycle and remains low priority. NCU artifacts: `/results/20260829_102845-dflash-fp8-m8-ncu-a546ab05061f`.
   - Done when: replacements beat matched baselines without changing identity.
 
 ## Completed fixes

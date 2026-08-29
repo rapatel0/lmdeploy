@@ -152,6 +152,16 @@ Artifacts: `/results/20260829_044633-dflash-grouped-paged-q8-82bcb2ed29a4`.
 
 Artifacts: `/results/20260829_054609-dflash-fp8-m8-tiles-a546ab05061f` (`analysis_corrected.json`; the original job is intentionally incomplete because its first analyzer expected three non-dispatched shapes).
 
+### A5.2. Characterize the production M=8 FP8 kernel — complete
+
+- A standalone single-GPU TurboMind driver avoids NCCL replay deadlock and uses `DispatchPolicy::kMeasure`, so Nsight Compute observes the same cached launch chosen by the production tuner.
+- The 8x128x64 kernel selected split-K 5/8/8 for gate-up/down/output and measured 67.39/46.98/25.57 microseconds.
+- Compute throughput was 21.38-31.77% and DRAM throughput only 1.51-2.73%, while L2 hit rate was 94.31-96.28% and L1/TEX throughput 47.17-73.62%.
+- Only 0.42-0.51 of 3.56-4.10 active warps per scheduler were eligible. The kernel uses 94 registers/thread and 18.98 KiB shared memory/CTA; each independently limits residency to five CTAs, with 31.25% theoretical and 21.79-25.30% achieved occupancy.
+- Do not run another geometry sweep. The next flagged arm must preserve the tuned tile/split choices and structurally reduce packed E4M3 conversion/scaling dependencies or resource lifetime.
+
+Artifacts: `/results/20260829_102845-dflash-fp8-m8-ncu-a546ab05061f`.
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.

@@ -81,7 +81,8 @@ template<class MMA,
          class OperandV_,
          int  GroupSizeV_,
          int  Stages_,
-         bool FusePrefetch_>
+         bool FusePrefetch_,
+         bool ReuseGroupV_ = false>
 struct MainloopSm70 {
 
     using MMA_Atom = typename MMA::Atom;
@@ -204,7 +205,7 @@ struct MainloopSm70 {
         static_assert(MMA::kAtomK == 1);
 
         static constexpr int UU = 1;  // ceil_div(GroupSizeU_, MMA_Map::TileK);
-        static constexpr int VV = 1;  // ceil_div(GroupSizeV_, MMA_Map::TileK);
+        static constexpr int VV = ReuseGroupV_ ? ceil_div(GroupSizeV_, MMA_Map::TileK) : 1;
 
         // mma_iter_x = tile_iter_x * atom_x
         typename MMA_Atom::FragA frag_A[MMA::kTileIterK][MMA::kMmaIterM];
@@ -283,7 +284,17 @@ struct MainloopSm70 {
             smem_copy_U(smem_U.pointer, data_U[k / UU], k, k % UU == 0 && (bool)smem_group_iter_U);
 
             smem_copy_B(smem_B.pointer, data_B[k], k);
-            smem_copy_V(smem_V.pointer, data_V[k / VV], k, k % VV == 0 && (bool)smem_group_iter_V);
+            const bool load_V = k % VV == 0 && (bool)smem_group_iter_V;
+            if constexpr (ReuseGroupV_) {
+                // SmemCopy_MMA_884_V ignores its mask. Guard the call so the
+                // retained K128 scale stays in registers across K8 atoms.
+                if (load_V) {
+                    smem_copy_V(smem_V.pointer, data_V[k / VV], k);
+                }
+            }
+            else {
+                smem_copy_V(smem_V.pointer, data_V[k / VV], k, load_V);
+            }
         };
 
         AdvanceSmemStage(gmem_iters, smem_iters);
