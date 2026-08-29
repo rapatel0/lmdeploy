@@ -128,20 +128,19 @@ Done when broader target verification replays without host intervention and impr
 
 Target: reduce cycle time to at most 30 ms.
 
-### A5. Add direct paged verification attention — grouped kernel active
+### A5. Add direct paged verification attention — grouped kernel qualified
 
-- A first SM70 Q=8 block-iterator path reads paged KV without `invokeFlattenKV_v2_`.
-- It reduced allocator/free calls from 90,476 to 86,192.
-- Unprofiled normalization improved by 2.5%, but matched profiling regressed by 0.9%.
-- This prototype does not yet implement grouped GQA or split-context scheduling.
-- Repeated exactness yielded one paged pass and only the known position-145/220 splits; flattened controls hit the same splits.
-- Cross-process parity first diverged before attention for both paged and baseline-repeat comparisons, while final selected IDs stayed exact.
-- Keep this prototype off by default.
-- A true grouped successor is now the priority because deep profile attribution assigns about 5.99 ms/cycle to target head-dim-256 attention. Its required geometry is CTA_Q=8 and CTA_H up to 4, with two local GQA-head groups and eight >=128-token context splits at 1K: 16 useful CTAs while loading each split's K/V once per head group. The rejected CTA_Q=1 design must not return.
+- The first one-head direct-paged prototype remains off as a standalone mode.
+- The qualified successor flattens CTA_Q=8 by CTA_H=4 into the SM70 MMA M dimension, covers local 6Q:1KV heads as 4+2, and uses eight context splits at 1K. K/V is loaded once per head group rather than once per query head.
+- All 64 TP-rank/full-layer same-input reports were bit-exact against direct-paged attention. Audited 256-token identity passed both graph-off and graph-on; the short graph arm proved four-rank capture. The 8K and 25K arms completed without degeneration.
+- At 1K, five-trial acceptance-normalized cycle time improved from 42.69 ms flattened and 41.63 ms direct-paged to 38.42 ms grouped. Direct-paged and grouped had identical commit length 2.756, so decode improved attribution-safely from 66.20 to 71.73 tok/s.
+- Matched profiles had identical commit length 2.311 and improved normalized cycle time from 47.33 ms flattened and 46.83 ms direct-paged to 44.04 ms grouped. The target attention kernel itself fell from 1,252.7 to 535.6 ms aggregate, a 57.2% reduction.
+- At matched long-context acceptance, grouped reduced normalized decode cycle time from 69.17 to 44.67 ms at 8K and from 131.27 to 52.31 ms at 25K.
+- Grouped direct-paged target verification is now the default; `TM_DFLASH_GROUPED_PAGED_Q8=0` retains flattened/direct controls.
 
-Done when every TP-rank/layer instance passes finite and numeric same-input parity, audited generation identity passes, and five-trial plus matched Nsight results beat generic flattened attention.
+Done. It materially reduces the cycle but does not alone reach the final 27.6 to 29.0 ms target.
 
-Target: reach 27.6 to 29.0 ms per verification cycle.
+Artifacts: `/results/20260829_044633-dflash-grouped-paged-q8-82bcb2ed29a4`.
 
 ### A6. Evaluate target FP8 KV separately
 

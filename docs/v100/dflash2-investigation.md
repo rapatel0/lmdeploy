@@ -292,6 +292,14 @@ The three-arm result falsified pageable staging as a useful optimization. Accept
 
 The large `cudaMemcpyAsync` API attribution therefore mostly represents outstanding GPU work encountered at host-control synchronization boundaries, not removable host staging overhead. The pinned hot-path buffers and controls were removed. The trace smoke subtest requested only eight outputs, which suppresses a seven-token draft near the generation limit, so it produced no parity trace. A later 64-output run validated complete first-block manifests on all four TP ranks. Experiment artifacts: `/results/20260828_214332-dflash-pinned-staging-057db9a76ebc`. Profile artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 
+## Grouped direct-paged target verification
+
+The SM70 grouped Q8H4 kernel combines all eight verifier query positions with up to four GQA heads in one MMA CTA. The audited local 6Q:1KV shape uses two 4+2 head CTAs and eight context splits at 1K. All 64 TP-rank/full-layer outputs were bit-exact against the direct-paged reference. Audited 256-token generation identity passed with the draft graph both disabled and enabled, and a 64-token-context smoke proved capture on all four ranks.
+
+Five-trial 1K cycle normalization improved from 42.69 ms flattened and 41.63 ms direct-paged to 38.42 ms grouped. Direct-paged and grouped followed the same 2.756 commit-length trajectory, giving an attribution-safe decode increase from 66.20 to 71.73 tok/s. Matched profiles followed the same 2.311 trajectory and improved from 47.33 ms flattened and 46.83 ms direct-paged to 44.04 ms grouped. The head-dim-256 target attention kernel fell from 1,252.7 to 535.6 ms aggregate, a 57.2% reduction.
+
+At 8K, equal commit length 2.750 produced 69.17 versus 44.67 ms normalized cycles. At 25K, equal commit length 3.812 produced 131.27 versus 52.31 ms. This is the first structural attention change to produce a large, context-scaling gain. The grouped path is now default-on, with `TM_DFLASH_GROUPED_PAGED_Q8=0` retaining controls. Artifacts: `/results/20260829_044633-dflash-grouped-paged-q8-82bcb2ed29a4`.
+
 ## Rollback barrier merge
 
 A five-trial A/B queued rollback verdict, published-length, and tip readbacks behind one barrier instead of two. The change did not improve acceptance-normalized cycle time: the legacy path took 43.11 ms per step and the combined path took 43.13 ms. Raw decode differed because separate processes followed different acceptance trajectories. The combined arm also hit the known audited position-220 near-tie. Since the normalized result showed no gain, the implementation and runtime flag were removed. Artifacts: `/results/20260828_205537-dflash-rollback-sync-e49a2f50daff`.

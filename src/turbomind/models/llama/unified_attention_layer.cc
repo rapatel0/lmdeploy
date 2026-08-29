@@ -949,7 +949,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
     }();
     static const bool enable_dflash_grouped_paged_q8 = [] {
         const char* value = std::getenv("TM_DFLASH_GROUPED_PAGED_Q8");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     static const bool enable_dflash_draft_graph = [] {
         const char* value = std::getenv("TM_DFLASH_DRAFT_GRAPH");

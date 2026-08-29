@@ -120,12 +120,13 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - The per-layer target graph was removed. Future target capture must span a larger contiguous region and amortize graph-launch overhead.
   - Done when: broader graph replay passes identity and reduces matched whole-cycle wall time by more than run variance.
 
-- [ ] **Qualify grouped direct-paged Q=8 attention.**
-  - The first SM70 block-iterator path bypassed flattened KV and ran on TP4, but lacked grouped GQA and split-context scheduling; keep it off by default.
-  - Deep profile attribution assigns about 5.99 ms/cycle to target head-dim-256 attention, making the grouped successor a material target.
-  - Required 1K geometry: CTA_Q=8, CTA_H up to 4, two local GQA-head groups, and eight >=128-token context splits, for 16 CTAs with K/V shared across query positions and heads. Do not revive the rejected CTA_Q=1 design.
-  - Require finite and numeric same-input parity on all 64 TP-rank/layer instances, audited identity, five trials, and matched Nsight attribution.
-  - Done when: it beats generic flattened attention at every selected context or is removed.
+- [x] **Qualify grouped direct-paged Q=8 attention.**
+  - The SM70 CTA_Q=8/CTA_H=4 kernel covers local 6Q:1KV as 4+2 heads and shares paged K/V across both query positions and grouped heads.
+  - All 64 TP-rank/layer outputs were bit-exact against direct-paged attention. Audited graph-off and graph-on identity passed; short-context four-rank graph capture and 8K/25K runtime gates passed.
+  - Five-trial 1K normalized cycles improved from 42.69 ms flattened and 41.63 ms direct-paged to 38.42 ms grouped. With identical direct/grouped acceptance, decode improved from 66.20 to 71.73 tok/s.
+  - Matched profiled cycles improved from 47.33/46.83 ms to 44.04 ms; the target attention kernel fell 57.2% versus flattened.
+  - Equal-acceptance normalized cycles improved from 69.17 to 44.67 ms at 8K and 131.27 to 52.31 ms at 25K.
+  - Default-on; `TM_DFLASH_GROUPED_PAGED_Q8=0` retains controls. Artifacts: `/results/20260829_044633-dflash-grouped-paged-q8-82bcb2ed29a4`.
 
 - [ ] **Use device publication only as broader-graph infrastructure.**
   - Phase-owned host frontiers removed 236 copies but regressed whole request time by 0.5%.
@@ -191,10 +192,10 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 ## Current measured state
 
-- LMDeploy DFlash2 audited decode: 61.39 tok/s
-- LMDeploy committed length: 2.664
+- LMDeploy DFlash2 audited grouped decode: 71.73 tok/s
+- LMDeploy committed length in the grouped five-trial arm: 2.756
 - SGLang committed length: 3.765
 - Exact short-workload identity: pass
-- Cumulative audited gain from the original 36.13 tok/s: about 70%
+- Cumulative audited gain from the original 36.13 tok/s: about 99%
 
 Run two tracks in parallel. Build grouped direct-paged target attention and then attack measured target GEMM/GDN costs on Track A. Continue same-input first-block parity on Track B. Device publication is a graph prerequisite, not a standalone speed target.
