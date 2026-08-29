@@ -15,15 +15,15 @@ Keep exact target output identity for every accepted optimization.
 
 | Metric | LMDeploy baseline | SGLang reference | Final target |
 | --- | ---: | ---: | ---: |
-| Commit length | 2.664 | 3.765 | at least 3.5, stretch 3.765 |
-| Verification steps/s | 23.0 | 36.3 | at least 33.3, stretch 36.3 |
-| Cycle time | 43.4 ms | 27.6 ms | at most 30 ms, stretch 27.6 ms |
-| Decode | 61.39 tok/s | 136.6 tok/s | at least 2.2x matched K=0 |
+| Commit length | 2.518 | 3.765 | at least 3.5, stretch 3.765 |
+| Verification steps/s | 30.2 | 36.3 | at least 33.3, stretch 36.3 |
+| Cycle time | 33.07 ms | 27.6 ms | at most 30 ms, stretch 27.6 ms |
+| Decode | 76.14 tok/s | 136.6 tok/s | at least 2.2x matched K=0 |
 
 Treat the gap as two independent tracks:
 
-1. Raise commit length by at least 1.31x.
-2. Reduce verification cycle time by at least 1.45x.
+1. Raise commit length by about 1.50x.
+2. Reduce verification cycle time by about 1.20x.
 
 Run both tracks in parallel after the baseline gate.
 
