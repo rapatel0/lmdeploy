@@ -59,8 +59,8 @@ fi
 
 capture_count="$(grep -c '\[DFlash2\] target attention graph captured phase=' "${RESULTS}/console.log" || true)"
 replay_count="$(grep -c '\[DFlash2\] target attention graph replay phase=' "${RESULTS}/console.log" || true)"
-# This audited Qwen3.8 target has four full-attention layers on each of four TP ranks.
-expected_graphs="${TM_DFLASH_EXPECTED_TARGET_GRAPHS:-16}"
+# This audited Qwen3.8 target has sixteen full-attention layers on each of four TP ranks.
+expected_graphs="${TM_DFLASH_EXPECTED_TARGET_GRAPHS:-64}"
 echo "TARGET_ATTENTION_GRAPH_COUNTS captured=${capture_count} replay=${replay_count} expected=${expected_graphs}"
 [ "${capture_count}" -ge "${expected_graphs}" ] || {
     echo "FAIL: expected every TP-rank/layer target attention graph to capture; " \
