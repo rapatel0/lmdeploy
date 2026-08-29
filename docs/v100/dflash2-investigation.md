@@ -346,7 +346,7 @@ The Q=8 FP16-state chunked GDN kernel originally launched one 256-thread CTA per
 
 V32 was the best complete arm. Normalized GDN time per 48 layer launches fell from 4.998 to 2.580 ms, **48.38%**, while five-trial acceptance-normalized cycle time improved from 37.714 to 36.942 ms, **2.05%**. With identical profiled commit length 2.311, profiled cycle time improved from 44.213 to 42.646 ms, **3.54%**, and decode rose from 52.27 to 54.19 tok/s. All four TP ranks logged V32 activation. One of three predeclared V32 audited controls passed exact 256-token K=0/K=7 identity; the other two and the V128 control hit only the previously established fresh-process near-tie at position 220, with no unexpected divergence.
 
-V32 is default-on. `TM_GDN_SM70_VALUE_COLS=128` retains the exact legacy CTA decomposition; 16 and 64 remain diagnostic controls. Artifact: `/results/20260829_125003-dflash-gdn-value-cols-b85fb4e04bf8`.
+V32 is default-on. `TM_GDN_SM70_VALUE_COLS=128` retains the exact legacy CTA decomposition; 16 and 64 remain diagnostic controls. A rebuilt default-wheel smoke then proved V32 activation on all four TP ranks, no split-kernel activation under the V128 control, and exact 128-token audited identity; its single-trial default/legacy decode rates were 63.11/61.11 tok/s. Qualification artifact: `/results/20260829_125003-dflash-gdn-value-cols-b85fb4e04bf8`; default smoke: `/results/20260829_131432-dflash-gdn-default-c891bd411f2d`.
 
 ## Rollback barrier merge
 
