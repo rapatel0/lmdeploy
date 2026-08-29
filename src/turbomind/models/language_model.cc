@@ -2,6 +2,7 @@
 #include "src/turbomind/models/language_model.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -117,6 +118,12 @@ struct LanguageModel::Impl {
         Buffer_<float> dflash_gathered_scores;
         Buffer_<int>   dflash_k_offsets;
 
+        // Verification-only exact TP-local top-2 workspace. The gathered
+        // layout is [tp_rank, row, score0/id0/score1/id1].
+        Tensor         dflash_verify_local_logits;
+        Buffer_<float> dflash_verify_local_top2;
+        Buffer_<float> dflash_verify_gathered_top2;
+
         Buffer_<bool> autoregres;
         Buffer_<bool> generating;
 
@@ -193,6 +200,7 @@ struct LanguageModel::Impl {
     /// Verification logits, held between Forward and kReject because the env
     /// map is rebuilt in between.
     Tensor verify_logits_;
+    Buffer_<float> verify_top2_;
 
     /// Diagnostic reference: verifier logits at the first submitted position,
     /// keyed by request uid until the forced-reject replay runs. Populated only
@@ -303,6 +311,7 @@ struct LanguageModel::Impl {
 
     Tensor LookupEmbedding(const Buffer_<int>& input_ids, Buffer symm_buf, Tensor output = {});
     Tensor PostEmbedding(const Tensor& features, Buffer symm_buf);
+    bool   PostEmbeddingVerifyTop2(int phase, const Tensor& features, int K);
     void   DraftTop1(Buffer_<int>& out, const Tensor& features);
     void   DraftTopK16(Buffer_<int>& out,
                        Tensor&       scores,
@@ -482,6 +491,10 @@ LanguageModel::Impl::Impl(
         const char* value = std::getenv("TM_DFLASH_PERSISTENT_WORKSPACE");
         return !value || value[0] != '0';
     }();
+    static const bool dflash_tp_local_verify_top2 = [] {
+        const char* value = std::getenv("TM_DFLASH_TP_LOCAL_VERIFY_TOP2");
+        return value && value[0] == '1';
+    }();
     static const bool trace_dflash_workspace = [] {
         const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");
         return value && value[0] == '1';
@@ -502,6 +515,14 @@ LanguageModel::Impl::Impl(
         d.finished           = empty_like(finished_buf_, kDEVICE);
         d.autoregres         = {engine.max_batch_size, kCPU};
         d.generating         = {engine.max_batch_size, kCPU};
+        if (dflash_tp_local_verify_top2 && engine.speculative_algorithm == "dflash2" && weights_.dflash
+            && engine.max_batch_size == 1 && tp_size_ == 4 && weights_.data_type == kHalf
+            && weights_.dflash->block_size == 8) {
+            constexpr int rows = 8;
+            d.dflash_verify_local_logits  = {{rows, local_vocab_size}, weights_.data_type, kDEVICE};
+            d.dflash_verify_local_top2    = {(ssize_t)rows * 4, kDEVICE};
+            d.dflash_verify_gathered_top2 = {(ssize_t)tp_size_ * rows * 4, kDEVICE};
+        }
         if (allocate_dflash_selector) {
             TM_CHECK_GT(dflash_selector_rows, 0);
             TM_CHECK_GT(local_vocab_size, 0);
@@ -775,6 +796,76 @@ Tensor LanguageModel::Impl::PostEmbedding(const Tensor& features, Buffer symm_bu
         TM_CUDA_CHECK(cudaGetLastError());
         return out;
     }
+}
+
+bool LanguageModel::Impl::PostEmbeddingVerifyTop2(int phase, const Tensor& features, int K)
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_TP_LOCAL_VERIFY_TOP2");
+        return value && value[0] == '1';
+    }();
+    if (!enabled || !dflash_predictor_ || tp_size_ != 4 || K != 7 || features.dtype() != kHalf
+        || features.shape(0) != 8 || weights_.output->output_dim != 62080 || weights_.vocab_size > 248320) {
+        return false;
+    }
+    NvtxScope scope("postDecodeEmbeddingLocalTop2");
+    auto& d = data_.at(phase);
+    if ((int)d.rows.size() != 1 || !d.dflash_verify_local_logits || !d.dflash_verify_local_top2
+        || !d.dflash_verify_gathered_top2) {
+        return false;
+    }
+
+    int eos_ids_size = std::max(1, (int)d.rows[0]->gen_cfg.eos_ids.size());
+    Buffer_<int> eos_ids_host{eos_ids_size, kCPU};
+    Buffer_<int> eos_enable_positions_host{1, kCPU};
+    std::fill(eos_ids_host.data(), eos_ids_host.data() + eos_ids_size, -1);
+    std::copy(d.rows[0]->gen_cfg.eos_ids.begin(), d.rows[0]->gen_cfg.eos_ids.end(), eos_ids_host.data());
+    eos_enable_positions_host[0] =
+        d.rows[0]->prompt_len + d.rows[0]->gen_cfg.min_new_tokens - d.rows[0]->seq_len - 1;
+    Buffer_<int> eos_ids{eos_ids_size, kDEVICE};
+    Buffer_<int> eos_enable_positions{1, kDEVICE};
+    Copy(eos_ids_host, eos_ids);
+    Copy(eos_enable_positions_host, eos_enable_positions);
+
+    const int local_vocab_size = weights_.output->output_dim;
+    const int token_id_offset  = tp_rank_ * local_vocab_size;
+    const int valid_vocab_size = std::min(local_vocab_size, weights_.vocab_size - token_id_offset);
+    TM_CHECK_GT(valid_vocab_size, 0);
+    auto local_logits = d.dflash_verify_local_logits.slice(0, K + 1);
+    TM_SCOPE_CALL(linear_.Forward(features, *weights_.output, local_logits));
+    const auto st = core::Context::stream().handle();
+    LocalTop2(local_logits.raw_data(),
+              d.dflash_verify_local_top2.data(),
+              K + 1,
+              local_vocab_size,
+              valid_vocab_size,
+              token_id_offset,
+              K,
+              eos_ids.data(),
+              eos_ids_size,
+              eos_enable_positions.data(),
+              weights_.data_type,
+              st);
+    comm_.d_comm->AllGather(d.dflash_verify_local_top2.data(),
+                            d.dflash_verify_gathered_top2.data(),
+                            d.dflash_verify_local_top2.size(),
+                            kFloat32,
+                            comm_.d_tp_group,
+                            st);
+    TM_CUDA_CHECK(cudaGetLastError());
+    verify_top2_ = d.dflash_verify_gathered_top2;
+    int device = -1;
+    TM_CUDA_CHECK(cudaGetDevice(&device));
+    TM_CHECK(device >= 0 && device < 16);
+    static std::atomic<bool> logged[16]{};
+    if (!logged[device].exchange(true, std::memory_order_relaxed)) {
+        TM_LOG_INFO("DFLASH_TP_LOCAL_VERIFY_TOP2_ACTIVE device={} rows={} local_vocab={} valid_vocab={}",
+                    device,
+                    K + 1,
+                    local_vocab_size,
+                    valid_vocab_size);
+    }
+    return true;
 }
 
 void LanguageModel::Impl::DraftTop1(Buffer_<int>& out, const Tensor& features)
@@ -1387,8 +1478,6 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     // handling on one classification.
     const bool spec_verify = HasDraftsToVerify(phase);
 
-    env.produce("logits", PostEmbedding(hidden_states, symm_buf_));
-
     // Compare the rejected verifier's first-position logits with the ordinary
     // replay from the exact restored state. This is a same-process numeric
     // contract, unlike K=0-vs-K=N token text from independent prefills (the K=0
@@ -1397,6 +1486,34 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         const char* s = std::getenv("TM_SPEC_LOGIT_PARITY");
         return s && s[0] == '1';
     }();
+    static const bool dump_rejections = [] {
+        const char* s = std::getenv("TM_SPEC_REJECT_DUMP");
+        return s && s[0] == '1';
+    }();
+    int verify_k = 0;
+    if (spec_verify) {
+        for (int n : d.num_drafts) {
+            verify_k = std::max(verify_k, n);
+        }
+    }
+    if (spec_verify) {
+        verify_logits_ = {};
+        verify_top2_   = {};
+    }
+    const bool needs_step_logits = output_processor_->RequiresStepLogits(phase);
+    const bool compact_verify = spec_verify && !trace_logit_parity && !dump_rejections && !needs_step_logits
+                                && PostEmbeddingVerifyTop2(phase, hidden_states, verify_k);
+    static const bool compact_verify_requested = [] {
+        const char* s = std::getenv("TM_DFLASH_TP_LOCAL_VERIFY_TOP2");
+        return s && s[0] == '1';
+    }();
+    if (compact_verify_requested && spec_verify && verify_k == 7 && hidden_states.dtype() == kHalf
+        && hidden_states.shape(0) == 8 && !trace_logit_parity && !dump_rejections && !needs_step_logits) {
+        TM_CHECK(compact_verify) << "eligible TP-local top-2 verification fell back to full logits";
+    }
+    if (!compact_verify) {
+        env.produce("logits", PostEmbedding(hidden_states, symm_buf_));
+    }
     if (TM_UNLIKELY(trace_logit_parity && !spec_verify && !replay_ref_logits_.empty())) {
         const int   bsz          = (int)d.rows.size();
         const auto& logits       = env.at("logits");
@@ -1460,9 +1577,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     // token on top of the accepted prefix and corrupt the sequence.
     // A disagreement here is the `verify_logits_` abort.
     if (spec_verify) {
-        // Keep the logits for kReject; it runs after Unprep, by which point the
-        // env map has been rebuilt.
-        verify_logits_ = env.at("logits");
+        // Keep either full logits or compact gathered top-2 candidates for
+        // kReject; it runs after Unprep, when the env map has been rebuilt.
+        if (!compact_verify) {
+            verify_logits_ = env.at("logits");
+        }
         return;
     }
 
@@ -1775,7 +1894,7 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     const int  bsz = (int)d.rows.size();
     const auto st  = core::Context::stream().handle();
 
-    TM_CHECK(verify_logits_) << "kReject ran without verification logits";
+    TM_CHECK(verify_logits_ || verify_top2_) << "kReject ran without verification logits or compact top-2";
 
     // The number of drafts THIS forward actually submitted, not the configured
     // maximum. Drafting is clamped near the session limit so a row can carry
@@ -1812,10 +1931,15 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     // acceptance quietly collapses toward zero instead of failing.
     const int vocab_stride = weights_.output->output_dim * tp_size_;
 
-    // verify_logits_ is [bsz*(K+1), vocab_stride], because Setup selected every
-    // submitted position rather than only the last one.
-    TM_CHECK_EQ((int)verify_logits_.shape(1), vocab_stride);
-    TM_CHECK_EQ((int)verify_logits_.shape(0), bsz * (K + 1));
+    // Full logits use [bsz*(K+1), vocab_stride]. Compact candidates use
+    // rank-major [tp, bsz*(K+1), score0/id0/score1/id1].
+    if (verify_logits_) {
+        TM_CHECK_EQ((int)verify_logits_.shape(1), vocab_stride);
+        TM_CHECK_EQ((int)verify_logits_.shape(0), bsz * (K + 1));
+    }
+    else {
+        TM_CHECK_EQ(verify_top2_.size(), (ssize_t)tp_size_ * bsz * (K + 1) * 4);
+    }
 
     // TM_MTP_FORCE_REJECT=1 makes position zero reject inside GreedyReject,
     // rather than clearing the accepted count afterwards. Clearing afterwards
@@ -1866,18 +1990,20 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     Copy(eos_ids_host, eos_ids);
     Copy(eos_enable_positions_host, eos_enable_positions);
 
-    auto result = GreedyReject(verify_logits_.raw_data(),
-                               drafts.data(),
-                               bsz,
-                               K,
-                               weights_.vocab_size,  // argmax searches only the real vocabulary
-                               vocab_stride,         // rows are strided by the padded size
-                               eos_ids.data(),
-                               eos_ids_size,
-                               eos_enable_positions.data(),
-                               ambiguity_margin,
-                               weights_.data_type,
-                               st);
+    auto result = verify_top2_ ? GreedyRejectTop2(
+                                     verify_top2_.data(), drafts.data(), bsz, K, tp_size_, ambiguity_margin, st) :
+                                 GreedyReject(verify_logits_.raw_data(),
+                                              drafts.data(),
+                                              bsz,
+                                              K,
+                                              weights_.vocab_size,
+                                              vocab_stride,
+                                              eos_ids.data(),
+                                              eos_ids_size,
+                                              eos_enable_positions.data(),
+                                              ambiguity_margin,
+                                              weights_.data_type,
+                                              st);
 
     static const bool trace_logit_parity = [] {
         const char* s = std::getenv("TM_SPEC_LOGIT_PARITY");
@@ -1988,6 +2114,7 @@ void LanguageModel::Impl::RejectDrafts(int phase, TensorMap& env)
     Copy(result.bonus_tokens, autoreg_ids_.slice(0, bsz));
 
     verify_logits_ = {};
+    verify_top2_   = {};
 }
 
 void LanguageModel::Impl::Rollback(int phase, TensorMap& env)

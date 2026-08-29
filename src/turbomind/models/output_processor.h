@@ -15,6 +15,8 @@ public:
 
     void OutputHiddenStatesAndLogits(int phase, TensorMap& env, int type);
 
+    bool RequiresStepLogits(int phase) const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

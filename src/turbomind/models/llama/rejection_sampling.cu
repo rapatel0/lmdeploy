@@ -217,6 +217,194 @@ __global__ void GreedyRejectKernel(int*       num_accepted,    // [batch]
     }
 }
 
+template<typename T>
+__global__ void LocalTop2Kernel(float*       candidates,
+                                const T*     logits,
+                                int          rows,
+                                int          local_vocab_size,
+                                int          valid_vocab_size,
+                                int          token_id_offset,
+                                int          K,
+                                const int*   eos_ids,
+                                int          eos_ids_size,
+                                const int*   eos_enable_positions)
+{
+    const int row = blockIdx.x;
+    if (row >= rows) {
+        return;
+    }
+    const int batch = row / (K + 1);
+    const int pos   = row % (K + 1);
+    const bool eos_disabled = pos < eos_enable_positions[batch];
+    TopK<float, 2> partial;
+    partial.init();
+    const T* row_logits = logits + (size_t)row * local_vocab_size;
+    for (int local_id = threadIdx.x; local_id < valid_vocab_size; local_id += blockDim.x) {
+        const int global_id = token_id_offset + local_id;
+        bool skip = false;
+        if (eos_disabled) {
+            for (int e = 0; e < eos_ids_size; ++e) {
+                skip |= global_id == eos_ids[batch * eos_ids_size + e];
+            }
+        }
+        if (!skip) {
+            partial.insert(static_cast<float>(row_logits[local_id]), global_id);
+        }
+    }
+    using BlockTop2 = cub::BlockReduce<TopK<float, 2>, 256>;
+    __shared__ typename BlockTop2::TempStorage storage;
+    const TopK<float, 2> total = BlockTop2(storage).Reduce(partial, reduce_topk_op<float, 2>);
+    if (threadIdx.x == 0) {
+        float* out = candidates + (size_t)row * 4;
+        out[0] = total.u[0];
+        out[1] = static_cast<float>(total.p[0]);
+        out[2] = total.u[1];
+        out[3] = static_cast<float>(total.p[1]);
+    }
+}
+
+__global__ void GreedyRejectTop2Kernel(int*         num_accepted,
+                                       int*         bonus_tokens,
+                                       int*         bonus_ambiguous,
+                                       const float* gathered,
+                                       const int*   drafts,
+                                       int          batch_size,
+                                       int          K,
+                                       int          tp_size,
+                                       float        ambiguity_margin)
+{
+    const int batch = blockIdx.x * blockDim.x + threadIdx.x;
+    if (batch >= batch_size) {
+        return;
+    }
+    int accepted = K;
+    int bonus = 0;
+    int path_ambiguous = 0;
+    for (int pos = 0; pos <= K; ++pos) {
+        TopK<float, 2> total;
+        total.init();
+        const int row = batch * (K + 1) + pos;
+        for (int rank = 0; rank < tp_size; ++rank) {
+            const float* rank_row = gathered + ((size_t)rank * batch_size * (K + 1) + row) * 4;
+            for (int j = 0; j < 2; ++j) {
+                const int token = static_cast<int>(rank_row[j * 2 + 1]);
+                if (token >= 0) {
+                    total.insert(rank_row[j * 2], token);
+                }
+            }
+        }
+        const int target = total.p[0] < 0 ? 0 : total.p[0];
+        path_ambiguous |= total.p[1] >= 0 && total.u[1] >= total.u[0] - ambiguity_margin;
+        if (pos < K) {
+            if (drafts[batch * K + pos] != target && accepted == K) {
+                accepted = pos;
+                bonus = target;
+                break;
+            }
+        }
+        else {
+            bonus = target;
+        }
+    }
+    num_accepted[batch] = accepted;
+    bonus_tokens[batch] = bonus;
+    bonus_ambiguous[batch] = path_ambiguous;
+}
+
+void LocalTop2(const void*  local_logits,
+               float*       candidates,
+               int          rows,
+               int          local_vocab_size,
+               int          valid_vocab_size,
+               int          token_id_offset,
+               int          K,
+               const int*   eos_ids,
+               int          eos_ids_size,
+               const int*   eos_enable_positions,
+               DataType     dtype,
+               cudaStream_t stream)
+{
+    TM_CHECK_GT(rows, 0);
+    TM_CHECK_GT(valid_vocab_size, 0);
+    constexpr int block = 256;
+#define TM_LAUNCH_LOCAL_TOP2(Type)                                                                                    \
+    LocalTop2Kernel<Type><<<rows, block, 0, stream>>>(candidates,                                                     \
+                                                       (const Type*)local_logits,                                      \
+                                                       rows,                                                          \
+                                                       local_vocab_size,                                              \
+                                                       valid_vocab_size,                                              \
+                                                       token_id_offset,                                               \
+                                                       K,                                                             \
+                                                       eos_ids,                                                       \
+                                                       eos_ids_size,                                                  \
+                                                       eos_enable_positions)
+    if (dtype == kFloat16) {
+        TM_LAUNCH_LOCAL_TOP2(half);
+    }
+#ifdef ENABLE_BF16
+    else if (dtype == kBfloat16) {
+        TM_LAUNCH_LOCAL_TOP2(__nv_bfloat16);
+    }
+#endif
+    else {
+        TM_LAUNCH_LOCAL_TOP2(float);
+    }
+#undef TM_LAUNCH_LOCAL_TOP2
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
+void GreedyRejectTop2Raw(int*         num_accepted,
+                         int*         bonus_tokens,
+                         int*         bonus_ambiguous,
+                         const float* gathered_candidates,
+                         const int*   draft_tokens,
+                         int          batch_size,
+                         int          K,
+                         int          tp_size,
+                         float        ambiguity_margin,
+                         cudaStream_t stream)
+{
+    if (batch_size == 0 || K == 0) {
+        return;
+    }
+    constexpr int block = 128;
+    GreedyRejectTop2Kernel<<<(batch_size + block - 1) / block, block, 0, stream>>>(num_accepted,
+                                                                                  bonus_tokens,
+                                                                                  bonus_ambiguous,
+                                                                                  gathered_candidates,
+                                                                                  draft_tokens,
+                                                                                  batch_size,
+                                                                                  K,
+                                                                                  tp_size,
+                                                                                  ambiguity_margin);
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
+RejectionResult GreedyRejectTop2(const float* gathered_candidates,
+                                 const int*   draft_tokens,
+                                 int          batch_size,
+                                 int          K,
+                                 int          tp_size,
+                                 float        ambiguity_margin,
+                                 cudaStream_t stream)
+{
+    RejectionResult result;
+    result.num_accepted    = Buffer_<int>(batch_size, kDEVICE);
+    result.bonus_tokens    = Buffer_<int>(batch_size, kDEVICE);
+    result.bonus_ambiguous = Buffer_<int>(batch_size, kDEVICE);
+    GreedyRejectTop2Raw(result.num_accepted.data(),
+                        result.bonus_tokens.data(),
+                        result.bonus_ambiguous.data(),
+                        gathered_candidates,
+                        draft_tokens,
+                        batch_size,
+                        K,
+                        tp_size,
+                        ambiguity_margin,
+                        stream);
+    return result;
+}
+
 RejectionResult GreedyReject(const void*  verification_logits,
                               const int*   draft_tokens,
                               int          batch_size,

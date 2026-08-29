@@ -354,6 +354,11 @@ struct OutputProcessor::Impl {
         return true;
     }
 
+    bool RequiresStepLogits(int phase) const
+    {
+        return !data_.at(phase).output_logits.empty();
+    }
+
     void OutputHiddenStatesAndLogits(int phase, TensorMap& env, int type)
     {
         auto& d = data_.at(phase);
@@ -404,6 +409,11 @@ void OutputProcessor::Run(BatchOp op, int phase, TensorMap& env)
 void OutputProcessor::OutputHiddenStatesAndLogits(int phase, TensorMap& env, int type)
 {
     return impl_->OutputHiddenStatesAndLogits(phase, env, type);
+}
+
+bool OutputProcessor::RequiresStepLogits(int phase) const
+{
+    return impl_->RequiresStepLogits(phase);
 }
 
 }  // namespace turbomind

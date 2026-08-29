@@ -40,6 +40,42 @@ struct RejectionResult {
 /// padding is never written by the projection, so an argmax that searches it
 /// can return an id outside the vocabulary; and striding by the unpadded size
 /// would misalign every row after the first.
+/// Reduce each rank-local FP16 logit row to exact top-2 candidates.
+/// Output rows contain [score0, global_id0, score1, global_id1] as FP32.
+void LocalTop2(const void*  local_logits,
+               float*       candidates,
+               int          rows,
+               int          local_vocab_size,
+               int          valid_vocab_size,
+               int          token_id_offset,
+               int          K,
+               const int*   eos_ids,
+               int          eos_ids_size,
+               const int*   eos_enable_positions,
+               DataType     dtype,
+               cudaStream_t stream);
+
+/// Launch compact rejection into caller-owned device output arrays.
+void GreedyRejectTop2Raw(int*         num_accepted,
+                         int*         bonus_tokens,
+                         int*         bonus_ambiguous,
+                         const float* gathered_candidates,
+                         const int*   draft_tokens,
+                         int          batch_size,
+                         int          K,
+                         int          tp_size,
+                         float        ambiguity_margin,
+                         cudaStream_t stream);
+
+/// Reject drafts from rank-major gathered local top-2 candidates.
+RejectionResult GreedyRejectTop2(const float* gathered_candidates,
+                                 const int*   draft_tokens,
+                                 int          batch_size,
+                                 int          K,
+                                 int          tp_size,
+                                 float        ambiguity_margin,
+                                 cudaStream_t stream);
+
 RejectionResult GreedyReject(const void*  verification_logits,
                              const int*   draft_tokens,
                              int          batch_size,
