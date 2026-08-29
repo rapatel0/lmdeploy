@@ -2,6 +2,7 @@
 #include "src/turbomind/kernels/gemm/convert.h"
 #include "src/turbomind/kernels/gemm/gemm.h"
 
+#include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
 
 #include <array>
@@ -65,10 +66,16 @@ void Allocate(Buffers& x, bool transposed)
     Check(cudaGetLastError(), "fill kernels");
 }
 
-int Run(gemm::Gemm& runner, const gemm::Workspace& workspace, Buffers& x, int m, bool transposed, cudaStream_t stream)
+int Run(gemm::Gemm&           runner,
+        const gemm::Workspace& workspace,
+        Buffers&               x,
+        int                    m,
+        bool                   transposed,
+        gemm::DispatchPolicy   dispatch,
+        cudaStream_t           stream)
 {
     gemm::Operation op{};
-    op.dispatch = gemm::DispatchPolicy::kMeasure;
+    op.dispatch = dispatch;
     gemm::MatrixLayout a{tb::kHalf, gemm::kRowMajor, m, K, K};
     gemm::MatrixLayout b{tb::kHalf, transposed ? gemm::kColMajor : gemm::kRowMajor, K, N, transposed ? K : N};
     gemm::MatrixLayout d{tb::kHalf, gemm::kRowMajor, m, N, N};
@@ -113,16 +120,18 @@ int main()
     Allocate(buffers, transposed);
     gemm::Gemm runner;
     for (int m : {1, 7, 8}) {
-        if (Run(runner, workspace, buffers, m, transposed, stream) != 0) return 3;
+        if (Run(runner, workspace, buffers, m, transposed, gemm::DispatchPolicy::kMeasure, stream) != 0) return 3;
     }
     Check(cudaStreamSynchronize(stream), "warmup sync");
-    if (const char* dir = std::getenv("TM_FP16_HEAD_DUMP_DIR")) {
-        for (int m : {1, 7, 8}) {
-            if (Run(runner, workspace, buffers, m, transposed, stream) != 0) return 3;
-            Check(cudaStreamSynchronize(stream), "dump sync");
+    Check(cudaProfilerStart(), "cudaProfilerStart");
+    for (int m : {1, 7, 8}) {
+        if (Run(runner, workspace, buffers, m, transposed, gemm::DispatchPolicy::kReuse, stream) != 0) return 3;
+        Check(cudaStreamSynchronize(stream), "measured sync");
+        if (const char* dir = std::getenv("TM_FP16_HEAD_DUMP_DIR")) {
             Dump(buffers, m, dir);
         }
     }
+    Check(cudaProfilerStop(), "cudaProfilerStop");
     std::printf("SM70_FP16_FLAT_HEAD_MICRO_PASS mode=%d transposed=%d\n", mode, int(transposed));
     return 0;
 }

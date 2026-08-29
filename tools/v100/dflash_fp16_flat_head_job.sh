@@ -5,7 +5,12 @@ SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/nul
 RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-fp16-flat-head-${SRC_COMMIT:-unknown}
 mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
-trap 'rc=$?; echo "$rc" >"${RESULTS}/exit_code"; echo "artifacts in ${RESULTS} (exit ${rc})"' EXIT
+finish() {
+   local rc=$?
+   echo "${rc}" >"${RESULTS}/exit_code"
+   echo "artifacts in ${RESULTS} (exit ${rc})"
+}
+trap finish EXIT
 for f in bench_decode.py verify_dflash_audited.py dflash_fp16_flat_head_microbench.cu; do [ -f "/job/${f}" ] || exit 2; done
 rm -f /wheels/lmdeploy-*.whl
 started=$(date +%s)
@@ -67,14 +72,27 @@ PY
 for i in "${!arms[@]}"; do
     arm=${arms[$i]}; mode=${modes[$i]}
     TM_SM70_FP16_FLAT_GDN=0 TM_SM70_FP16_FLAT_HEAD="${mode}" "${NSYS}" profile --force-overwrite=true \
-        --trace=cuda --output="${RESULTS}/micro_profile_${arm}" /tmp/dflash_fp16_flat_head_microbench \
+        --trace=cuda --capture-range=cudaProfilerApi --capture-range-end=stop \
+        --output="${RESULTS}/micro_profile_${arm}" /tmp/dflash_fp16_flat_head_microbench \
         2>&1 | tee "${RESULTS}/micro_profile_${arm}.log"
-    "${NSYS}" stats --report cuda_gpu_kern_sum --format csv --output "${RESULTS}/micro_profile_${arm}_stats" \
+    "${NSYS}" export --type sqlite --force-overwrite=true --output="${RESULTS}/micro_profile_${arm}.sqlite" \
         "${RESULTS}/micro_profile_${arm}.nsys-rep" >/dev/null 2>&1
 done
-if grep -Eq 'Operand_B<[^>]*half' "${RESULTS}/micro_profile_baseline_stats_cuda_gpu_kern_sum.csv"; then exit 3; fi
-if grep -Eq 'Operand_B<[^>]*half' "${RESULTS}/micro_profile_transposed_stats_cuda_gpu_kern_sum.csv"; then exit 3; fi
-grep -Eq 'Operand_B<[^>]*half' "${RESULTS}/micro_profile_native_stats_cuda_gpu_kern_sum.csv"
+python3 - "${RESULTS}" <<'PY'
+import json,sqlite3,sys
+from pathlib import Path
+root=Path(sys.argv[1]); report={}
+for arm in ('baseline','transposed','native'):
+ db=sqlite3.connect(root/f'micro_profile_{arm}.sqlite')
+ rows=db.execute('SELECT s.value,COUNT(*) FROM CUPTI_ACTIVITY_KIND_KERNEL k JOIN StringIds s ON s.id=k.demangledName GROUP BY s.value').fetchall(); db.close()
+ native=sum(n for name,n in rows if 'gemm_kernel' in name.lower() and 'operand_b<' in name.lower() and 'half' in name.lower() and 'operand_b_pack' not in name.lower())
+ cublas=sum(n for name,n in rows if 'cutlass' in name.lower() and 'gemm' in name.lower())
+ report[arm]={'native_launches':native,'cublas_launches':cublas,'signatures':[name for name,n in rows if n and ('gemm' in name.lower())]}
+ expected=(3,0) if arm=='native' else (0,3)
+ if (native,cublas)!=expected: raise SystemExit(f'FP16_FLAT_HEAD_MICRO_ROUTE_FAIL arm={arm} native={native} cublas={cublas} expected={expected}')
+(root/'micro_route.json').write_text(json.dumps(report,indent=2)+'\n')
+print('FP16_FLAT_HEAD_MICRO_ROUTE_PASS',json.dumps(report,sort_keys=True))
+PY
 
 common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" --num-draft-tokens 7 --speculative-algorithm dflash2
    --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" --speculative-dflash-block-size 8 --speculative-draft-window 2048
@@ -90,7 +108,20 @@ for i in "${!arms[@]}"; do
    mode=${modes[$i]}
    TM_SM70_FP16_FLAT_GDN=0 TM_SM70_FP16_FLAT_HEAD="${mode}" python3 /job/bench_decode.py "${common[@]}" --trials 5 --json-out "${RESULTS}/${arm}.json" 2>&1 | tee "${RESULTS}/${arm}.log"
    validate "${RESULTS}/${arm}.json" 5
-   if [ "${mode}" -ne 0 ]; then for d in 0 1 2 3; do grep -q "SM70_FP16_FLAT_HEAD_ACTIVE device=${d} mode=${mode} shape=5120x62080" "${RESULTS}/${arm}.log"; done; fi
+   if [ "${mode}" -eq 0 ]; then
+      if grep -q 'SM70_FP16_FLAT_HEAD_ACTIVE' "${RESULTS}/${arm}.log"; then exit 3; fi
+   else
+      for d in 0 1 2 3; do
+         [ "$(grep -c "SM70_FP16_FLAT_HEAD_ACTIVE device=${d} mode=${mode} shape=5120x62080" "${RESULTS}/${arm}.log")" -eq 1 ]
+      done
+   fi
+   if [ "${mode}" -eq 2 ]; then
+      for d in 0 1 2 3; do
+         [ "$(grep -c "SM70_FP16_FLAT_HEAD_REGISTERED device=${d} candidates=1" "${RESULTS}/${arm}.log")" -eq 1 ]
+      done
+   elif grep -q 'SM70_FP16_FLAT_HEAD_REGISTERED' "${RESULTS}/${arm}.log"; then
+      exit 3
+   fi
 done
 export FT_NVTX=ON
 for i in "${!arms[@]}"; do
@@ -104,10 +135,14 @@ unset FT_NVTX
 python3 /src/tools/v100/analyze_dflash_fp16_flat_head.py "${RESULTS}" | tee "${RESULTS}/analysis.log"
 [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["winner"] or "")' "${RESULTS}/analysis.json")" = native ] || exit 4
 
-# Current production baseline versus both qualified flat catalogs enabled.
-for arm in production combined; do
-   if [ "${arm}" = production ]; then head=0; else head=2; fi
-   TM_SM70_FP16_FLAT_GDN=2 TM_SM70_FP16_FLAT_HEAD="${head}" python3 /job/bench_decode.py "${common[@]}" --trials 5 --json-out "${RESULTS}/${arm}.json" 2>&1 | tee "${RESULTS}/${arm}.log"
+# Counter-order the current production baseline and both native catalogs. Two
+# fresh processes per arm reduce load-order and thermal bias without mixing
+# their independent acceptance trajectories.
+production_arms=(production_a combined_a combined_b production_b)
+for arm in "${production_arms[@]}"; do
+   case "${arm}" in production_*) head=0 ;; combined_*) head=2 ;; esac
+   TM_SM70_FP16_FLAT_GDN=2 TM_SM70_FP16_FLAT_HEAD="${head}" python3 /job/bench_decode.py "${common[@]}" \
+      --trials 5 --json-out "${RESULTS}/${arm}.json" 2>&1 | tee "${RESULTS}/${arm}.log"
    validate "${RESULTS}/${arm}.json" 5
 done
 python3 - "${RESULTS}" <<'PY'
@@ -115,11 +150,16 @@ import json,re,statistics,sys
 from pathlib import Path
 root=Path(sys.argv[1]); pat=re.compile(r'final commit length ([0-9.]+), raw [0-9.]+ over (\d+) verification steps')
 def cycle(name):
- d=json.loads((root/f'{name}.json').read_text()); c=statistics.median(float(x[0]) for x in pat.findall((root/f'{name}.log').read_text(errors='replace')))
+ d=json.loads((root/f'{name}.json').read_text()); matches=pat.findall((root/f'{name}.log').read_text(errors='replace'))
+ if not matches: raise SystemExit(f'missing acceptance record for {name}')
+ c=statistics.median(float(x[0]) for x in matches)
  return 1000*c/float(d['mean_decode_tok_s'])
-a=cycle('production'); b=cycle('combined'); pct=100*(b/a-1)
-(root/'production_comparison.json').write_text(json.dumps({'production_cycle_ms':a,'combined_cycle_ms':b,'combined_cycle_pct':pct},indent=2)+'\n')
-print(f'FP16_FLAT_HEAD_PRODUCTION_COMPARISON combined_cycle_pct={pct:.3f}')
+production=[cycle(x) for x in ('production_a','production_b')]
+combined=[cycle(x) for x in ('combined_a','combined_b')]
+a=statistics.mean(production); b=statistics.mean(combined); pct=100*(b/a-1)
+report={'production_cycle_ms':production,'combined_cycle_ms':combined,'production_pooled_ms':a,'combined_pooled_ms':b,'combined_cycle_pct':pct}
+(root/'production_comparison.json').write_text(json.dumps(report,indent=2)+'\n')
+print('FP16_FLAT_HEAD_PRODUCTION_COMPARISON',json.dumps(report,sort_keys=True))
 if pct > -1.0: raise SystemExit('combined production gain below 1%')
 PY
 for arm in native combined; do
