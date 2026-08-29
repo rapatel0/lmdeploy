@@ -57,8 +57,6 @@ public:
         float             output_input_scale{1.f};
         bool              kv_only{false};
         bool              use_dflash_workspace{false};
-        bool              dflash_target_verification{false};
-        bool              use_dflash_target_workspace{false};
     };
 
     ~UnifiedAttentionLayer();
@@ -75,8 +73,6 @@ public:
 
 private:
     void Setup(int phase, TensorMap& env);
-
-    void ForwardImpl(ForwardParam p);
 
     Tensor forward_mla(const Tensor& hidden_state, const WeightType& weights);
 

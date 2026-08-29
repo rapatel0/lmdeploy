@@ -1238,15 +1238,13 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         const char* s = std::getenv("TM_GDN_TRACE_STATE");
         return s && s[0] == '1';
     }();
-    const bool has_drafts_to_verify = HasDraftsToVerify(phase);
-    const bool dflash_target_verification = dflash_predictor_ && has_drafts_to_verify;
-    if (gdn_rollback_ && (has_drafts_to_verify || TM_UNLIKELY(trace_gdn_state))) {
+    if (gdn_rollback_ && (HasDraftsToVerify(phase) || TM_UNLIKELY(trace_gdn_state))) {
         unified_decoder_->SnapshotGDNState(phase);
     }
 
     {
-        NvtxScope scope(has_drafts_to_verify ? "targetVerify" : "targetDecode");
-        unified_decoder_->Forward(phase, env, weights_.layers_list(), dflash_target_verification);
+        NvtxScope scope(HasDraftsToVerify(phase) ? "targetVerify" : "targetDecode");
+        unified_decoder_->Forward(phase, env, weights_.layers_list());
     }
 
     if (dflash_predictor_ && env.try_("dflash_target_hidden") && !unified_decoder_->is_warm_up()) {

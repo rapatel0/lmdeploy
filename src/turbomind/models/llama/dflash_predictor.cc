@@ -249,7 +249,6 @@ struct DFlashPredictor::ParityTrace {
                                              "TM_DFLASH_CUB_TOPK",
                                              "TM_DFLASH_SELECTOR_GRAPH",
                                              "TM_DFLASH_DRAFT_GRAPH",
-                                             "TM_DFLASH_TARGET_ATTENTION_GRAPH",
                                              "TM_DFLASH_PAGED_Q8",
                                              "TM_DFLASH_EXACT_TIE_REPLAY",
                                              "TM_DFLASH_REDUCE_BEFORE_CONV",
