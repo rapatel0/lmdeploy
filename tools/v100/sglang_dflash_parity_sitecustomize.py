@@ -249,6 +249,13 @@ if _TRACE_ROOT:
 
     def _traced_worker_init(self, *args, **kwargs):
         _orig_worker_init(self, *args, **kwargs)
+        # The pinned V100 image's standalone Triton prepare/accept helpers are
+        # broken: prepare returns without writing the live bonus/mask IDs or
+        # positions, and accept later raises an illegal-memory-access error.
+        # Use SGLang's own eager fallback orchestration so the unmodified
+        # draft model and CUDA graph receive the audited request tensors.
+        self._use_triton_prepare_block = False
+        self._use_triton_accept_bonus = False
         original_forward = self.draft_model_runner.forward
 
         def _traced_draft_forward(forward_batch, *forward_args, **forward_kwargs):
