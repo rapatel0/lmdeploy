@@ -21,16 +21,18 @@ LMDeploy must also preserve exact target-only output identity.
 
 ## Current result
 
-Latest qualified audited LMDeploy result:
+Latest rebuilt stacked-default LMDeploy result:
 
-- DFlash2 decode: 61.39 tok/s
-- Average committed length: 2.664
-- Verification cycle time: approximately 43.4 ms
+- DFlash2 decode: 76.14 tok/s
+- Average committed length: 2.518
+- Verification cycle time: 33.07 ms
 - Exact audited K=0/K=7 identity: pass
 - Original audited DFlash2 result: 36.13 tok/s
-- Cumulative runtime improvement: about 70%
+- Cumulative runtime improvement: about 111%
 
-This remains unqualified. SGLang commits 3.765 tokens per step and completes each cycle in approximately 27.6 ms.
+The rebuilt wheel proved all four ranks used the default native flat GDN projection, transposed FP16 vocabulary head, and exact TP-local verification top-2 together. Artifact: `/results/20260829_235226-dflash-qualified-defaults-4cab08e6cfe6`.
+
+This remains unqualified. SGLang commits 3.765 tokens per step and completes each cycle in approximately 27.6 ms. The current cycle gap is now about 1.20x; acceptance is the larger remaining gap at about 1.50x.
 
 ## Confirmed runtime findings
 
