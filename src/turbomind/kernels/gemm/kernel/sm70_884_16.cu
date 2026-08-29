@@ -44,12 +44,20 @@ Registrar reg([](Collector& c, int /*arch*/) {
         c.add<F::Type<8, 256, 64, 1, 8, 1, D, S, 2, true, 1, 1>>();
         // clang-format on
         int device = -1;
-        TM_CUDA_CHECK(cudaGetDevice(&device));
-        TM_CHECK(device >= 0 && device < 16);
-        static std::atomic<bool> logged[16]{};
-        if (!logged[device].exchange(true, std::memory_order_relaxed)) {
-            std::fprintf(stderr, "SM70_FP16_FLAT_GDN_REGISTERED device=%d candidates=6\n", device);
+        const auto status = cudaGetDevice(&device);
+        if (status != cudaSuccess || device < 0 || device >= 16) {
+            std::fprintf(stderr,
+                         "SM70_FP16_FLAT_GDN_REGISTRATION_ERROR status=%d device=%d\n",
+                         static_cast<int>(status),
+                         device);
             std::fflush(stderr);
+        }
+        else {
+            static std::atomic<bool> logged[16]{};
+            if (!logged[device].exchange(true, std::memory_order_relaxed)) {
+                std::fprintf(stderr, "SM70_FP16_FLAT_GDN_REGISTERED device=%d candidates=6\n", device);
+                std::fflush(stderr);
+            }
         }
     }
 });
