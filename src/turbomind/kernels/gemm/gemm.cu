@@ -363,14 +363,15 @@ int Gemm::Run(const Operation&    operation,
 
     if (spec.kernel) {
         if (operation.tag && std::getenv("TM_GEMM_TRACE_FP16_M8")) {
+            const auto& gemm_desc = context.desc();
             std::ostringstream key;
-            key << operation.tag << ':' << desc->m << ':' << desc->n << ':' << desc->k << ':'
+            key << operation.tag << ':' << gemm_desc.m << ':' << gemm_desc.n << ':' << gemm_desc.k << ':'
                 << spec.kernel->desc().backend;
             if (impl_->traced_dispatches_.insert(key.str()).second) {
                 const auto tile = spec.kernel->cta_tile_size();
                 std::ostringstream line;
-                line << "GEMM_FP16_M8_ROUTE tag=" << operation.tag << " m=" << desc->m << " n=" << desc->n
-                     << " k=" << desc->k << " backend=" << spec.kernel->desc().backend
+                line << "GEMM_FP16_M8_ROUTE tag=" << operation.tag << " m=" << gemm_desc.m
+                     << " n=" << gemm_desc.n << " k=" << gemm_desc.k << " backend=" << spec.kernel->desc().backend
                      << " splits=" << spec.splits << " swizzle=" << spec.swizzle << " tile=" << tile.x << 'x'
                      << tile.y << 'x' << tile.z << '\n';
                 const auto text = line.str();
