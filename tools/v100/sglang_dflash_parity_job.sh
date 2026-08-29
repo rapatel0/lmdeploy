@@ -46,21 +46,20 @@ setsid env \
     SGLANG_MAMBA_CONV_DTYPE=float16 \
     SGLANG_MAMBA_SSM_DTYPE=float16 \
     SGLANG_ENABLE_SPEC_V2=1 \
-    SGLANG_V100_GROUPED_DECODE=0 \
-    SGLANG_V100_NATIVE_LINEAR_VERIFY=0 \
     sglang serve \
     --trust-remote-code \
     --model-path "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --dtype float16 \
     --kv-cache-dtype fp8_e5m2 \
-    --attention-backend "${SGLANG_PARITY_ATTENTION_BACKEND:-triton}" \
+    --attention-backend flash_attn_v100 \
     --linear-attn-prefill-backend triton \
     --linear-attn-decode-backend triton \
     --tensor-parallel-size "${TP:-4}" \
     --host 0.0.0.0 --port 8082 \
     --mem-fraction-static 0.75 \
     --context-length 16384 --max-total-tokens 16384 --max-running-requests 1 \
-    --disable-overlap-schedule --disable-cuda-graph \
+    --disable-overlap-schedule \
+    --cuda-graph-max-bs 1 --cuda-graph-bs 1 \
     --chunked-prefill-size 8192 \
     --mamba-full-memory-ratio 0.1 --mamba-scheduler-strategy extra_buffer \
     --speculative-algorithm DFLASH \

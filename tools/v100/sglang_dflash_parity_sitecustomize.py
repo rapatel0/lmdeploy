@@ -16,6 +16,7 @@ if _TRACE_ROOT:
     import torch
 
     _seen: set[str] = set()
+    _graph_refs: dict[str, torch.Tensor] = {}
     _ordinal = 0
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
 
@@ -50,13 +51,26 @@ if _TRACE_ROOT:
 
     def _dump(name: str, value, *, last_row: bool = False) -> None:
         global _ordinal
-        if not _armed() or name in _seen:
+        if name in _seen:
             return
         tensor = _tensor(value)
         if tensor is None or tensor.numel() == 0:
             return
         if last_row and tensor.ndim:
             tensor = tensor.reshape(-1, tensor.shape[-1])[-1:]
+        if not _armed():
+            # The production DFlash path executes from CUDA graphs. During
+            # startup capture, retain only references to graph-owned tensors;
+            # do not synchronize or write anything. Graph replay updates these
+            # same addresses for the audited request. The outer worker hook
+            # flushes them after the first armed real decode replay.
+            try:
+                capturing = torch.cuda.is_current_stream_capturing()
+            except Exception:
+                capturing = False
+            if capturing and name not in _graph_refs:
+                _graph_refs[name] = tensor.detach()
+            return
         tensor = tensor.detach().contiguous().cpu()
         dtype_name = {
             torch.float16: "f16",
@@ -221,3 +235,25 @@ if _TRACE_ROOT:
         return tokens, q_rows
 
     _df.CandidateSelector.sample_path = _traced_sample
+
+    # DFlash's inner Python hooks run only while CUDA graphs are captured, not
+    # when a real request replays them. Flush the retained graph-owned tensor
+    # references after the first armed decode/verify iteration. Extend/prefill
+    # must not flush: it precedes the first real draft replay.
+    import sglang.srt.speculative.dflash_worker_v2 as _dw
+
+    _orig_worker_forward = _dw.DFlashWorkerV2.forward_batch_generation
+
+    def _traced_worker_forward(self, batch, on_publish=None):
+        is_decode = not (
+            batch.forward_mode.is_extend()
+            or batch.is_extend_in_batch
+            or batch.forward_mode.is_idle()
+        )
+        output = _orig_worker_forward(self, batch, on_publish=on_publish)
+        if is_decode and _armed() and _graph_refs and "block.ids" not in _seen:
+            for name, tensor in _graph_refs.items():
+                _dump(name, tensor)
+        return output
+
+    _dw.DFlashWorkerV2.forward_batch_generation = _traced_worker_forward
