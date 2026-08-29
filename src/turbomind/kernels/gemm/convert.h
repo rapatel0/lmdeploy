@@ -29,8 +29,8 @@ std::array<const LayoutConverter*, 2> GetConverters(DataType data_type,
 // TM_GEMM_WEIGHT_PACK: unset/-1 = auto, 0 = force plain, 1 = force pack
 int WeightPackEnv();
 
-// TM_SM70_FP16_FLAT_GDN: 0 = legacy row-major cuBLAS, 1 = transposed
-// cuBLAS control, 2 = transposed with flat native SM70 candidates.
+// TM_SM70_FP16_FLAT_GDN: unset/2 = transposed with the qualified flat
+// native SM70 candidate, 0 = legacy row-major cuBLAS, 1 = transposed cuBLAS.
 int Sm70Fp16FlatGdnMode();
 
 // Free with `cudaFree`

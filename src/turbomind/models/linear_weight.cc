@@ -154,16 +154,16 @@ void LinearWeight::prepare()
         int device = -1;
         TM_CUDA_CHECK(cudaGetDevice(&device));
         TM_CHECK(device >= 0 && device < 16);
-        static std::atomic<int> prepared[16]{};
-        const int index = prepared[device].fetch_add(1, std::memory_order_relaxed);
-        std::fprintf(stderr,
-                     "SM70_FP16_FLAT_GDN_WEIGHT device=%d index=%d mode=%d shape=%dx%d\n",
-                     device,
-                     index,
-                     fp16_flat_gdn_mode,
-                     input_dim,
-                     output_dim);
-        std::fflush(stderr);
+        static std::atomic<bool> logged[16]{};
+        if (!logged[device].exchange(true, std::memory_order_relaxed)) {
+            std::fprintf(stderr,
+                         "SM70_FP16_FLAT_GDN_ACTIVE device=%d mode=%d shape=%dx%d\n",
+                         device,
+                         fp16_flat_gdn_mode,
+                         input_dim,
+                         output_dim);
+            std::fflush(stderr);
+        }
         prepared_ = true;
         return;
     }

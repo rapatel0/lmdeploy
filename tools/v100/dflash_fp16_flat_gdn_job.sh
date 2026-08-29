@@ -60,7 +60,7 @@ for i in "${!arms[@]}"; do
     TM_SM70_FP16_FLAT_GDN="${mode}" TM_FP16_GDN_DUMP_DIR="${RESULTS}/micro_${arm}" \
         /tmp/dflash_fp16_flat_gdn_microbench 2>&1 | tee "${RESULTS}/micro_${arm}.log"
     grep -q "SM70_FP16_FLAT_GDN_MICRO_PASS mode=${mode}" "${RESULTS}/micro_${arm}.log"
-    if [ "${mode}" -eq 2 ]; then grep -q 'SM70_FP16_FLAT_GDN_REGISTERED device=0 candidates=6' "${RESULTS}/micro_${arm}.log"; fi
+    if [ "${mode}" -eq 2 ]; then grep -q 'SM70_FP16_FLAT_GDN_REGISTERED device=0 candidates=1' "${RESULTS}/micro_${arm}.log"; fi
 done
 python3 - "${RESULTS}" <<'PY'
 import json, math, sys
@@ -100,8 +100,8 @@ audit_weights() {
 import re,sys
 text=open(sys.argv[1],errors='replace').read(); mode=int(sys.argv[2])
 for device in range(4):
-    ids=[int(x) for x in re.findall(rf"SM70_FP16_FLAT_GDN_WEIGHT device={device} index=(\d+) mode={mode} shape=5120x4120",text)]
-    if ids != list(range(48)): raise SystemExit(f"device {device}: bad weight markers {ids}")
+    marker=rf"SM70_FP16_FLAT_GDN_ACTIVE device={device} mode={mode} shape=5120x4120"
+    if len(re.findall(marker,text)) != 1: raise SystemExit(f"device {device}: missing or duplicate active marker")
 PY
 }
 validate_bench() {

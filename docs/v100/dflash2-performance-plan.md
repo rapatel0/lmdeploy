@@ -203,6 +203,17 @@ Artifact: `/results/20260829_122827-dflash-fp16-m8-backend-5909e4148e28`.
 
 Artifact: `/results/20260829_125003-dflash-gdn-value-cols-b85fb4e04bf8`.
 
+### A5.7. Add a purpose-built flat SM70 FP16 GDN GEMM — complete
+
+- Transpose only the 48 exact local `5120x4120` FP16 GDN weights at load time and expose an unpacked column-major B descriptor; the vocabulary head and all other weights remain unchanged.
+- M=1/M=7/M=8 deterministic outputs were bit-identical against legacy and transposed-cuBLAS controls.
+- The selected 8x64x64 native kernel covered every GDN projection on all four ranks with no cuBLAS fallback. GDN projection time fell from 4.209 to 3.725 ms per 48-layer range, or 11.50%.
+- Matched profiled cycle time improved 2.65%. A counter-ordered ten-trial confirmation improved unprofiled normalized cycle time from 36.963 to 36.338 ms, or 1.69%.
+- Stable 128-token identity passed exactly; the 256-token control hit only the established position-145 fresh-process near-tie.
+- Default-on for the exact SM70 shape; `TM_SM70_FP16_FLAT_GDN=0` retains row-major cuBLAS and `=1` retains the transposed-cuBLAS diagnostic control.
+
+Artifacts: `/results/20260829_135435-dflash-fp16-flat-gdn-31d8741be859`, `/results/20260829_140755-dflash-fp16-flat-gdn-followup`, and `/results/20260829_141145-dflash-fp16-flat-gdn-identity`.
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.

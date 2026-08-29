@@ -35,14 +35,10 @@ Registrar reg([](Collector& c, int /*arch*/) {
     }
     if (Sm70Fp16FlatGdnMode() == 2) {
         using F = Config_F16_Flat<kColMajor>;
-        // clang-format off
-        c.add<F::Type<8,  64, 32, 1, 2, 1, D, S, 2, true, 1, 1>>();
-        c.add<F::Type<8,  64, 64, 1, 2, 1, D, S, 2, true, 1, 1>>();
-        c.add<F::Type<8, 128, 32, 1, 4, 1, D, S, 2, true, 1, 1>>();
-        c.add<F::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 1>>();
-        c.add<F::Type<8, 256, 32, 1, 8, 1, D, S, 2, true, 1, 1>>();
-        c.add<F::Type<8, 256, 64, 1, 8, 1, D, S, 2, true, 1, 1>>();
-        // clang-format on
+        // The one-build sweep selected this exact 8x64x64 kernel on every TP
+        // rank. Keep only the winner to avoid retuning five rejected variants
+        // for each of the 48 separately cached GDN projections.
+        c.add<F::Type<8, 64, 64, 1, 2, 1, D, S, 2, true, 1, 1>>();
         int device = -1;
         const auto status = cudaGetDevice(&device);
         if (status != cudaSuccess || device < 0 || device >= 16) {
@@ -55,7 +51,7 @@ Registrar reg([](Collector& c, int /*arch*/) {
         else {
             static std::atomic<bool> logged[16]{};
             if (!logged[device].exchange(true, std::memory_order_relaxed)) {
-                std::fprintf(stderr, "SM70_FP16_FLAT_GDN_REGISTERED device=%d candidates=6\n", device);
+                std::fprintf(stderr, "SM70_FP16_FLAT_GDN_REGISTERED device=%d candidates=1\n", device);
                 std::fflush(stderr);
             }
         }

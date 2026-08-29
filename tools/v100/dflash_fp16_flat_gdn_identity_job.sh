@@ -15,8 +15,10 @@ run_identity() {
         --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01
 }
 set +e
-run_identity 128 2>&1 | tee "${RESULTS}/identity_128.log"; rc128=${PIPESTATUS[0]}
-run_identity 256 2>&1 | tee "${RESULTS}/identity_256.log"; rc256=${PIPESTATUS[0]}
+run_identity 128 2>&1 | tee "${RESULTS}/identity_128.log"
+rc128=${PIPESTATUS[0]}
+run_identity 256 2>&1 | tee "${RESULTS}/identity_256.log"
+rc256=${PIPESTATUS[0]}
 set -e
 python3 - "${RESULTS}" "${rc128}" "${rc256}" <<'PY'
 import json,re,sys
