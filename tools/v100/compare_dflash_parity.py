@@ -79,12 +79,32 @@ def main() -> None:
         ("block.ids", "block.ids", "ids"),
         ("block.embedding", "block.embedding", "numeric"),
         ("block.initial_norm", "layer0.attention.norm_output", "numeric"),
-        ("layer0.attention.conv_delta", "layer0.attention.conv_delta", "numeric"),
-        ("layer0.attention.conv_side0", "layer0.attention.conv_side0", "numeric"),
-        ("selector.candidate_ids", "selector.candidate_ids", "ids"),
-        ("selector.unary_scores", "selector.unary_scores", "numeric"),
-        ("selector.selected_ids", "selector.selected_ids", "ids"),
     ]
+    for layer in range(5):
+        prefix = f"layer{layer}"
+        ordered.extend(
+            [
+                (f"{prefix}.attention.conv_delta", f"{prefix}.attention.conv_delta", "right_half"),
+                (f"{prefix}.attention.conv_side0", f"{prefix}.attention.conv_side0", "numeric"),
+                (f"{prefix}.attention.conv_side1", f"{prefix}.attention.conv_side1", "numeric"),
+                (f"{prefix}.attention.norm_output", f"{prefix}.attention.norm_output", "numeric"),
+                (f"{prefix}.mlp.conv_delta", f"{prefix}.mlp.conv_delta", "right_half"),
+                (f"{prefix}.mlp.conv_side0", f"{prefix}.mlp.conv_side0", "numeric"),
+                (f"{prefix}.mlp.conv_side1", f"{prefix}.mlp.conv_side1", "numeric"),
+                (f"{prefix}.mlp.norm_output", f"{prefix}.mlp.norm_output", "numeric"),
+            ]
+        )
+        if layer < 4:
+            next_input = f"layer{layer + 1}.input.residual"
+            ordered.append((next_input, next_input, "numeric"))
+    ordered.extend(
+        [
+            ("selector.candidate_ids", "selector.candidate_ids", "ids"),
+            ("selector.unary_scores", "selector.unary_scores", "numeric"),
+            ("selector.hidden", "selector.hidden", "numeric"),
+            ("selector.selected_ids", "selector.selected_ids", "ids"),
+        ]
+    )
     report = []
     earliest = None
     for lm_name, sg_name, kind in ordered:
@@ -93,6 +113,14 @@ def main() -> None:
         else:
             left = load_tensor(lm_dir, lm[lm_name])
             right = load_tensor(sg_dir, sg[sg_name])
+            if (
+                kind == "right_half"
+                and left.ndim == right.ndim
+                and left.shape[:-1] == right.shape[:-1]
+                and left.shape[-1] == 2 * right.shape[-1]
+            ):
+                left = left[..., right.shape[-1] :]
+                kind = "numeric"
             if left.size != right.size:
                 row = {
                     "lmdeploy": lm_name,

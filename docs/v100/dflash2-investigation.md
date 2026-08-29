@@ -321,6 +321,8 @@ Commit `4fe99716` completed a four-rank TurboMind-only context replay isolation.
 
 Artifacts: `/results/20260829_032508-sglang-dflash-parity-b753831db680` and `/results/20260829_035037-dflash-context-replay-4fe9971622bc`.
 
+A follow-up `TM_DFLASH_FULL_PRODUCT_RMSNORM` arm exactly reproduced SGLang's SM70 `block.initial_norm` and brought the next grouped-convolution projection and side-0 output within FP16 parity tolerance. It did not improve acceptance: both five-trial arms had commit length `2.669`. Acceptance-normalized cycle cost changed from `41.76` to `41.98` ms, about 0.5% slower. Audited identity hit the runtime's known unstable position-220 split. The first subsequent material mismatch is now the attention branch before output convolution; under reduce-first parity, the layer-0 reduced pre-convolution output differs at max abs `6.92`, RMS `0.0746`. Because the exact norm match produced no acceptance or speed gain, the kernel and flag were removed. Artifacts: `/results/20260829_040158-dflash-full-product-rmsnorm-1dced68ec22b` and `/results/20260829_041033-dflash-reduce-first-parity`.
+
 At LMDeploy's current cycle cost, immediately matching SGLang acceptance would improve throughput materially but still not guarantee 2.2x. Both fidelity and cycle cost need work.
 
 The next acceptance investigation is ordered as follows:

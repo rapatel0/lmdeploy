@@ -85,12 +85,11 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Compare both convolution sides bitwise from identical FP16 inputs, deltas, and base kernels.
   - Done when: arithmetic matches or required FP16/FP32 narrowing points are identified and reproduced.
 
-- [ ] **Compare residual RMSNorm reduction and rounding schedules.**
-  - Classification: active draft-fidelity mismatch.
-  - Same-input parity makes block embeddings bit-identical, then first diverges at `block.initial_norm`: max abs `0.015625`, RMS `0.000728`.
-  - SGLang's SM70 Laguna RMSNorm multiplies normalized activations by BF16-rounded weights in FP32 before BF16 output rounding. TurboMind's generic non-zero-centered RMSNorm narrows the normalized activation to FP16 before multiplying the weight, then rounds the result to BF16.
-  - Next experiment: a flagged TurboMind full-product/BF16-output initial RMSNorm arm, using the same build for parity, five-trial acceptance, and audited identity.
-  - Done when: the V100 SGLang kernel's reduction/rounding schedule is matched or shown immaterial.
+- [x] **Compare residual RMSNorm reduction and rounding schedules.**
+  - A flagged full-product/BF16-output arm made `block.initial_norm` bit-exact and brought layer-0 convolution projection/side-0 within FP16 parity tolerance.
+  - Acceptance was unchanged at commit length `2.669`; normalized cycle cost regressed from `41.76` to `41.98` ms. Audited identity hit only the known position-220 instability.
+  - The exact local fidelity fix did not improve output economics, so its kernel and flag were removed. The next material mismatch is layer-0 attention before output convolution: reduce-first max abs `6.92`, RMS `0.0746`.
+  - Artifacts: `/results/20260829_040158-dflash-full-product-rmsnorm-1dced68ec22b` and `/results/20260829_041033-dflash-reduce-first-parity`.
 
 ## P1: speculative cycle cost
 

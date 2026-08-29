@@ -34,15 +34,6 @@ void invokeDFlashLagunaSilu(Tensor&       output,
 
 void invokeDFlashScaleRows(Tensor& value, const Tensor& row_scales, float scale, cudaStream_t stream);
 
-/// Match SGLang Laguna's SM70 no-residual RMSNorm: retain the normalized
-/// activation and weight product in FP32, then round the output through BF16.
-void invokeDFlashInitialRMSNorm(Tensor&       output,
-                                const Tensor& input,
-                                const Tensor& weight,
-                                float         eps,
-                                bool          zero_centered,
-                                cudaStream_t  stream);
-
 void invokeDFlashResidualRMSNorm(Tensor&       output,
                                  Tensor&       residual,
                                  const Tensor& reduced,

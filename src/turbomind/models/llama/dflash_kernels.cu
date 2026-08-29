@@ -124,47 +124,6 @@ __global__ void DFlashScaleRowsHalf(__half* value, const float* row_scales, int 
     }
 }
 
-__global__ void DFlashInitialRMSNormHalf(__half*       output,
-                                          const __half* input,
-                                          const __half* weight,
-                                          int           hidden,
-                                          float         eps,
-                                          bool          zero_centered)
-{
-    constexpr int kThreads = 512;
-    constexpr int kVec = 8;
-    const int token = blockIdx.x;
-    float accum[kVec]{};
-    for (int base = threadIdx.x * kVec; base < hidden; base += kThreads * kVec) {
-#pragma unroll
-        for (int c = 0; c < kVec; ++c) {
-            if (base + c < hidden) {
-                const float value = __half2float(input[token * hidden + base + c]);
-                accum[c] += value * value;
-            }
-        }
-    }
-    float sum = 0.f;
-#pragma unroll
-    for (int c = 0; c < kVec; ++c) {
-        sum += accum[c];
-    }
-    using BlockReduce = cub::BlockReduce<float, kThreads>;
-    __shared__ typename BlockReduce::TempStorage reduce_storage;
-    __shared__ float inverse_rms;
-    sum = BlockReduce(reduce_storage).Sum(sum);
-    if (threadIdx.x == 0) {
-        inverse_rms = rsqrtf(sum / hidden + eps);
-    }
-    __syncthreads();
-    for (int channel = threadIdx.x; channel < hidden; channel += kThreads) {
-        const int index = token * hidden + channel;
-        const float gamma = RoundBFloat16(__half2float(weight[channel])) + (zero_centered ? 1.f : 0.f);
-        const float normalized = RoundBFloat16(__half2float(input[index]) * inverse_rms * gamma);
-        output[index] = __float2half_rn(normalized);
-    }
-}
-
 __global__ void DFlashResidualRMSNormHalf(__half*       output,
                                           float*        residual,
                                           const __half* reduced,
@@ -564,28 +523,6 @@ void invokeDFlashScaleRows(Tensor& value, const Tensor& row_scales, float scale,
                                                         value.shape(0),
                                                         value.shape(1),
                                                         scale);
-    TM_CUDA_CHECK(cudaGetLastError());
-}
-
-void invokeDFlashInitialRMSNorm(Tensor&       output,
-                                const Tensor& input,
-                                const Tensor& weight,
-                                float         eps,
-                                bool          zero_centered,
-                                cudaStream_t  stream)
-{
-    TM_CHECK_EQ(output.dtype(), kHalf);
-    TM_CHECK_EQ(input.dtype(), kHalf);
-    TM_CHECK_EQ(weight.dtype(), kHalf);
-    TM_CHECK(output.shape() == input.shape());
-    TM_CHECK_EQ(output.ndim(), 2);
-    TM_CHECK_EQ(output.shape(1), weight.size());
-    DFlashInitialRMSNormHalf<<<output.shape(0), 512, 0, stream>>>((__half*)output.raw_data(),
-                                                                 (const __half*)input.raw_data(),
-                                                                 (const __half*)weight.raw_data(),
-                                                                 output.shape(1),
-                                                                 eps,
-                                                                 zero_centered);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
