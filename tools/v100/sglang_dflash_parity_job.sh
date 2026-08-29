@@ -39,6 +39,7 @@ wait_for_server() {
 setsid env \
     PYTHONPATH=/tmp/dflash-parity-site:/opt/sglang/python \
     SGLANG_DFLASH_PARITY_DIR="${RESULTS}/trace" \
+    SGLANG_DFLASH_PARITY_ARM_FILE="${RESULTS}/trace/armed" \
     FLASHINFER_DISABLE_VERSION_CHECK=1 \
     NCCL_P2P_LEVEL=NVL \
     SGLANG_CUSTOM_ALLREDUCE_ALGO=1stage \
@@ -70,6 +71,9 @@ setsid env \
 server_pid=$!
 wait_for_server
 
+# Arm the in-memory hooks only after all synthetic server warm-up blocks have
+# finished, immediately before the first audited client request.
+touch "${RESULTS}/trace/armed"
 python3 /job/sglang_dflash_parity_client.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --corpus /sglang-corpus \

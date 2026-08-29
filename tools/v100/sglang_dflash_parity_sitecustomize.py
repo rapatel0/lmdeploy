@@ -17,6 +17,15 @@ if _TRACE_ROOT:
 
     _seen: set[str] = set()
     _ordinal = 0
+    _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
+
+    def _armed() -> bool:
+        # SGLang executes synthetic DFlash blocks while warming kernels during
+        # server startup. The external client creates this shared marker only
+        # after health_generate is ready, immediately before the audited real
+        # request. Keeping every hook inert until then prevents a valid-looking
+        # trace of dummy token IDs and avoids synchronizing warm-up kernels.
+        return not _arm_file or Path(_arm_file).exists()
 
     def _safe_int(value, default: int) -> int:
         try:
@@ -41,7 +50,7 @@ if _TRACE_ROOT:
 
     def _dump(name: str, value, *, last_row: bool = False) -> None:
         global _ordinal
-        if name in _seen:
+        if not _armed() or name in _seen:
             return
         tensor = _tensor(value)
         if tensor is None or tensor.numel() == 0:
