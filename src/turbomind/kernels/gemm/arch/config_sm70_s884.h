@@ -171,7 +171,7 @@ using Config_E4M3_Fused = Sm70_s884<Operand_A<half>,             // A
 
 template<Order raster_order, int group_axis = -1>
 using Config_F16 = Sm70_s884<Operand_A<half>,       // A
-                             Transform_Default,     // tarnsform A
+                             Transform_Default,     // transform A
                              VoidOperand,           // U
                              Operand_B_Pack<half>,  // B
                              Transform_Default,     // transform B
@@ -180,5 +180,20 @@ using Config_F16 = Sm70_s884<Operand_A<half>,       // A
                              half,                  // Tc
                              raster_order,
                              group_axis>;
+
+// Dense FP16 weights are transposed once to physical (N,K), represented as a
+// logical column-major (K,N) matrix. Unlike grouped MoE weights, they are not
+// HMMA-packed, so the kernel must advertise pack=0 and flat striding.
+template<Order raster_order>
+using Config_F16_Flat = Sm70_s884<Operand_A<half>,   // A
+                                  Transform_Default, // transform A
+                                  VoidOperand,       // U
+                                  Operand_B<half>,   // unpacked B
+                                  Transform_Default, // transform B
+                                  VoidOperand,       // V
+                                  kRowMajor,         // order_C
+                                  half,              // Tc
+                                  raster_order,
+                                  -1>;
 
 }  // namespace turbomind::gemm::sm70_s884

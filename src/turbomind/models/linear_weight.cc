@@ -13,6 +13,9 @@
 #include "src/turbomind/utils/cuda_utils.h"
 #include "src/turbomind/utils/memory_utils.h"
 
+#include <atomic>
+#include <cstdio>
+
 namespace turbomind {
 
 LinearWeight::LinearWeight(const core::LinearConfig& cfg):
@@ -129,6 +132,41 @@ void LinearWeight::prepare()
     }
 
     auto stream = core::Context::stream().handle();
+
+    const int fp16_flat_gdn_mode = gemm::Sm70Fp16FlatGdnMode();
+    if (fp16_flat_gdn_mode && getSMVersion() == 70 && !is_grouped_ && input_dim == 5120 && output_dim == 4120
+        && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
+        // The SM70 HMMA B operand consumes output-major rows with K contiguous.
+        // Preserve the logical KxN matrix by describing physical (N,K) storage
+        // as column-major KxN. Mode 1 isolates this layout under cuBLAS; mode 2
+        // additionally registers unpacked flat native candidates.
+        Tensor trans{{weight.shape(1), weight.shape(0)}, weight.dtype(), kDEVICE};
+        invokeTransposeAxis01(
+            (half*)trans.raw_data(), (half*)weight.raw_data(), weight.shape(0), weight.shape(1), 1, stream);
+        weight       = std::move(trans);
+        k_desc.type  = weight.dtype();
+        k_desc.order = gemm::kColMajor;
+        k_desc.rows  = input_dim;
+        k_desc.cols  = output_dim;
+        k_desc.ld    = input_dim;
+        k_desc.pack  = {};
+
+        int device = -1;
+        TM_CUDA_CHECK(cudaGetDevice(&device));
+        TM_CHECK(device >= 0 && device < 16);
+        static std::atomic<int> prepared[16]{};
+        const int index = prepared[device].fetch_add(1, std::memory_order_relaxed);
+        std::fprintf(stderr,
+                     "SM70_FP16_FLAT_GDN_WEIGHT device=%d index=%d mode=%d shape=%dx%d\n",
+                     device,
+                     index,
+                     fp16_flat_gdn_mode,
+                     input_dim,
+                     output_dim);
+        std::fflush(stderr);
+        prepared_ = true;
+        return;
+    }
 
     // TM_GEMM_WEIGHT_PACK=0: keep load-time storage; no transpose / tiled pack.
     if (gemm::WeightPackEnv() == 0) {

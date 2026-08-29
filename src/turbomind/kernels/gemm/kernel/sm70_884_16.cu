@@ -1,8 +1,12 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 
 #include "src/turbomind/kernels/gemm/arch/config_sm70_s884.h"
+#include "src/turbomind/kernels/gemm/convert.h"
 #include "src/turbomind/kernels/gemm/registrar.h"
 #include "src/turbomind/kernels/gemm/types.h"
+
+#include <atomic>
+#include <cstdio>
 
 namespace turbomind::gemm {
 
@@ -28,6 +32,25 @@ Registrar reg([](Collector& c, int /*arch*/) {
         c.add<C::Type< 16, 128,  32, 1, 4, 1, D, S, 2, true, 1, 1>>();
         c.add<C::Type<  8, 128,  64, 1, 4, 1, D, S, 2, true, 1, 1>>();
         // clang-format on
+    }
+    if (Sm70Fp16FlatGdnMode() == 2) {
+        using F = Config_F16_Flat<kColMajor>;
+        // clang-format off
+        c.add<F::Type<8,  64, 32, 1, 2, 1, D, S, 2, true, 1, 1>>();
+        c.add<F::Type<8,  64, 64, 1, 2, 1, D, S, 2, true, 1, 1>>();
+        c.add<F::Type<8, 128, 32, 1, 4, 1, D, S, 2, true, 1, 1>>();
+        c.add<F::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 1>>();
+        c.add<F::Type<8, 256, 32, 1, 8, 1, D, S, 2, true, 1, 1>>();
+        c.add<F::Type<8, 256, 64, 1, 8, 1, D, S, 2, true, 1, 1>>();
+        // clang-format on
+        int device = -1;
+        TM_CUDA_CHECK(cudaGetDevice(&device));
+        TM_CHECK(device >= 0 && device < 16);
+        static std::atomic<bool> logged[16]{};
+        if (!logged[device].exchange(true, std::memory_order_relaxed)) {
+            std::fprintf(stderr, "SM70_FP16_FLAT_GDN_REGISTERED device=%d candidates=6\n", device);
+            std::fflush(stderr);
+        }
     }
 });
 }  // namespace
