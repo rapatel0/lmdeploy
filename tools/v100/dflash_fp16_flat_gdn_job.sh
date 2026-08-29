@@ -36,7 +36,11 @@ PY
 LIBDIR="$(dirname "${LIB}")"
 FMT_HEADER="$(find /src/build -path '*/fmt/format.h' -print -quit)"
 FMT_INCLUDE="${FMT_HEADER%/fmt/format.h}"
-PYLIB="$(find /usr /opt -name 'libpython3.12.so*' -type f -print -quit 2>/dev/null)"
+PYLIB="$(find /usr /opt -name 'libpython3*.so*' -print -quit 2>/dev/null)"
+[ -n "${LIB}" ] && [ -n "${FMT_HEADER}" ] && [ -n "${PYLIB}" ] || {
+    echo "FAIL: microbench link inputs unavailable LIB=${LIB} FMT_HEADER=${FMT_HEADER} PYLIB=${PYLIB}" >&2
+    exit 2
+}
 "${NVCC}" -std=c++17 -O2 -lineinfo -gencode arch=compute_70,code=sm_70 \
     -I/src -I"${FMT_INCLUDE}" /job/dflash_fp16_flat_gdn_microbench.cu "${LIB}" \
     -Xlinker -rpath -Xlinker "${LIBDIR}" -lcudart -Xlinker "${PYLIB}" \
