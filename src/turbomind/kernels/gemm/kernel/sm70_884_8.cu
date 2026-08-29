@@ -26,25 +26,26 @@ Registrar reg([](Collector& c, int /*arch*/) {
         c.add<C::Type< 32, 128,  32, 1, 4, 1, D, S, 2, true, 1, 128>>();
         c.add<C::Type< 16, 128,  32, 1, 4, 1, D, S, 2, true, 1, 128>>();
         const char* fused_decode = std::getenv("TM_SM70_FP8_M8_FUSED_DECODE");
-        if (fused_decode && std::strcmp(fused_decode, "1") == 0) {
+        const bool  decode_only  = fused_decode && std::strcmp(fused_decode, "1") == 0;
+        const bool  combined     = !fused_decode || std::strcmp(fused_decode, "2") == 0;
+        if (decode_only) {
             using F = Config_E4M3_Fused<kColMajor, 0>;
             c.add<F::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 128>>();
         }
-        else if (fused_decode && std::strcmp(fused_decode, "2") == 0) {
+        else if (combined) {
             using F = Config_E4M3_Fused<kColMajor, 0>;
             c.add<F::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 128, -1, -1, true>>();
         }
         else {
             c.add<C::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 128>>();
         }
-        if (fused_decode
-            && (std::strcmp(fused_decode, "1") == 0 || std::strcmp(fused_decode, "2") == 0)) {
+        if (decode_only || combined) {
             int device = -1;
             cudaGetDevice(&device);
             std::fprintf(stderr,
-                         "SM70_FP8_M8_FUSED_DECODE_REGISTERED device=%d mode=%s\n",
+                         "SM70_FP8_M8_FUSED_DECODE_REGISTERED device=%d mode=%d\n",
                          device,
-                         fused_decode);
+                         combined ? 2 : 1);
         }
         // clang-format on
     }

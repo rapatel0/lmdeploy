@@ -173,6 +173,17 @@ Artifacts: `/results/20260829_102845-dflash-fp8-m8-ncu-a546ab05061f`.
 
 Artifacts: `/results/20260829_110041-dflash-fp8-m8-reuse-dcb5e4afcbba`, `/results/20260829_110741-dflash-fp8-m8-reuse-followup-7469009eb87c`, and `/results/20260829_111237-dflash-fp8-m8-reuse-final-0d83abe6d2c8`.
 
+### A5.4. Fuse E4M3 rebias into K128 scales and retain the scale — qualified
+
+- The specialized transform removes the fixed per-value x256 rebias multiply by multiplying each FP16 K128 scale by the exact power-of-two once. The combined arm retains that adjusted scale across sixteen K8 atoms.
+- Conversion-only improved aggregate profiled M=8 time 0.71%, unprofiled normalized cycle 0.49%, and profiled cycle 0.17%; it did not independently clear the material-gain gates.
+- The combined arm improved aggregate M=8 time 5.78%, unprofiled normalized cycle 2.52%, and profiled cycle 0.86%. Five-trial decode increased from 67.88 to 70.64 tok/s while normalized cycle time fell from 38.760 to 37.783 ms.
+- Registers fell from 94 to 93 per thread. Isolated gate/up, down, and output launches improved by 10.6%, 8.0%, and 1.0%.
+- Exhaustive byte/scale conversion parity, bitwise outputs for all three production GEMMs, all 407 target FP8 scale tensors, exact audited identity, activation, build provenance, NCU, and Nsight gates passed.
+- Default-on; `TM_SM70_FP8_M8_FUSED_DECODE=0` is the exact legacy control, `=1` is conversion-only, and `=2` explicitly selects the combined default.
+
+Artifact: `/results/20260829_114211-dflash-fp8-m8-fused-decode-64fa191aa854`.
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.
