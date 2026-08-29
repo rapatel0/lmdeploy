@@ -246,7 +246,10 @@ void UnifiedDecoder::AllreduceResidualRMSnorm(Tensor&       hidden_states,
     }
 }
 
-void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<WeightType*>& weights)
+void UnifiedDecoder::Forward(int                             phase,
+                             TensorMap&                      args,
+                             const std::vector<WeightType*>& weights,
+                             bool                            dflash_target_verification)
 {
     TM_FUNCTION_SCOPE();
     /**
@@ -346,7 +349,15 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
         }
         else {
             auto* attn = weights.at(layer)->attention.get();
-            attn_layer_->Forward({phase, local_hidden_states, local_hidden_states, attn, layer});
+            attn_layer_->Forward({phase,
+                                  local_hidden_states,
+                                  local_hidden_states,
+                                  attn,
+                                  layer,
+                                  1.f,
+                                  false,
+                                  false,
+                                  dflash_target_verification});
         }
 
         TM_DEBUG_TENSOR(local_hidden_states, Concat("attn_block", layer), 2);

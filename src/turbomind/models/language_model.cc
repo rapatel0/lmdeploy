@@ -131,6 +131,15 @@ struct LanguageModel::Impl {
         /// Per-row key length for this step, host-side, all rows.
         std::vector<int> seq_lens;
 
+        /// Committed frontier consumed by the next DFlash proposal.
+        ///
+        /// Setup initializes ordinary decode rows from the submitted key span.
+        /// Rollback replaces verification rows with the accepted frontier. The
+        /// vectors are phase-owned because Setup for another phase can overlap
+        /// this phase's executor work.
+        std::vector<int>  next_seq_lens;
+        std::vector<char> next_seq_lens_valid;
+
         /// Per-row submitted token count this step, host-side. The MTP
         /// prefill fill needs the chunk boundaries inside the flat input_ids
         /// tensor, and `requests` is gone from the map by Forward.
@@ -897,6 +906,8 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
 
     d.uids.resize(rc.size());
     d.seq_lens.resize(rc.size());
+    d.next_seq_lens.assign(rc.size(), 0);
+    d.next_seq_lens_valid.assign(rc.size(), 0);
     d.input_lens.resize(rc.size());
     d.rows.resize(rc.size());
     d.num_drafts.resize(rc.size());
@@ -928,6 +939,15 @@ void LanguageModel::Impl::Setup(int phase, TensorMap& env)
         // to know how much slack each row has left in its last KV block.
         d.seq_lens[i]   = c.history_len + c.inflight_input_len + c.input_len;
         d.input_lens[i] = c.input_len;
+        // An ordinary forward drafts directly after Forward, without running
+        // Rollback. Its committed attention frontier is the submitted key span
+        // captured above. Verification submits K+1 speculative positions, so
+        // its Setup value is intentionally invalid until Rollback publishes the
+        // accepted frontier.
+        if (c.num_drafts == 0) {
+            d.next_seq_lens[i]       = d.seq_lens[i];
+            d.next_seq_lens_valid[i] = 1;
+        }
         if (TM_UNLIKELY(!c.autoregres)) {
             d.sequence_length_host[i] = c.history_len + c.inflight_input_len + c.input_len;
         }
@@ -1218,13 +1238,15 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         const char* s = std::getenv("TM_GDN_TRACE_STATE");
         return s && s[0] == '1';
     }();
-    if (gdn_rollback_ && (HasDraftsToVerify(phase) || TM_UNLIKELY(trace_gdn_state))) {
+    const bool has_drafts_to_verify = HasDraftsToVerify(phase);
+    const bool dflash_target_verification = dflash_predictor_ && has_drafts_to_verify;
+    if (gdn_rollback_ && (has_drafts_to_verify || TM_UNLIKELY(trace_gdn_state))) {
         unified_decoder_->SnapshotGDNState(phase);
     }
 
     {
-        NvtxScope scope(HasDraftsToVerify(phase) ? "targetVerify" : "targetDecode");
-        unified_decoder_->Forward(phase, env, weights_.layers_list());
+        NvtxScope scope(has_drafts_to_verify ? "targetVerify" : "targetDecode");
+        unified_decoder_->Forward(phase, env, weights_.layers_list(), dflash_target_verification);
     }
 
     if (dflash_predictor_ && env.try_("dflash_target_hidden") && !unified_decoder_->is_warm_up()) {
@@ -1502,11 +1524,32 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     Buffer_<int> k_offsets = env.at("k_offsets").buffer();
     PrefixSum(sequence_length_.front().data<int>(), bsz, k_offsets.data(), core::Context::stream().handle());
 
-    Buffer_<int> tips{bsz, kCPU};
-    Copy(sequence_length_.front().buffer().slice(0, bsz), tips);
-    core::Context::stream().Sync();
+    static const bool legacy_frontier_readback = [] {
+        const char* value = std::getenv("TM_DFLASH_LEGACY_FRONTIER_READBACK");
+        return value && value[0] == '1';
+    }();
+    const bool host_frontier_valid = d.next_seq_lens.size() == (size_t)bsz
+                                     && d.next_seq_lens_valid.size() == (size_t)bsz
+                                     && std::all_of(d.next_seq_lens_valid.begin(),
+                                                    d.next_seq_lens_valid.end(),
+                                                    [](char valid) { return valid != 0; });
+    const std::vector<int>* tips = &d.next_seq_lens;
+    std::vector<int>        fallback_tips;
+    if (legacy_frontier_readback || !host_frontier_valid) {
+        // Fail safely when a new executor path reaches drafting without host
+        // frontier publication. This is also the explicit A/B legacy control.
+        Buffer_<int> tips_host{bsz, kCPU};
+        Copy(sequence_length_.front().buffer().slice(0, bsz), tips_host);
+        core::Context::stream().Sync();
+        fallback_tips.assign(tips_host.data(), tips_host.data() + bsz);
+        tips = &fallback_tips;
+        static std::atomic<bool> fallback_reported{false};
+        if (!legacy_frontier_readback && !fallback_reported.exchange(true)) {
+            TM_LOG_WARNING("[DFlash2] missing host frontier; using legacy device readback");
+        }
+    }
     for (int i = 0; i < bsz; ++i) {
-        if (d.rows[i]->max_seq_len - tips[i] - 1 < K) {
+        if (d.rows[i]->max_seq_len - (*tips)[i] - 1 < K) {
             for (auto* row : d.rows) {
                 row->pending_num_drafts = 0;
             }
@@ -1516,7 +1559,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
 
     auto anchors = autoreg_ids_.slice(0, bsz);
     if (bsz == 1 && K == 7) {
-        dflash_predictor_->BeginParityBlock(anchors, d.uids[0], tips[0], d.input_lens[0]);
+        dflash_predictor_->BeginParityBlock(anchors, d.uids[0], (*tips)[0], d.input_lens[0]);
     }
     Buffer_<int> candidates = dflash_predictor_->DraftCandidates(anchors, phase, env);
     Buffer_<int> host = dflash_predictor_->ParityActive() ?
@@ -2341,6 +2384,14 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
             d.skip_draft[i] = 1;
         }
     }
+
+    // DraftDFlashTokens runs later on this executor thread and needs the exact
+    // committed frontier only for request-limit eligibility and parity labels.
+    // Keep that host fact here instead of reading the device publication back.
+    // This covers accepted prefixes, no-commit restore, accepted EOS without a
+    // bonus, verifier-bonus EOS, and generation-limit clamps.
+    d.next_seq_lens.assign(seq_lens.data(), seq_lens.data() + bsz);
+    d.next_seq_lens_valid.assign(bsz, 1);
 
     if (std::find(eos_hit_.begin(), eos_hit_.begin() + bsz, true) != eos_hit_.begin() + bsz) {
         Buffer_<bool> host{bsz, kCPU};

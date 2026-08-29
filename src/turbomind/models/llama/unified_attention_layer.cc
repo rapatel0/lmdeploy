@@ -22,10 +22,12 @@
 #include "src/turbomind/engine/block.h"
 #include <algorithm>
 #include <cstdlib>
-#include <string>
 #include <functional>
 #include <math.h>
+#include <memory>
 #include <numeric>
+#include <string>
+#include <unordered_map>
 
 #include "src/turbomind/core/allocator.h"
 #include "src/turbomind/core/check.h"
@@ -85,6 +87,44 @@ struct BlockConfig {
     }
 };
 // clang-format on
+
+bool UseDFlashTargetAttentionGraph()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_TARGET_ATTENTION_GRAPH");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
+bool TraceDFlashAttentionGraph()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_GRAPH_TRACE");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
+bool DFlashGraphDiagnosticsEnabled()
+{
+    static const bool enabled = [] {
+        constexpr const char* names[] = {"TM_DFLASH_PARITY_DIR",
+                                         "TM_DFLASH_CAPTURE",
+                                         "TM_DFLASH_TRACE_SELECTOR",
+                                         "TM_SPEC_TRACE",
+                                         "TM_SPEC_LOGIT_PARITY",
+                                         "TM_GDN_TRACE_STATE"};
+        for (const char* name : names) {
+            const char* value = std::getenv(name);
+            if (value && value[0] && value[0] != '0') {
+                return true;
+            }
+        }
+        return false;
+    }();
+    return enabled;
+}
 }  // namespace
 
 struct AttentionData {
@@ -162,6 +202,51 @@ struct AttentionData {
         bool   initialized{};
         bool   traced{};
     } dflash_workspace;
+
+    // Target verification uses head_dim=256, while the draft uses head_dim=128.
+    // Keep separate storage so one path cannot rebind graph-captured addresses
+    // or reinterpret the other path's QKV and output-gate region.
+    struct DFlashTargetWorkspace {
+        Tensor qkv;
+        Tensor attention;
+        int    max_tokens{};
+        int    qkv_width{};
+        int    attention_width{};
+        int    local_kv_heads{};
+        int    head_dim{};
+        bool   initialized{};
+        bool   traced{};
+    } dflash_target_workspace;
+
+    struct TargetAttentionGraph {
+        ~TargetAttentionGraph()
+        {
+            if (exec) {
+                cudaGraphExecDestroy(exec);
+            }
+            if (graph) {
+                cudaGraphDestroy(graph);
+            }
+        }
+
+        cudaGraph_t     graph{};
+        cudaGraphExec_t exec{};
+        int             warmups{};
+        bool            disabled{};
+        bool            capture_logged{};
+        bool            replay_logged{};
+        const void*     input_ptr{};
+        const void*     output_ptr{};
+        const void*     qkv_ptr{};
+        const void*     attention_ptr{};
+        const void*     block_ptrs_ptr{};
+        const void*     block_offsets_ptr{};
+        const void*     q_offsets_ptr{};
+        const void*     k_offsets_ptr{};
+    };
+
+    std::unordered_map<const AttentionWeight*, std::unordered_map<int, std::unique_ptr<TargetAttentionGraph>>>
+        target_attention_graphs;
 
     // int dbg_offset;
     // int dbg_size;
@@ -634,6 +719,199 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
 {
     TM_FUNCTION_SCOPE();
 
+    const int token_num = p.input.shape(0);
+    if (token_num == 0) {
+        return;
+    }
+
+    auto& d = *data_.at(p.phase);
+    const auto& weights = *p.weights;
+    static const bool enable_dflash_paged_q8 = [] {
+        const char* value = std::getenv("TM_DFLASH_PAGED_Q8");
+        return value && value[0] == '1';
+    }();
+    const bool eligible = UseDFlashTargetAttentionGraph() && enable_dflash_paged_q8
+                          && p.dflash_target_verification && !p.kv_only && !p.use_dflash_workspace
+                          && engine_param_.speculative_algorithm == "dflash2"
+                          && engine_param_.num_draft_tokens == 7
+                          && engine_param_.speculative_dflash_block_size == 8 && arch_ == 70 && quant_policy_ == 0
+                          && token_num == 8 && d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == 8
+                          && weights.causal && !weights.is_mla() && weights.w_qkv && weights.w_qkv->output_dim
+                          && weights.wo && !DFlashGraphDiagnosticsEnabled();
+    if (!eligible) {
+        p.use_dflash_target_workspace = false;
+        ForwardImpl(p);
+        return;
+    }
+
+    const int local_heads     = weights.head_num / weights.tp_size;
+    const int local_kv_heads  = weights.kv_head_num / weights.tp_size;
+    const int qkv_width       = weights.w_qkv->output_dim;
+    const int attention_width = local_heads * weights.head_dim;
+    auto&     workspace       = d.dflash_target_workspace;
+    if (!workspace.initialized) {
+        workspace.qkv             = {{8, qkv_width}, engine_param_.data_type, kDEVICE};
+        workspace.attention       = {{8, attention_width}, engine_param_.data_type, kDEVICE};
+        workspace.max_tokens      = 8;
+        workspace.qkv_width       = qkv_width;
+        workspace.attention_width = attention_width;
+        workspace.local_kv_heads = local_kv_heads;
+        workspace.head_dim = weights.head_dim;
+        workspace.initialized = true;
+    }
+
+    // A model with heterogeneous target-attention widths uses the ordinary
+    // path for non-matching layers. Rebinding this shared workspace would
+    // invalidate graph node parameters captured for earlier layers.
+    const bool dimensions_match = workspace.qkv_width == qkv_width
+                                  && workspace.attention_width == attention_width
+                                  && workspace.local_kv_heads == local_kv_heads
+                                  && workspace.head_dim == weights.head_dim;
+    if (!dimensions_match) {
+        p.use_dflash_target_workspace = false;
+        ForwardImpl(p);
+        return;
+    }
+    p.use_dflash_target_workspace = true;
+
+    if (TraceDFlashAttentionGraph() && !workspace.traced) {
+        workspace.traced = true;
+        TM_LOG_INFO("[DFlash2] target attention workspace phase={} qkv={} attention={} qkv_width={} "
+                    "attention_width={} kv_heads={} head_dim={}",
+                    p.phase,
+                    (uintptr_t)workspace.qkv.raw_data(),
+                    (uintptr_t)workspace.attention.raw_data(),
+                    workspace.qkv_width,
+                    workspace.attention_width,
+                    workspace.local_kv_heads,
+                    workspace.head_dim);
+    }
+
+    auto& graph_ptr = d.target_attention_graphs[p.weights][p.layer_id];
+    if (!graph_ptr) {
+        graph_ptr = std::make_unique<AttentionData::TargetAttentionGraph>();
+    }
+    auto& graph = *graph_ptr;
+    if (graph.disabled) {
+        ForwardImpl(p);
+        return;
+    }
+
+    auto bind_or_check = [](const void*& saved, const void* current, const char* name) {
+        if (!saved) {
+            saved = current;
+        }
+        TM_CHECK_EQ(saved, current) << "DFlash target attention graph requires stable " << name;
+    };
+    bind_or_check(graph.input_ptr, p.input.raw_data(), "input");
+    bind_or_check(graph.output_ptr, p.output.raw_data(), "output");
+    bind_or_check(graph.qkv_ptr, workspace.qkv.raw_data(), "QKV workspace");
+    bind_or_check(graph.attention_ptr, workspace.attention.raw_data(), "attention workspace");
+    bind_or_check(graph.block_ptrs_ptr, d.block_ptrs.raw_data(), "block table");
+    bind_or_check(graph.block_offsets_ptr, d.block_ptrs_offsets.raw_data(), "block-table offsets");
+    bind_or_check(graph.q_offsets_ptr, d.q_offsets.raw_data(), "query offsets");
+    bind_or_check(graph.k_offsets_ptr, d.k_offsets.raw_data(), "key offsets");
+
+    const auto stream = core::Context::stream().handle();
+    if (graph.exec) {
+        TM_CUDA_CHECK(cudaGraphLaunch(graph.exec, stream));
+        if (TraceDFlashAttentionGraph() && !graph.replay_logged) {
+            graph.replay_logged = true;
+            TM_LOG_INFO("[DFlash2] target attention graph replay phase={} layer={} weight={} exec={} input={} "
+                        "output={} qkv={} attention={} block_ptrs={} block_offsets={} q_offsets={} k_offsets={}",
+                        p.phase,
+                        p.layer_id,
+                        (uintptr_t)p.weights,
+                        (uintptr_t)graph.exec,
+                        (uintptr_t)graph.input_ptr,
+                        (uintptr_t)graph.output_ptr,
+                        (uintptr_t)graph.qkv_ptr,
+                        (uintptr_t)graph.attention_ptr,
+                        (uintptr_t)graph.block_ptrs_ptr,
+                        (uintptr_t)graph.block_offsets_ptr,
+                        (uintptr_t)graph.q_offsets_ptr,
+                        (uintptr_t)graph.k_offsets_ptr);
+        }
+        return;
+    }
+
+    // Initialize lazy GEMM, attention-registry, and allocator state before
+    // capture. Each target weight owns its own executable because graph nodes
+    // retain that layer's weight pointers.
+    if (graph.warmups++ < 2) {
+        ForwardImpl(p);
+        return;
+    }
+
+    cudaError_t status = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+    if (status != cudaSuccess) {
+        graph.disabled = true;
+        TM_LOG_WARNING("[DFlash2] target attention graph disabled at begin for layer {}: {}",
+                       p.layer_id,
+                       cudaGetErrorString(status));
+        cudaGetLastError();
+        ForwardImpl(p);
+        return;
+    }
+
+    ForwardImpl(p);
+
+    cudaGraph_t captured_graph{};
+    status = cudaStreamEndCapture(stream, &captured_graph);
+    if (status != cudaSuccess || !captured_graph) {
+        if (captured_graph) {
+            cudaGraphDestroy(captured_graph);
+        }
+        graph.disabled = true;
+        TM_LOG_WARNING("[DFlash2] target attention graph disabled at end for layer {}: {}",
+                       p.layer_id,
+                       cudaGetErrorString(status));
+        cudaGetLastError();
+        ForwardImpl(p);
+        return;
+    }
+
+    cudaGraphExec_t captured_exec{};
+    status = cudaGraphInstantiate(&captured_exec, captured_graph, nullptr, nullptr, 0);
+    if (status != cudaSuccess || !captured_exec) {
+        if (captured_exec) {
+            cudaGraphExecDestroy(captured_exec);
+        }
+        cudaGraphDestroy(captured_graph);
+        graph.disabled = true;
+        TM_LOG_WARNING("[DFlash2] target attention graph disabled at instantiate for layer {}: {}",
+                       p.layer_id,
+                       cudaGetErrorString(status));
+        cudaGetLastError();
+        ForwardImpl(p);
+        return;
+    }
+
+    graph.graph = captured_graph;
+    graph.exec = captured_exec;
+    TM_CUDA_CHECK(cudaGraphLaunch(graph.exec, stream));
+    if (TraceDFlashAttentionGraph() && !graph.capture_logged) {
+        graph.capture_logged = true;
+        TM_LOG_INFO("[DFlash2] target attention graph captured phase={} layer={} weight={} graph={} exec={} "
+                    "input={} output={} qkv={} attention={} block_ptrs={} block_offsets={} q_offsets={} k_offsets={}",
+                    p.phase,
+                    p.layer_id,
+                    (uintptr_t)p.weights,
+                    (uintptr_t)graph.graph,
+                    (uintptr_t)graph.exec,
+                    (uintptr_t)graph.input_ptr,
+                    (uintptr_t)graph.output_ptr,
+                    (uintptr_t)graph.qkv_ptr,
+                    (uintptr_t)graph.attention_ptr,
+                    (uintptr_t)graph.block_ptrs_ptr,
+                    (uintptr_t)graph.block_offsets_ptr,
+                    (uintptr_t)graph.q_offsets_ptr,
+                    (uintptr_t)graph.k_offsets_ptr);
+    }
+}
+
+void UnifiedAttentionLayer::ForwardImpl(ForwardParam p)
+{
     /////////////////////////////////////////////
     /// parse inputs
     const int token_num = p.input.shape(0);
@@ -728,6 +1006,14 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
     // ForwardParam is by value. Clear eligibility for unsupported batches so
     // core_attention cannot accidentally reuse an initialized batch-one arena.
     p.use_dflash_workspace = dflash_workspace != nullptr;
+    AttentionData::DFlashTargetWorkspace* dflash_target_workspace = nullptr;
+    if (p.use_dflash_target_workspace && d.dflash_target_workspace.initialized) {
+        TM_CHECK(!p.kv_only);
+        TM_CHECK(!p.use_dflash_workspace);
+        dflash_target_workspace = &d.dflash_target_workspace;
+        TM_CHECK_EQ(token_num, dflash_target_workspace->max_tokens);
+    }
+    p.use_dflash_target_workspace = dflash_target_workspace != nullptr;
 
     // if (d.dbg_size) {
     //     DebugTensor(p.input.slice(d.dbg_offset, d.dbg_size), Concat("attn_in", p.layer_id), 0);
@@ -737,6 +1023,11 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
         // [token_num, hidden_dim] -> [token_num, local_q_kv_head_num, head_dim]
         if (dflash_workspace) {
             qkv = dflash_workspace->qkv.slice(0, token_num);
+        }
+        else if (dflash_target_workspace) {
+            // output_gate, when present, occupies the stable tail of this QKV
+            // tensor and needs no separate graph workspace.
+            qkv = dflash_target_workspace->qkv.slice(0, token_num);
         }
         TM_SCOPE_CALL(linear_.Forward(p.input, *weights.w_qkv, qkv));
 
@@ -843,12 +1134,19 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
     const int local_q_kv_head_num = local_head_num + 2 * local_kv_head_num;
 
     const bool use_dflash_workspace = p.use_dflash_workspace && d.dflash_workspace.initialized;
+    const bool use_dflash_target_workspace =
+        p.use_dflash_target_workspace && d.dflash_target_workspace.initialized;
+    TM_CHECK(!(use_dflash_workspace && use_dflash_target_workspace));
     if (use_dflash_workspace) {
         TM_CHECK_LE(q_count, d.dflash_workspace.max_tokens);
         TM_CHECK_LE(d.prefill.k_sum, d.dflash_workspace.max_k_sum);
     }
+    if (use_dflash_target_workspace) {
+        TM_CHECK_LE(q_count, d.dflash_target_workspace.max_tokens);
+    }
     Tensor attn = use_dflash_workspace ? d.dflash_workspace.attention.slice(0, q_count) :
-                                         Tensor{{q_count, local_head_num * size_per_head}, dtype, device};
+                  use_dflash_target_workspace ? d.dflash_target_workspace.attention.slice(0, q_count) :
+                                                Tensor{{q_count, local_head_num * size_per_head}, dtype, device};
 
     const bool is_mla = weights.is_mla();
     static const bool enable_dflash_paged_q8 = [] {
@@ -867,7 +1165,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                      weights.causal && quant_policy_ == 0 &&
                                      d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == dflash_block;
     const bool use_fixed_dflash_graph_geometry =
-        use_dflash_paged_q8 && enable_dflash_draft_graph && p.use_dflash_workspace;
+        use_dflash_paged_q8
+        && ((enable_dflash_draft_graph && p.use_dflash_workspace)
+            || (UseDFlashTargetAttentionGraph() && p.dflash_target_verification
+                && p.use_dflash_target_workspace));
     const int dflash_graph_k_bound = weights.window_size > 0 ?
                                          std::min(engine_param_.session_len, weights.window_size) :
                                          engine_param_.session_len;

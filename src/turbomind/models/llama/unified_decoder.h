@@ -26,7 +26,10 @@ public:
 
     void Run(BatchOp op, int phase, TensorMap& env);
 
-    void Forward(int phase, TensorMap& env, const std::vector<WeightType*>& weights);
+    void Forward(int phase,
+                 TensorMap& env,
+                 const std::vector<WeightType*>& weights,
+                 bool dflash_target_verification = false);
 
     /// Attention-list index of the MTP draft layer, or -1 when absent.
     /// Save every sequence's recurrent state before a speculative forward.
