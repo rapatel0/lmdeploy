@@ -315,6 +315,12 @@ Current audited comparison:
 | SGLang DFlash2 | 3.765 |
 | LMDeploy DFlash2 | 2.664 |
 
+A corrected same-input TP4 parity capture at commit `b753831d` forced the exact block `[1144, 248070 x 7]` at positions `1000..1007`. All four ranks emitted 102 complete boundaries, and block embeddings were bit-identical. The earliest mismatch is the target residual trajectory, not block construction or feature ordering. RMS error grows across checkpoint target layers `[5, 19, 33, 47, 61]` as `0.1075`, `0.3547`, `0.6800`, `1.3486`, and `4.6666`; the final feature's maximum absolute error is `114.18`. SGLang's native target also chooses token `1596` where TurboMind chooses `1144`, independently confirming materially different target numerics.
+
+Commit `4fe99716` completed a four-rank TurboMind-only context replay isolation. Replaying SGLang's exact FP16 `[1, 25600]` target residual made the captured input bit-identical. The context FC difference collapsed from RMS `44.2053` to `0.05926`; after RMSNorm, output parity passed with maximum absolute error `0.00390625` and RMS `0.000277`. Native context norm RMS was `0.39279`. Thus the context projector is functionally aligned after normalization, while upstream target-model numerical drift is the dominant context mismatch. The first independent draft-side mismatch is now `block.initial_norm` at maximum absolute `0.015625` and RMS `0.000728`.
+
+Artifacts: `/results/20260829_032508-sglang-dflash-parity-b753831db680` and `/results/20260829_035037-dflash-context-replay-4fe9971622bc`.
+
 At LMDeploy's current cycle cost, immediately matching SGLang acceptance would improve throughput materially but still not guarantee 2.2x. Both fidelity and cycle cost need work.
 
 The next acceptance investigation is ordered as follows:

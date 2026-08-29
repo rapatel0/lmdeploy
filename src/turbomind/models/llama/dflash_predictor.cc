@@ -1157,16 +1157,30 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     report_named("block.initial_residual", residual);
 
     auto* first_layer = TM_CHECK_NOTNULL(weights_.layer(0));
-    invokeRMSNorm(hidden,
-                  hidden,
-                  first_layer->attention_norm->weight,
-                  first_layer->attention_norm->norm_eps_,
-                  first_layer->attention_norm->zero_centered_,
-                  stream);
-    TM_CUDA_CHECK(cudaGetLastError());
-    // The draft checkpoint's pre-norm boundaries are BF16. Preserve that
-    // rounding while storing FP16 activations for V100 GEMMs.
-    invokeDFlashRoundBFloat16(hidden, stream);
+    static const bool full_product_rmsnorm = [] {
+        const char* value = std::getenv("TM_DFLASH_FULL_PRODUCT_RMSNORM");
+        return value && value[0] == '1';
+    }();
+    if (full_product_rmsnorm) {
+        invokeDFlashInitialRMSNorm(hidden,
+                                   hidden,
+                                   first_layer->attention_norm->weight,
+                                   first_layer->attention_norm->norm_eps_,
+                                   first_layer->attention_norm->zero_centered_,
+                                   stream);
+    }
+    else {
+        invokeRMSNorm(hidden,
+                      hidden,
+                      first_layer->attention_norm->weight,
+                      first_layer->attention_norm->norm_eps_,
+                      first_layer->attention_norm->zero_centered_,
+                      stream);
+        TM_CUDA_CHECK(cudaGetLastError());
+        // Legacy path narrows the normalized activation to FP16 before the
+        // weight product, then rounds the stored result through BF16.
+        invokeDFlashRoundBFloat16(hidden, stream);
+    }
     report_named("block.initial_norm", hidden);
 
     constexpr float kResidualScale = 256.f;

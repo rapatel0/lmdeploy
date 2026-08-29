@@ -61,12 +61,11 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Control: rebuild DFlash Setup/Prepare metadata after Rollback and compare candidates and acceptance.
   - Done when: metadata is refreshed correctly or the control falsifies this cause.
 
-- [ ] **Add first-block tensor parity against SGLang.**
-  - Commit `33c0cf2c` added a trace-only first-real-block capture for target features, context FC/norm, draft boundaries, production candidates, unary scores, selector state, edge scores, and selected IDs.
-  - The capture uses pinned host copies, unique process/rank directories, and one final synchronization.
-  - A complete first-block trace passed on all four TP ranks with the audited 64-output workload.
-  - Next: run the read-only SGLang harness and identify the earliest cross-runtime mismatch; all durable changes remain in TurboMind.
-  - Done when: the first numerical divergence is identified and either fixed or documented as intentional.
+- [x] **Add first-block tensor parity against SGLang.**
+  - Commit `b753831d` produced four complete 102-boundary SGLang manifests for the exact forced block `[1144, 248070 x 7]` at positions `1000..1007`; TurboMind block IDs and embeddings match exactly.
+  - Capture boundaries and feature order are semantically aligned. Target-residual RMS drift grows across layers `[5, 19, 33, 47, 61]` as `0.1075`, `0.3547`, `0.6800`, `1.3486`, and `4.6666`.
+  - Commit `4fe99716` replayed SGLang's exact target residual inside TurboMind across TP4. Context FC RMS fell from `44.2053` to `0.05926`, and normalized context passed parity at max abs `0.00390625`, RMS `0.000277`.
+  - The context projector is functionally aligned after normalization; the dominant context mismatch is upstream target-model numerical trajectory drift. Artifacts: `/results/20260829_032508-sglang-dflash-parity-b753831db680` and `/results/20260829_035037-dflash-context-replay-4fe9971622bc`.
 
 - [x] **Validate selector edge-score narrowing semantics.**
   - Explicitly FP16-rounding `predecessor * hidden` produced the same 2.664 commit length and identical acceptance counts as FP32 intermediates.
@@ -87,8 +86,10 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Done when: arithmetic matches or required FP16/FP32 narrowing points are identified and reproduced.
 
 - [ ] **Compare residual RMSNorm reduction and rounding schedules.**
-  - Classification: deferred lower-level hypothesis.
-  - Investigate only if first-block parity first diverges at a residual norm after earlier boundaries match.
+  - Classification: active draft-fidelity mismatch.
+  - Same-input parity makes block embeddings bit-identical, then first diverges at `block.initial_norm`: max abs `0.015625`, RMS `0.000728`.
+  - SGLang's SM70 Laguna RMSNorm multiplies normalized activations by BF16-rounded weights in FP32 before BF16 output rounding. TurboMind's generic non-zero-centered RMSNorm narrows the normalized activation to FP16 before multiplying the weight, then rounds the result to BF16.
+  - Next experiment: a flagged TurboMind full-product/BF16-output initial RMSNorm arm, using the same build for parity, five-trial acceptance, and audited identity.
   - Done when: the V100 SGLang kernel's reduction/rounding schedule is matched or shown immaterial.
 
 ## P1: speculative cycle cost
