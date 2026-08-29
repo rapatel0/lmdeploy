@@ -23,10 +23,12 @@ cp /job/sglang_dflash_parity_sitecustomize.py /tmp/dflash-parity-site/sitecustom
 
 wait_for_server() {
     for _ in $(seq 1 900); do
-        # Plain health waits for graph initialization without submitting the
-        # synthetic generation that crashes this pinned image's V100 accept
-        # kernel before the audited trace can be armed.
-        if curl -fsS http://127.0.0.1:8082/health >/dev/null 2>&1; then return 0; fi
+        # Both /health_generate and /health submit or wait on synthetic model
+        # work in this pinned image, which reaches the broken V100 accept
+        # kernel before the audited trace is armed. CUDA-graph initialization
+        # finishes before Uvicorn announces startup, so use that durable log
+        # boundary and make the audited request the first post-startup work.
+        if grep -q 'Application startup complete' "${RESULTS}/server.log" 2>/dev/null; then return 0; fi
         if ! kill -0 "${server_pid}" 2>/dev/null; then
             echo "FAIL: SGLang server exited during startup" >&2
             tail -200 "${RESULTS}/server.log" >&2
