@@ -120,20 +120,18 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - The per-layer target graph was removed. Future target capture must span a larger contiguous region and amortize graph-launch overhead.
   - Done when: broader graph replay passes identity and reduces matched whole-cycle wall time by more than run variance.
 
-- [ ] **Qualify direct paged Q=8 attention.**
-  - The SM70 block-iterator path now bypasses flattened KV and runs on TP4.
-  - Allocator/free calls fell from 90,476 to 86,192.
-  - Unprofiled normalization improved from 42.66 to 41.61 ms, but profiled normalization regressed from 47.20 to 47.64 ms.
-  - Repeated exactness produced one paged pass plus known position-145/220 splits; flattened controls hit the same positions and had no pass in three attempts.
-  - Flattened-versus-paged and flattened-versus-flattened parity both first diverged at the pre-attention target residual and changed intermediate candidate IDs, while final selected IDs remained exact.
-  - Keep the path off by default and use it only as the current full-graph prerequisite.
-  - Done when: full-graph qualification proves a net benefit, or the graph is redesigned around flattened KV and this path is removed.
+- [ ] **Qualify grouped direct-paged Q=8 attention.**
+  - The first SM70 block-iterator path bypassed flattened KV and ran on TP4, but lacked grouped GQA and split-context scheduling; keep it off by default.
+  - Deep profile attribution assigns about 5.99 ms/cycle to target head-dim-256 attention, making the grouped successor a material target.
+  - Required 1K geometry: CTA_Q=8, CTA_H up to 4, two local GQA-head groups, and eight >=128-token context splits, for 16 CTAs with K/V shared across query positions and heads. Do not revive the rejected CTA_Q=1 design.
+  - Require finite and numeric same-input parity on all 64 TP-rank/layer instances, audited identity, five trials, and matched Nsight attribution.
+  - Done when: it beats generic flattened attention at every selected context or is removed.
 
-- [ ] **Eliminate mandatory draft candidate device-to-host synchronization.**
-  - Phase-owned host frontiers now remove the redundant pre-draft sequence-length copy/synchronization and retain a safe legacy fallback.
-  - The matched profile removed 236 copies but regressed whole request time by 0.5%; retain this only as infrastructure, not a standalone speed claim.
-  - Keep candidate IDs and accepted-prefix decisions on device through verification setup where possible.
-  - Done when: no per-cycle host synchronization is required merely to publish seven draft IDs.
+- [ ] **Use device publication only as broader-graph infrastructure.**
+  - Phase-owned host frontiers removed 236 copies but regressed whole request time by 0.5%.
+  - Correlation-ID analysis found only 0.68 ms total rollback GPU work across 204 cycles; the 23.54 ms rollback wall range chiefly waits for target-verification GPU work.
+  - Keep candidate IDs and accepted-prefix decisions on device only where needed to capture a larger contiguous target region.
+  - Done when: device publication enables a materially broader graph without changing terminal, EOS, or request-limit semantics.
 
 - [ ] **Make target-verification temporary buffers stable.**
   - Phase-owned TurboMind workspaces now cover context projection, embeddings, draft residual/convolution/MLP tensors, proposal/selector tensors, and—at commit `d277060f`—local LM-head and TP top-16 exchange buffers.
@@ -148,10 +146,11 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Matched K=7 profile cycle time improved from 48.08 ms with workspaces to 47.17 ms with one-pass rejection; exact audited identity and four-rank parity capture passed.
   - One-pass rejection is now the default; `TM_DFLASH_ONE_PASS_REJECT=0` retains the legacy control.
 
-- [ ] **Evaluate the draft attention kernel against SGLang's V100 backend.**
-  - Draft attention remains a material GPU component.
-  - Compare equivalent shapes and isolate kernel efficiency from launch overhead.
-  - Done when: either LMDeploy matches the reference kernel cost or a concrete replacement is implemented.
+- [ ] **Optimize target verification kernels in measured order.**
+  - Per-cycle launch attribution is approximately 9.87 ms FP8 GEMM, 5.99 ms target attention, 4.19 ms CUTLASS GEMM, 3.86 ms chunked GDN, and 2.51 ms NCCL; sums may overlap.
+  - Draft attention is only about 0.62 ms/cycle in the same correlation analysis and is not the first target.
+  - Start with grouped direct-paged target attention, then inspect the two GEMM classes and recurrent kernel.
+  - Done when: replacements beat matched baselines without changing identity.
 
 ## Completed fixes
 
@@ -198,4 +197,4 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - Exact short-workload identity: pass
 - Cumulative audited gain from the original 36.13 tok/s: about 70%
 
-Run two tracks in parallel. Remove host barriers and stabilize workspaces on Track A. Capture first-block tensor parity on Track B.
+Run two tracks in parallel. Build grouped direct-paged target attention and then attack measured target GEMM/GDN costs on Track A. Continue same-input first-block parity on Track B. Device publication is a graph prerequisite, not a standalone speed target.

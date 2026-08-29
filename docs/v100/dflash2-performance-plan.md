@@ -52,11 +52,11 @@ Use two passes. Finish low-risk changes that need no new attention algorithm, th
 
 ### Pass 2: largest speedups
 
-1. Capture the complete draft and selector path in a CUDA graph.
+1. Add a grouped-GQA, split-context, direct-paged Q=8 verification attention path.
 2. Capture fixed-shape target verification after its addresses are stable.
-3. Add a direct paged Q=8 verification attention path that removes KV flattening and exposes more V100 CTAs.
-4. Move proposal eligibility, rollback, and publication to device kernels to remove the remaining host boundaries.
-5. Use first-block parity to fix the earliest TurboMind draft mismatch and raise commit length toward 3.765.
+3. Use first-block parity to fix the earliest TurboMind draft mismatch and raise commit length toward 3.765.
+4. Move proposal eligibility, rollback, and publication to device kernels only where it also enables broader graph capture; the measured rollback wall time is primarily an outstanding target-GPU tail, not host-copy work.
+5. Retain the completed draft-plus-selector graph as infrastructure, not as a standalone speed claim.
 
 Do not spend another build on changes whose measured ceiling is below one percent unless they are graph prerequisites.
 
@@ -74,6 +74,8 @@ The K=7 profile attributed about 96% of the 48.6 ms normalized cycle:
 - rejection: 0.09 ms;
 - context KV: approximately 0.52 ms per verification.
 
+A correlation-ID join from each NVTX range through CUDA runtime launches to GPU kernels clarified that the 23.54 ms rollback wall range is mostly a synchronization point for work launched by `targetVerify`, not 23.54 ms of rollback kernels. Across 204 profiled verification cycles, rollback itself launched only 0.68 ms total of `AppendTokenIdsKernel`. The target-verification launches were dominated by approximately 9.87 ms/cycle of FP8 GEMMs, 5.99 ms/cycle of head-dim-256 attention, 4.19 ms/cycle of CUTLASS GEMMs, 3.86 ms/cycle of chunked GDN, and 2.51 ms/cycle of NCCL kernels. These sums can overlap, but they establish the optimization order: target compute first; host publication only as a graph/control prerequisite.
+
 Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 
 ### A1. Remove host barriers
@@ -83,15 +85,11 @@ Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 - Persistent pinned staging was falsified: pageable, pinned, and pinned-plus-combined arms measured 43.04, 42.92, and 42.99 ms per acceptance-normalized cycle.
 - The phase-owned host frontier now removes the redundant pre-draft sequence-length copy and synchronization, with a legacy control and safe fallback.
 - It removed 236 profiled copies but did not improve whole profiled wall time; retain it only as infrastructure for eliminating the remaining waits.
-- Move proposal eligibility and generation-limit handling into a device publication record.
-- Keep proposal IDs in device memory through verification setup.
-- Keep accepted lengths, bonus IDs, and published lengths in device memory.
-- Remove host reads from the steady batch-one K=7 cycle.
+- Do not treat the 23.54 ms rollback range as removable host overhead: kernel/runtime correlation shows it is chiefly waiting for target-verification GPU work.
+- Move proposal eligibility, IDs, accepted lengths, bonus IDs, and published lengths into a device publication record only when required to capture a broader contiguous target region.
 - Retain a host fallback for EOS, retirement, and request-limit transitions.
 
-Done when the steady cycle contains no mandatory host synchronization.
-
-Target: reduce cycle time from 43.4 ms to at most 39 ms.
+Done when device control enables a materially larger graph without changing publication semantics. It is no longer assigned an independent cycle-time target.
 
 ### A2. Stabilize all workspace addresses — partial
 
@@ -130,18 +128,18 @@ Done when broader target verification replays without host intervention and impr
 
 Target: reduce cycle time to at most 30 ms.
 
-### A5. Add direct paged verification attention — prototype active
+### A5. Add direct paged verification attention — grouped kernel active
 
-- A first SM70 Q=8 block-iterator path now reads paged KV without `invokeFlattenKV_v2_`.
+- A first SM70 Q=8 block-iterator path reads paged KV without `invokeFlattenKV_v2_`.
 - It reduced allocator/free calls from 90,476 to 86,192.
 - Unprofiled normalization improved by 2.5%, but matched profiling regressed by 0.9%.
 - This prototype does not yet implement grouped GQA or split-context scheduling.
 - Repeated exactness yielded one paged pass and only the known position-145/220 splits; flattened controls hit the same splits.
 - Cross-process parity first diverged before attention for both paged and baseline-repeat comparisons, while final selected IDs stayed exact.
-- Keep this prototype off by default and retain it only as the current full-graph prerequisite.
-- Group GQA query heads and split long contexts only after full-graph qualification proves the prerequisite worthwhile.
+- Keep this prototype off by default.
+- A true grouped successor is now the priority because deep profile attribution assigns about 5.99 ms/cycle to target head-dim-256 attention. Its required geometry is CTA_Q=8 and CTA_H up to 4, with two local GQA-head groups and eight >=128-token context splits at 1K: 16 useful CTAs while loading each split's K/V once per head group. The rejected CTA_Q=1 design must not return.
 
-Done when the kernel passes identity and beats generic attention at every selected context.
+Done when every TP-rank/layer instance passes finite and numeric same-input parity, audited generation identity passes, and five-trial plus matched Nsight results beat generic flattened attention.
 
 Target: reach 27.6 to 29.0 ms per verification cycle.
 
