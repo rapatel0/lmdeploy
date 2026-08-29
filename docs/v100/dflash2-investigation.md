@@ -316,6 +316,16 @@ All three launches are latency- and eligibility-limited rather than DRAM-bandwid
 
 This evidence closes blind tile exploration. The next FP8 experiment must reduce conversion/scale dependency work or resource lifetime while preserving the tuned 8x128x64 geometry and split-K choices. Artifacts: `/results/20260829_102845-dflash-fp8-m8-ncu-a546ab05061f`.
 
+## SM70 block-FP8 grouped-scale reuse
+
+The next flagged arm kept the production 8x128x64 geometry and reused each K128 V scale across its sixteen K8 MMA atoms instead of reloading it from shared memory. The legacy packed-V copy ignores its mask, so the experimental mainloop explicitly guarded the copy call. Deterministic nonzero inputs with varying physical scale groups produced bit-identical outputs for gate/up, down, and output projection. The audited 256-token K=0/K=7 identity gate also passed.
+
+Isolated production-autotuned Nsight Compute measurements confirmed a real kernel effect. Registers fell from 94 to 92 per thread. Gate/up improved from 69.09 to 62.24 microseconds, down from 44.96 to 41.31 microseconds, and output projection from 26.34 to 25.66 microseconds, gains of 9.9%, 8.1%, and 2.6% respectively.
+
+The end-to-end effect was too small. Five-trial baseline and reuse arms followed the identical 2.669 commit-length trajectory; decode changed only from 69.35 to 69.46 tok/s and normalized cycle time from 38.486 to 38.425 ms, a 0.16% improvement. Matched profiles also had identical commit length 2.311 and improved normalized cycle time from 44.348 to 43.769 ms, or 1.31%, while aggregate M=8 block-FP8 time improved only from 11.152 to 11.077 ms per `targetVerify`, or 0.68%.
+
+The arm therefore failed the required 1% aggregate-kernel and 0.5% unprofiled-cycle gates. It is rejected despite the isolated kernel win, and the runtime flag plus template specialization were removed. Future work should combine scale reuse with a larger structural reduction in FP8 unpack/conversion dependencies rather than ship it alone. Artifacts: `/results/20260829_110041-dflash-fp8-m8-reuse-dcb5e4afcbba`, `/results/20260829_110741-dflash-fp8-m8-reuse-followup-7469009eb87c`, and `/results/20260829_111237-dflash-fp8-m8-reuse-final-0d83abe6d2c8`.
+
 ## Rollback barrier merge
 
 A five-trial A/B queued rollback verdict, published-length, and tip readbacks behind one barrier instead of two. The change did not improve acceptance-normalized cycle time: the legacy path took 43.11 ms per step and the combined path took 43.13 ms. Raw decode differed because separate processes followed different acceptance trajectories. The combined arm also hit the known audited position-220 near-tie. Since the normalized result showed no gain, the implementation and runtime flag were removed. Artifacts: `/results/20260828_205537-dflash-rollback-sync-e49a2f50daff`.

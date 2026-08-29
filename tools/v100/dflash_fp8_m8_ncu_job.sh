@@ -80,7 +80,6 @@ printf 'libturbomind=%s\nfmt_include=%s\nlibpython=%s\n' \
 }
 
 export TM_SM70_FP8_M8_TILE_CANDIDATES=0
-export TM_SM70_FP8_M8_REUSE_SCALE=0
 export TM_GEMM_TUNE_VERBOSE=1
 /tmp/dflash_fp8_m8_microbench 2>&1 | tee "${RESULTS}/smoke.log"
 grep -q '^DFLASH_FP8_M8_MICROBENCH_COMPLETE$' "${RESULTS}/smoke.log"

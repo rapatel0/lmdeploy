@@ -157,8 +157,9 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Per-cycle launch attribution was approximately 9.87 ms FP8 GEMM, 5.99 ms target attention, 4.19 ms CUTLASS GEMM, 3.86 ms chunked GDN, and 2.51 ms NCCL; sums may overlap.
   - Grouped direct-paged attention is complete. The M=8 block-FP8 tile sweep is rejected after a 3.74% aggregate kernel regression.
   - Nsight Compute characterization is complete. The production-autotuned 8x128x64 FP8 kernel reaches only 21.38-31.77% compute and 1.51-2.73% DRAM throughput, with 0.42-0.51 eligible warps per scheduler. Its 94 registers/thread and 18.98 KiB shared memory independently cap theoretical occupancy at 31.25%; achieved occupancy is 21.79-25.30%.
-  - Next preserve the tuned tile and split-K choices while reducing packed E4M3 conversion/scaling dependencies or resource lifetime; do not repeat tile-only exploration. Then inspect the 4.19 ms CUTLASS class and 3.86 ms recurrent kernel.
-  - Draft attention is only about 0.62 ms/cycle and remains low priority. NCU artifacts: `/results/20260829_102845-dflash-fp8-m8-ncu-a546ab05061f`.
+  - K128 scale reuse reduced registers from 94 to 92 and improved isolated gate/up, down, and output kernels by 9.9%, 8.1%, and 2.6%. It passed bitwise and audited identity, but aggregate M=8 profile time improved only 0.68% and unprofiled cycle time only 0.16%, so the standalone arm was rejected and removed.
+  - Next combine scale lifetime reduction with a larger packed-E4M3 unpack/conversion specialization whose measured ceiling exceeds 1%; do not repeat tile-only or scale-only exploration. Then inspect the 4.19 ms CUTLASS class and 3.86 ms recurrent kernel.
+  - Draft attention is only about 0.62 ms/cycle and remains low priority. NCU artifacts: `/results/20260829_102845-dflash-fp8-m8-ncu-a546ab05061f`; scale-reuse artifacts: `/results/20260829_111237-dflash-fp8-m8-reuse-final-0d83abe6d2c8`.
   - Done when: replacements beat matched baselines without changing identity.
 
 ## Completed fixes

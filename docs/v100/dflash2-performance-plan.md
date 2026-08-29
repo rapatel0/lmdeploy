@@ -162,6 +162,17 @@ Artifacts: `/results/20260829_054609-dflash-fp8-m8-tiles-a546ab05061f` (`analysi
 
 Artifacts: `/results/20260829_102845-dflash-fp8-m8-ncu-a546ab05061f`.
 
+### A5.3. Reuse K128 scales in the production M=8 FP8 kernel — rejected
+
+- The flagged 8x128x64 arm retained each K128 V scale across sixteen K8 MMA atoms, while flag zero preserved the legacy descriptor and load path.
+- Deterministic nonzero microbenchmarks were bit-identical for all three target shapes, and exact audited K=0/K=7 identity passed.
+- Isolated NCU improved gate/up, down, and output projection by 9.9%, 8.1%, and 2.6%; registers fell from 94 to 92 per thread.
+- Five-trial acceptance was identical, but unprofiled normalized cycle time improved only 0.16%. Matched profiling improved whole-cycle time 1.31%, while aggregate M=8 FP8 time improved only 0.68%.
+- The candidate failed the required 1% aggregate-kernel and 0.5% unprofiled-cycle gates. Its flag and template path were removed.
+- Revisit scale reuse only as part of a larger conversion/unpack specialization with a measured whole-cycle ceiling above 1%.
+
+Artifacts: `/results/20260829_110041-dflash-fp8-m8-reuse-dcb5e4afcbba`, `/results/20260829_110741-dflash-fp8-m8-reuse-followup-7469009eb87c`, and `/results/20260829_111237-dflash-fp8-m8-reuse-final-0d83abe6d2c8`.
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.

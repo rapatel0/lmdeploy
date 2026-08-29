@@ -4,10 +4,6 @@
 #include "src/turbomind/kernels/gemm/registrar.h"
 #include "src/turbomind/kernels/gemm/types.h"
 
-#include <cuda_runtime_api.h>
-#include <cstdio>
-#include <cstdlib>
-
 namespace turbomind::gemm {
 
 using namespace sm70_s884;
@@ -24,18 +20,7 @@ Registrar reg([](Collector& c, int /*arch*/) {
         c.add<C::Type< 64, 128,  32, 1, 4, 1, D, S, 2, true, 1, 128,  32, 128>>();
         c.add<C::Type< 32, 128,  32, 1, 4, 1, D, S, 2, true, 1, 128>>();
         c.add<C::Type< 16, 128,  32, 1, 4, 1, D, S, 2, true, 1, 128>>();
-        // Keep one descriptor for the M=8 kernel. Registering both variants
-        // would give the dispatch cache indistinguishable candidates.
-        const char* reuse_scale = std::getenv("TM_SM70_FP8_M8_REUSE_SCALE");
-        if (reuse_scale && reuse_scale[0] == '1') {
-            c.add<C::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 128, -1, -1, true>>();
-            int device = -1;
-            cudaGetDevice(&device);
-            std::fprintf(stderr, "SM70_FP8_M8_REUSE_SCALE_REGISTERED device=%d\n", device);
-        }
-        else {
-            c.add<C::Type<8, 128, 64, 1, 4, 1, D, S, 2, true, 1, 128>>();
-        }
+        c.add<C::Type<  8, 128,  64, 1, 4, 1, D, S, 2, true, 1, 128>>();
         // clang-format on
     }
 });

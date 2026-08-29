@@ -56,8 +56,7 @@ struct Sm70_s884 {
              int  GroupSizeU = 1,
              int  GroupSizeV = 1,
              int  TILE_C_M_  = -1,
-             int  TILE_C_N_  = -1,
-             bool ReuseGroupV = false>
+             int  TILE_C_N_  = -1>
     struct Type {
 
         // (TM, TN, TK) = R(MMA_Atom, SmemCopy_Atom)
@@ -80,8 +79,7 @@ struct Sm70_s884 {
                                       V,
                                       GroupSizeV,
                                       Stages,
-                                      true,
-                                      ReuseGroupV>;  // FusePrefetch_, grouped-V reuse
+                                      true>;  // FusePrefetch_
 
         static constexpr int CHUNK_K = std::lcm(std::lcm(GroupSizeU, GroupSizeV), CTA_K);
 
