@@ -26,7 +26,6 @@ profile_arm() {
         TM_DFLASH_PAGED_Q8=1 \
         TM_DFLASH_DRAFT_GRAPH=1 \
         TM_DFLASH_SELECTOR_GRAPH=0 \
-        TM_DFLASH_TARGET_ATTENTION_GRAPH=0 \
         TM_DFLASH_LEGACY_FRONTIER_READBACK="${legacy_frontier}" \
         "${NSYS}" profile \
         --force-overwrite=true --trace=cuda,nvtx,osrt --cuda-memory-usage=true \
@@ -62,7 +61,6 @@ TM_DFLASH_PERSISTENT_WORKSPACE=1 \
     TM_DFLASH_PAGED_Q8=1 \
     TM_DFLASH_DRAFT_GRAPH=1 \
     TM_DFLASH_SELECTOR_GRAPH=0 \
-    TM_DFLASH_TARGET_ATTENTION_GRAPH=0 \
     TM_DFLASH_LEGACY_FRONTIER_READBACK=0 \
     python3 /job/verify_dflash_audited.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
