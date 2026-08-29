@@ -90,8 +90,10 @@ def selected_launches(path: Path) -> list[dict[str, object]]:
             swizzle = int(match.group("swizzle"))
             splits = int(match.group("splits"))
             measured_ms = float(match.group("measured"))
-        except ValueError as exc:
-            fail(f"{path}: invalid tuner record: {exc}")
+        except ValueError:
+            # Four TP executors share stdout; two valid records can interleave
+            # into one malformed line. Ignore that line and use intact repeats.
+            continue
         record = {
             "n": shape[0],
             "k": shape[1],
