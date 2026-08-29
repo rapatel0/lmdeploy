@@ -29,7 +29,8 @@ LIB="$(
     python3 - <<'PY'
 import glob, lmdeploy, os
 root=os.path.dirname(lmdeploy.__file__)
-items=glob.glob(root+'/**/libturbomind.so', recursive=True)
+items=(glob.glob(root+'/**/libturbomind.so', recursive=True)
+       + glob.glob(root+'/**/_turbomind*.so', recursive=True))
 print(items[0] if items else '')
 PY
 )"
