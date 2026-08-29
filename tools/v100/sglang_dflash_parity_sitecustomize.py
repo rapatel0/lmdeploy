@@ -292,6 +292,13 @@ if _TRACE_ROOT:
 
     def _traced_worker_forward_generation(self, batch, on_publish=None):
         spec_info = getattr(batch, "spec_info", None)
+        if (
+            spec_info is None
+            and not batch.forward_mode.is_extend()
+            and not batch.is_extend_in_batch
+        ):
+            spec_info = _dw.DFlashDraftInputV2.create_idle_input(device=self.device)
+            batch.spec_info = spec_info
         bonus = getattr(spec_info, "bonus_tokens", None)
         saved = getattr(self, "_parity_prefill_bonus", None)
         if spec_info is not None and isinstance(bonus, torch.Tensor) and bonus.numel() == 0:
