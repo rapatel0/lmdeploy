@@ -2,13 +2,22 @@
 # Resolve known fresh-process position-145/220 near ties for the V32 identity gate.
 set -euo pipefail
 RESULTS="$(find /results -maxdepth 1 -type d -name '*-dflash-gdn-value-cols-*' | sort | tail -1)"
-[ -d "${RESULTS}" ] || { echo 'FAIL: no GDN result directory' >&2; exit 2; }
+[ -d "${RESULTS}" ] || {
+    echo 'FAIL: no GDN result directory' >&2
+    exit 2
+}
 for driver in /job/verify_dflash_audited.py /job/bench_decode.py; do
-    [ -f "${driver}" ] || { echo "FAIL: missing ${driver}" >&2; exit 2; }
+    [ -f "${driver}" ] || {
+        echo "FAIL: missing ${driver}" >&2
+        exit 2
+    }
 done
 exec > >(tee -a "${RESULTS}/identity_retry_console.log") 2>&1
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo 'FAIL: no wheel' >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo 'FAIL: no wheel' >&2
+    exit 2
+}
 sha256sum "${WHEEL}" >"${RESULTS}/identity_retry_wheel.sha256"
 diff -u "${RESULTS}/wheel.sha256" "${RESULTS}/identity_retry_wheel.sha256"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1

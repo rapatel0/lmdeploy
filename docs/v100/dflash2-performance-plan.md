@@ -193,6 +193,16 @@ Artifact: `/results/20260829_114211-dflash-fp8-m8-fused-decode-64fa191aa854`.
 
 Artifact: `/results/20260829_122827-dflash-fp16-m8-backend-5909e4148e28`.
 
+### A5.6. Split Q=8 GDN value columns across CTAs — complete
+
+- The legacy FP16-state chunked GDN launch used only 12 CTAs per layer. V64/V32/V16 raised this to 24/48/96 CTAs without changing the K reduction, token recurrence, FP16 frontier rounding, snapshots, or stores.
+- V32 reduced normalized GDN time from 4.998 to 2.580 ms per 48 layer launches, or 48.38%.
+- Five-trial acceptance-normalized cycle time improved from 37.714 to 36.942 ms, or 2.05%. Matched-acceptance profiled cycle time improved from 44.213 to 42.646 ms, or 3.54%.
+- All TP ranks proved activation. An exact audited 256-token identity control passed; all other observed splits, including the V128 control, were confined to the established fresh-process position-220 near-tie.
+- V32 is default-on only for the exact speculative Q=8 TP4 geometry with rollback frontiers. `TM_GDN_SM70_VALUE_COLS=128` retains legacy decomposition.
+
+Artifact: `/results/20260829_125003-dflash-gdn-value-cols-b85fb4e04bf8`.
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.

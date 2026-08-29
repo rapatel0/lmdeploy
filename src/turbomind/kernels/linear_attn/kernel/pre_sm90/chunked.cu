@@ -343,10 +343,10 @@ void RunPreSm90Chunk16F16F16(const Arguments& args, const Plan& plan, cudaStream
     static const int value_cols = [] {
         const char* value = std::getenv("TM_GDN_SM70_VALUE_COLS");
         if (!value) {
-            return 128;
+            return 32;
         }
         const int parsed = std::atoi(value);
-        return parsed == 16 || parsed == 32 || parsed == 64 ? parsed : 128;
+        return parsed == 16 || parsed == 32 || parsed == 64 || parsed == 128 ? parsed : 32;
     }();
     // This experiment is deliberately narrower than a shape-only Q=8
     // specialization. Ordinary eight-token prefill can have the same token

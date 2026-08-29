@@ -340,6 +340,14 @@ Per-weight route tracing resolved the dominant cuBLAS CUTLASS class without addi
 
 A one-build feasibility matrix attempted to route the output head, the 48 GDN projections, and both classes through the existing native SM70 FP16 catalog. Every native arm failed closed before measurement: no registered native kernel supports the required flat `ttt` descriptors (`8x4120x5120` for GDN and `1x62080x5120` for the head). Only the baseline arm ran. This rejects backend substitution with the existing catalog; it does not measure or reject a future purpose-built kernel. The temporary backend override, caches, tracing, analyzer, and job were removed. Artifact: `/results/20260829_122827-dflash-fp16-m8-backend-5909e4148e28`.
 
+## SM70 GDN value-column decomposition
+
+The Q=8 FP16-state chunked GDN kernel originally launched one 256-thread CTA per value head, only 12 CTAs per layer on an 80-SM V100. A one-build V128/V64/V32/V16 matrix partitioned each 128-column recurrent matrix into 1/2/4/8 disjoint CTA tiles while preserving the exact eight-lane K reduction, serial token order, per-token FP16 state round-trip, every rollback snapshot, output store, and final live-state store. Dispatch is restricted to speculative verification by requiring live rollback frontiers and the exact audited TP4 geometry; ordinary recurrent decode, prefill, other dtypes, and other state layouts remain on V128.
+
+V32 was the best complete arm. Normalized GDN time per 48 layer launches fell from 4.998 to 2.580 ms, **48.38%**, while five-trial acceptance-normalized cycle time improved from 37.714 to 36.942 ms, **2.05%**. With identical profiled commit length 2.311, profiled cycle time improved from 44.213 to 42.646 ms, **3.54%**, and decode rose from 52.27 to 54.19 tok/s. All four TP ranks logged V32 activation. One of three predeclared V32 audited controls passed exact 256-token K=0/K=7 identity; the other two and the V128 control hit only the previously established fresh-process near-tie at position 220, with no unexpected divergence.
+
+V32 is default-on. `TM_GDN_SM70_VALUE_COLS=128` retains the exact legacy CTA decomposition; 16 and 64 remain diagnostic controls. Artifact: `/results/20260829_125003-dflash-gdn-value-cols-b85fb4e04bf8`.
+
 ## Rollback barrier merge
 
 A five-trial A/B queued rollback verdict, published-length, and tip readbacks behind one barrier instead of two. The change did not improve acceptance-normalized cycle time: the legacy path took 43.11 ms per step and the combined path took 43.13 ms. Raw decode differed because separate processes followed different acceptance trajectories. The combined arm also hit the known audited position-220 near-tie. Since the normalized result showed no gain, the implementation and runtime flag were removed. Artifacts: `/results/20260828_205537-dflash-rollback-sync-e49a2f50daff`.
