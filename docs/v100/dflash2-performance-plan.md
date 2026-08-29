@@ -115,15 +115,16 @@ Done: graph capability and NCCL capture are proven. The standalone speed target 
 
 Next target: include enough target verification work to reduce whole-cycle time beyond run variance.
 
-### A4. Capture target verification
+### A4. Capture target verification — per-layer slice rejected
 
-- Stabilize the eight-token target verification inputs and recurrent-state outputs.
-- Capture target transformer execution and verification logits where addresses remain fixed.
-- Keep commit decisions outside the graph until device publication is complete.
-- Add graph updates only for parameters that CUDA supports safely.
-- Preserve the ordinary path for mixed batches and variable verification depths.
+- A per-layer target-attention prototype captured and replayed all 64 TP-rank/layer graphs with stable QKV, paged-attention, gate, and Wo buffers.
+- With matched commit length 2.311, `targetVerify` improved from 14.235 to 13.904 ms and kernel launches fell from 166,932 to 144,084.
+- Sixteen added graph launches per verification erased that gain: whole profiled request time regressed from 2.8897 to 2.9129 seconds.
+- The per-layer branch was removed. Do not revisit this granularity.
+- Stabilize the remaining target transformer and recurrent-state addresses, then capture a materially larger contiguous region that amortizes launch overhead.
+- Keep commit decisions outside the graph until device publication is complete and preserve fallback for mixed batches and variable verification depths.
 
-Done when target verification replays without host intervention.
+Done when broader target verification replays without host intervention and improves matched whole-cycle time.
 
 Target: reduce cycle time to at most 30 ms.
 

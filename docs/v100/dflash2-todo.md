@@ -116,7 +116,8 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - The full draft-plus-selector graph captured/replayed on all four TP ranks and passed audited identity.
   - It reduced `dflashDraftAndSelect` from 6.99 to 6.60 ms and kernel launches from 193,044 to 166,932, but whole-cycle gain was only 0.6% unprofiled and regressed under Nsight.
   - Keep it off by default as infrastructure for broader capture.
-  - Target verification still needs stable addresses and a separate graph lifecycle.
+  - A per-layer target-attention graph captured/replayed all 64 rank/layer instances and reduced `targetVerify` from 14.235 to 13.904 ms, but sixteen graph launches per verification caused whole profiled request time to regress by 0.8%.
+  - The per-layer target graph was removed. Future target capture must span a larger contiguous region and amortize graph-launch overhead.
   - Done when: broader graph replay passes identity and reduces matched whole-cycle wall time by more than run variance.
 
 - [ ] **Qualify direct paged Q=8 attention.**
