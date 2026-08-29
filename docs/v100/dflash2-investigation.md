@@ -294,6 +294,14 @@ The large `cudaMemcpyAsync` API attribution therefore mostly represents outstand
 
 A five-trial A/B queued rollback verdict, published-length, and tip readbacks behind one barrier instead of two. The change did not improve acceptance-normalized cycle time: the legacy path took 43.11 ms per step and the combined path took 43.13 ms. Raw decode differed because separate processes followed different acceptance trajectories. The combined arm also hit the known audited position-220 near-tie. Since the normalized result showed no gain, the implementation and runtime flag were removed. Artifacts: `/results/20260828_205537-dflash-rollback-sync-e49a2f50daff`.
 
+## Phase-owned sequence frontier
+
+The rollback result now carries each row's exact accepted host frontier into the next draft, removing the redundant pre-draft sequence-length device-to-host copy and synchronization. A legacy-readback control remains behind `TM_DFLASH_LEGACY_FRONTIER_READBACK=1`, and invalid or mixed state falls back safely.
+
+The matched profile had identical commit length 2.311 over 103 verification steps. It removed 236 `cudaMemcpyAsync` calls and shifted work out of the draft/rollback synchronization boundaries, but whole profiled request time changed from 2.9273 to 2.9427 seconds, a 0.5% regression within profile variance. Five unprofiled trials suggested only about a 0.4% acceptance-normalized improvement. No safety fallback occurred. The audited identity arm hit the runtime's known position-145 near-tie and no unexpected split.
+
+This change is retained as device-control infrastructure, not as a standalone speed claim: one mandatory synchronization is gone, but later rollback/publication waits still absorb the outstanding work. Artifacts: `/results/20260829_011308-dflash-frontier-followup-a632070eaea9`.
+
 ## Parallel local top-16 reduction
 
 Nsight measured the per-rank `DFlashTopK16Half` candidate scan and serial 256-lane merge at about 1.1 ms per speculative cycle. Replacing the serial shared-memory merge with `cub::BlockReduce<TopK<float,16>>` improved acceptance-normalized cycle time from 43.87 to 43.45 ms, approximately **1.0%**, over five measured trials. The separate-process acceptance trajectories differed, so raw decode was 57.36 versus 55.56 tok/s and is not the attribution metric; both implementations compute the same deterministic score/ID ordering, and the CUB arm passed the audited 256-token identity gate. CUB is now the default, with `TM_DFLASH_CUB_TOPK=0` retaining the legacy control. Artifacts: `/results/20260828_204616-dflash-cub-topk-9ebbe196cada`.

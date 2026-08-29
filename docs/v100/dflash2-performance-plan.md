@@ -81,7 +81,9 @@ Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 - Treat the rollback barrier merge as closed.
 - It changed normalized cycle time from 43.11 to 43.13 ms and provided no gain.
 - Persistent pinned staging was falsified: pageable, pinned, and pinned-plus-combined arms measured 43.04, 42.92, and 42.99 ms per acceptance-normalized cycle.
-- Replace the host sequence-limit check with a device predicate.
+- The phase-owned host frontier now removes the redundant pre-draft sequence-length copy and synchronization, with a legacy control and safe fallback.
+- It removed 236 profiled copies but did not improve whole profiled wall time; retain it only as infrastructure for eliminating the remaining waits.
+- Move proposal eligibility and generation-limit handling into a device publication record.
 - Keep proposal IDs in device memory through verification setup.
 - Keep accepted lengths, bonus IDs, and published lengths in device memory.
 - Remove host reads from the steady batch-one K=7 cycle.

@@ -130,6 +130,8 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Done when: full-graph qualification proves a net benefit, or the graph is redesigned around flattened KV and this path is removed.
 
 - [ ] **Eliminate mandatory draft candidate device-to-host synchronization.**
+  - Phase-owned host frontiers now remove the redundant pre-draft sequence-length copy/synchronization and retain a safe legacy fallback.
+  - The matched profile removed 236 copies but regressed whole request time by 0.5%; retain this only as infrastructure, not a standalone speed claim.
   - Keep candidate IDs and accepted-prefix decisions on device through verification setup where possible.
   - Done when: no per-cycle host synchronization is required merely to publish seven draft IDs.
 
