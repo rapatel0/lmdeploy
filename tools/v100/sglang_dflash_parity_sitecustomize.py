@@ -17,6 +17,7 @@ if _TRACE_ROOT:
 
     _seen: set[str] = set()
     _graph_refs: dict[str, torch.Tensor] = {}
+    _graph_flushed = False
     _ordinal = 0
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
 
@@ -68,7 +69,10 @@ if _TRACE_ROOT:
                 capturing = torch.cuda.is_current_stream_capturing()
             except Exception:
                 capturing = False
-            if capturing and name not in _graph_refs:
+            if capturing:
+                # Graph initialization can recapture the same batch shape.
+                # The model runner replays the final graph, so retain the most
+                # recent graph-owned address for each boundary.
                 _graph_refs[name] = tensor.detach()
             return
         tensor = tensor.detach().contiguous().cpu()
@@ -247,14 +251,25 @@ if _TRACE_ROOT:
     _orig_runner_forward = _mr.ModelRunner.forward
 
     def _traced_runner_forward(self, *args, **kwargs):
+        global _graph_flushed
+        is_draft = isinstance(getattr(self, "model", None), _df.DFlashDraftModel)
+        if is_draft and _armed():
+            forward_batch = args[0] if args else kwargs.get("forward_batch")
+            if forward_batch is not None:
+                # Unlike inner graph references, these are the live inputs
+                # staged by DFlashWorkerV2 for this exact audited replay.
+                _dump("block.ids", getattr(forward_batch, "input_ids", None))
+                _dump("block.positions", getattr(forward_batch, "positions", None))
+                _dump("block.embedding", getattr(forward_batch, "input_embeds", None))
         output = _orig_runner_forward(self, *args, **kwargs)
         if (
-            _armed()
+            is_draft
+            and _armed()
             and _graph_refs
-            and "block.ids" not in _seen
-            and isinstance(getattr(self, "model", None), _df.DFlashDraftModel)
+            and not _graph_flushed
             and bool(getattr(output, "can_run_graph", False))
         ):
+            _graph_flushed = True
             for name, tensor in _graph_refs.items():
                 _dump(name, tensor)
         return output
