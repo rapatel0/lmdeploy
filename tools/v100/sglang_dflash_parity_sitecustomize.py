@@ -238,22 +238,25 @@ if _TRACE_ROOT:
 
     # DFlash's inner Python hooks run only while CUDA graphs are captured, not
     # when a real request replays them. Flush the retained graph-owned tensor
-    # references after the first armed decode/verify iteration. Extend/prefill
-    # must not flush: it precedes the first real draft replay.
-    import sglang.srt.speculative.dflash_worker_v2 as _dw
+    # references immediately after the first armed draft-model replay. This is
+    # deliberately before target verification/acceptance: the pinned SGLang
+    # image has an independent V100 accept-kernel failure, but the first draft
+    # block is already complete and is the parity artifact we need.
+    import sglang.srt.model_executor.model_runner as _mr
 
-    _orig_worker_forward = _dw.DFlashWorkerV2.forward_batch_generation
+    _orig_runner_forward = _mr.ModelRunner.forward
 
-    def _traced_worker_forward(self, batch, on_publish=None):
-        is_decode = not (
-            batch.forward_mode.is_extend()
-            or batch.is_extend_in_batch
-            or batch.forward_mode.is_idle()
-        )
-        output = _orig_worker_forward(self, batch, on_publish=on_publish)
-        if is_decode and _armed() and _graph_refs and "block.ids" not in _seen:
+    def _traced_runner_forward(self, *args, **kwargs):
+        output = _orig_runner_forward(self, *args, **kwargs)
+        if (
+            _armed()
+            and _graph_refs
+            and "block.ids" not in _seen
+            and isinstance(getattr(self, "model", None), _df.DFlashDraftModel)
+            and bool(getattr(output, "can_run_graph", False))
+        ):
             for name, tensor in _graph_refs.items():
                 _dump(name, tensor)
         return output
 
-    _dw.DFlashWorkerV2.forward_batch_generation = _traced_worker_forward
+    _mr.ModelRunner.forward = _traced_runner_forward
