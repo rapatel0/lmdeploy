@@ -300,6 +300,14 @@ Five-trial 1K cycle normalization improved from 42.69 ms flattened and 41.63 ms 
 
 At 8K, equal commit length 2.750 produced 69.17 versus 44.67 ms normalized cycles. At 25K, equal commit length 3.812 produced 131.27 versus 52.31 ms. This is the first structural attention change to produce a large, context-scaling gain. The grouped path is now default-on, with `TM_DFLASH_GROUPED_PAGED_Q8=0` retaining controls. Artifacts: `/results/20260829_044633-dflash-grouped-paged-q8-82bcb2ed29a4`.
 
+## SM70 block-FP8 M=8 tile sweep
+
+A one-build experiment registered seven additional V100 `Config_E4M3` kernels around the existing 8x128x64 tile. Exhaustive per-device tuning covered CTA-N 64/128/256 and CTA-K 32/64/128. The three block-FP8 M=8 problems actually dispatched during target verification are gate/up `8x8704x5120`, down `8x5120x4352`, and output projection `8x5120x1536`; QKV and lm_head use other kernel families. The tuner selected 8x128x32 for gate/up, 8x128x128 for down, and 8x64x128 or 8x128x128 for output projection. Occupancy evidence showed zero local-memory spill, 79-152 registers, and two to twelve active CTAs.
+
+The tile sweep did not improve execution. Five-trial acceptance-normalized cycle time regressed from 38.87 to 39.35 ms, or 1.25%. Matched profiles had identical commit length 2.311 and changed normalized cycle time only from 44.58 to 44.48 ms, a 0.23% apparent gain within variance. More decisively, same-capture-range M=8 block-FP8 kernel time regressed from 11.10 to 11.52 ms per `targetVerify` NVTX instance, or 3.74%. The tuner microbenchmarks did not predict the aggregate workload result.
+
+The job stopped before candidate identity because its first analyzer incorrectly required three shapes not served by this catalog. The captured performance evidence is sufficient to reject the arm; no candidate kernel is retained or claimed correct. Corrected analysis is stored beside the incomplete run. Future FP8 GEMM work should start with Nsight Compute on the baseline kernel or pursue structural fusion/layout changes, not another tile-only sweep. Artifacts: `/results/20260829_054609-dflash-fp8-m8-tiles-a546ab05061f`.
+
 ## Rollback barrier merge
 
 A five-trial A/B queued rollback verdict, published-length, and tip readbacks behind one barrier instead of two. The change did not improve acceptance-normalized cycle time: the legacy path took 43.11 ms per step and the combined path took 43.13 ms. Raw decode differed because separate processes followed different acceptance trajectories. The combined arm also hit the known audited position-220 near-tie. Since the normalized result showed no gain, the implementation and runtime flag were removed. Artifacts: `/results/20260828_205537-dflash-rollback-sync-e49a2f50daff`.

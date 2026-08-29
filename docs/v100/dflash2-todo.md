@@ -147,10 +147,17 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Matched K=7 profile cycle time improved from 48.08 ms with workspaces to 47.17 ms with one-pass rejection; exact audited identity and four-rank parity capture passed.
   - One-pass rejection is now the default; `TM_DFLASH_ONE_PASS_REJECT=0` retains the legacy control.
 
+- [x] **Sweep SM70 block-FP8 M=8 tile candidates.**
+  - Seven additional CTA-N 64/128/256 by CTA-K 32/64/128 candidates were tuned exhaustively per device against the existing 8x128x64 kernel.
+  - The tuner selected different tiles for gate/up, down, and output projection with no local-memory spills, but five-trial normalized cycle time regressed 38.87 to 39.35 ms.
+  - Same-range Nsight M=8 block-FP8 time regressed 11.10 to 11.52 ms per `targetVerify` range, or 3.74%; the apparent 0.23% profiled whole-cycle change was within variance.
+  - Rejected and removed before identity. Tile-only tuning is closed; any revisit requires Nsight Compute or a structural fusion/layout design. Artifacts: `/results/20260829_054609-dflash-fp8-m8-tiles-a546ab05061f`.
+
 - [ ] **Optimize target verification kernels in measured order.**
-  - Per-cycle launch attribution is approximately 9.87 ms FP8 GEMM, 5.99 ms target attention, 4.19 ms CUTLASS GEMM, 3.86 ms chunked GDN, and 2.51 ms NCCL; sums may overlap.
-  - Draft attention is only about 0.62 ms/cycle in the same correlation analysis and is not the first target.
-  - Start with grouped direct-paged target attention, then inspect the two GEMM classes and recurrent kernel.
+  - Per-cycle launch attribution was approximately 9.87 ms FP8 GEMM, 5.99 ms target attention, 4.19 ms CUTLASS GEMM, 3.86 ms chunked GDN, and 2.51 ms NCCL; sums may overlap.
+  - Grouped direct-paged attention is complete. The M=8 block-FP8 tile sweep is rejected after a 3.74% aggregate kernel regression.
+  - Next use Nsight Compute to characterize the baseline FP8 kernel, then inspect the 4.19 ms CUTLASS class and 3.86 ms recurrent kernel for structural opportunities.
+  - Draft attention is only about 0.62 ms/cycle and remains low priority.
   - Done when: replacements beat matched baselines without changing identity.
 
 ## Completed fixes

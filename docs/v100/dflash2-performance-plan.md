@@ -142,6 +142,16 @@ Done. It materially reduces the cycle but does not alone reach the final 27.6 to
 
 Artifacts: `/results/20260829_044633-dflash-grouped-paged-q8-82bcb2ed29a4`.
 
+### A5.1. Sweep SM70 block-FP8 M=8 GEMM tiles — rejected
+
+- One build exposed seven additional `Config_E4M3` candidates covering CTA-N 64/128/256 and CTA-K 32/64/128 while retaining the existing 8x128x64 baseline.
+- The exhaustive per-device tuner selected 8x128x32 for gate/up, 8x128x128 for down, and mostly 8x64x128 or 8x128x128 for output projection. All candidates had zero local-memory spill; occupancy ranged from two to twelve active CTAs.
+- Five-trial normalized cycle time regressed from 38.87 to 39.35 ms, or 1.25%. The matched profile had identical commit length 2.311 and changed whole-cycle time only from 44.58 to 44.48 ms, a 0.23% apparent gain within variance.
+- The same-range Nsight total for the affected M=8 block-FP8 kernels regressed from 11.10 to 11.52 ms per `targetVerify` NVTX range, or 3.74%. Local tuner microbenchmarks therefore did not predict end-to-end kernel aggregation.
+- The experiment was rejected before the candidate identity gate and all candidate registrations and diagnostic tooling were removed. Future FP8 GEMM work requires Nsight Compute or a structural kernel/fusion change rather than another tile-only sweep.
+
+Artifacts: `/results/20260829_054609-dflash-fp8-m8-tiles-a546ab05061f` (`analysis_corrected.json`; the original job is intentionally incomplete because its first analyzer expected three non-dispatched shapes).
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.
