@@ -292,30 +292,21 @@ if _TRACE_ROOT:
 
     def _traced_worker_forward_generation(self, batch, on_publish=None):
         spec_info = getattr(batch, "spec_info", None)
-        if (
-            spec_info is None
-            and not batch.forward_mode.is_extend()
-            and not batch.is_extend_in_batch
-        ):
+        if spec_info is None and not batch.forward_mode.is_extend() and not batch.is_extend_in_batch:
             spec_info = _dw.DFlashDraftInputV2.create_idle_input(device=self.device)
             batch.spec_info = spec_info
         bonus = getattr(spec_info, "bonus_tokens", None)
-        saved = getattr(self, "_parity_prefill_bonus", None)
         if spec_info is not None and isinstance(bonus, torch.Tensor) and bonus.numel() == 0:
             batch_size = len(batch.seq_lens)
-            if isinstance(saved, torch.Tensor) and saved.numel() == batch_size:
-                spec_info.bonus_tokens = saved
-            else:
-                # Overlap prefill can also publish an unresolved empty token
-                # tensor. For tensor parity, force the already-audited LMDeploy
-                # anchor so both runtimes execute the identical draft block.
-                try:
-                    anchor = int(os.environ.get("SGLANG_PARITY_ANCHOR_ID", "1144"))
-                except ValueError as exc:
-                    raise RuntimeError("invalid SGLANG_PARITY_ANCHOR_ID") from exc
-                spec_info.bonus_tokens = torch.full(
-                    (batch_size,), anchor, dtype=torch.int64, device=batch.seq_lens.device
-                )
+            # For tensor parity, always force the already-audited LMDeploy
+            # anchor so both runtimes execute the identical draft block. The
+            # SGLang target produces 1596 for this prompt, which is useful
+            # evidence but cannot seed a same-input draft comparison.
+            try:
+                anchor = int(os.environ.get("SGLANG_PARITY_ANCHOR_ID", "1144"))
+            except ValueError as exc:
+                raise RuntimeError("invalid SGLANG_PARITY_ANCHOR_ID") from exc
+            spec_info.bonus_tokens = torch.full((batch_size,), anchor, dtype=torch.int64, device=batch.seq_lens.device)
         result = _orig_worker_forward_generation(self, batch, on_publish=on_publish)
         next_draft = getattr(result, "next_draft_input", None)
         next_bonus = getattr(next_draft, "bonus_tokens", None)

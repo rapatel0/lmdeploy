@@ -19,7 +19,7 @@ DTYPES = {
 
 
 def load_rank(root: Path, prefix: str, rank: int = 0):
-    matches = sorted(root.glob(f"{prefix}rank-{rank}-*"))
+    matches = sorted(root.glob(f"{prefix}{rank}-*"))
     if len(matches) != 1:
         raise RuntimeError(f"expected one rank-{rank} directory below {root}, got {matches}")
     directory = matches[0]
