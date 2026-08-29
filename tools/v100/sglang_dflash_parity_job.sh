@@ -46,6 +46,8 @@ setsid env \
     SGLANG_MAMBA_CONV_DTYPE=float16 \
     SGLANG_MAMBA_SSM_DTYPE=float16 \
     SGLANG_ENABLE_SPEC_V2=1 \
+    SGLANG_V100_GROUPED_DECODE=0 \
+    SGLANG_V100_NATIVE_LINEAR_VERIFY=0 \
     sglang serve \
     --trust-remote-code \
     --model-path "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
