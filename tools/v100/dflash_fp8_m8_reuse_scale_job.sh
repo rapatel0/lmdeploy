@@ -210,13 +210,13 @@ run_arm baseline 0
 run_arm reuse 1
 
 expected_tp="${TP:-4}"
-registration_count="$(grep -c '^SM70_FP8_M8_REUSE_SCALE_REGISTERED device=' "${RESULTS}/reuse.log" || true)"
+registration_count="$(grep -ao 'SM70_FP8_M8_REUSE_SCALE_REGISTERED device=[0-9]\+' "${RESULTS}/reuse.log" | wc -l)"
 [ "${registration_count}" -eq "${expected_tp}" ] || {
     echo "FAIL: expected ${expected_tp} reuse registrations, got ${registration_count}" >&2
     exit 3
 }
 for ((device = 0; device < expected_tp; ++device)); do
-    grep -q "^SM70_FP8_M8_REUSE_SCALE_REGISTERED device=${device}$" "${RESULTS}/reuse.log" || {
+    grep -q "SM70_FP8_M8_REUSE_SCALE_REGISTERED device=${device}" "${RESULTS}/reuse.log" || {
         echo "FAIL: missing reuse registration for device ${device}" >&2
         exit 3
     }
