@@ -184,6 +184,15 @@ Artifacts: `/results/20260829_110041-dflash-fp8-m8-reuse-dcb5e4afcbba`, `/result
 
 Artifact: `/results/20260829_114211-dflash-fp8-m8-fused-decode-64fa191aa854`.
 
+### A5.5. Substitute existing native SM70 FP16 M<=8 kernels — rejected as infeasible
+
+- Route attribution mapped the repeated CUTLASS class to `text_model.output` at `Mx62080x5120` and 48 GDN `in_proj_all` weights at `Mx4120x5120`.
+- All traced M=1/M=7/M=8 instances used cuBLAS. The existing native SM70 FP16 catalog has no feasible kernel for their flat `ttt` descriptors.
+- Native-GDN, native-head, and combined arms failed closed during warm-up with `No feasible kernel`; no candidate performance or correctness claim is made.
+- The temporary backend override and tracing infrastructure were removed. A future revisit requires a purpose-built descriptor-compatible kernel, not another dispatch override.
+
+Artifact: `/results/20260829_122827-dflash-fp16-m8-backend-5909e4148e28`.
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.

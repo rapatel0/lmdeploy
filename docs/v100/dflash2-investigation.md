@@ -334,6 +334,12 @@ The one-build matrix separated conversion-only from conversion plus scale retent
 
 All correctness and provenance gates passed: all 256 E4M3 byte values matched for every tested safe FP16 exponent, deterministic GEMM outputs were bit-identical for all three production shapes, all 407 target FP8 scale tensors were within the safe range, the draft checkpoint contained no FP8 weights requiring scales, and audited 256-token K=0/K=7 identity passed. The combined path is default-on; `TM_SM70_FP8_M8_FUSED_DECODE=0` retains the exact legacy descriptor and transform, `=1` selects conversion-only, and `=2` explicitly selects the default combined path. Artifact: `/results/20260829_114211-dflash-fp8-m8-fused-decode-64fa191aa854`.
 
+## FP16 M<=8 backend attribution
+
+Per-weight route tracing resolved the dominant cuBLAS CUTLASS class without adding new GEMM geometry. The two large-vocabulary projections are `text_model.output` with local shape `Mx62080x5120`; the repeated narrow projections are the 48 `text_model.layers.*.linear_attn.in_proj_all` weights with shape `Mx4120x5120`. All traced M=1, M=7, and M=8 instances selected cuBLAS backend 1.
+
+A one-build feasibility matrix attempted to route the output head, the 48 GDN projections, and both classes through the existing native SM70 FP16 catalog. Every native arm failed closed before measurement: no registered native kernel supports the required flat `ttt` descriptors (`8x4120x5120` for GDN and `1x62080x5120` for the head). Only the baseline arm ran. This rejects backend substitution with the existing catalog; it does not measure or reject a future purpose-built kernel. The temporary backend override, caches, tracing, analyzer, and job were removed. Artifact: `/results/20260829_122827-dflash-fp16-m8-backend-5909e4148e28`.
+
 ## Rollback barrier merge
 
 A five-trial A/B queued rollback verdict, published-length, and tip readbacks behind one barrier instead of two. The change did not improve acceptance-normalized cycle time: the legacy path took 43.11 ms per step and the combined path took 43.13 ms. Raw decode differed because separate processes followed different acceptance trajectories. The combined arm also hit the known audited position-220 near-tie. Since the normalized result showed no gain, the implementation and runtime flag were removed. Artifacts: `/results/20260828_205537-dflash-rollback-sync-e49a2f50daff`.

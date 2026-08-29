@@ -18,37 +18,12 @@
 #include "src/turbomind/models/llama/LlamaLinear.h"
 
 #include "src/turbomind/utils/cuda_utils.h"
-#include "src/turbomind/utils/nvtx_utils.h"
-
-#include <cstdlib>
-#include <sstream>
-#include <string_view>
 
 namespace turbomind {
 
 using namespace gemm;
 
 struct LlamaLinear::Impl {
-
-    static bool PathMatches(std::string_view path, const char* allowlist)
-    {
-        if (!allowlist || !*allowlist) {
-            return false;
-        }
-        std::string_view list{allowlist};
-        while (!list.empty()) {
-            const auto comma = list.find(',');
-            const auto token = list.substr(0, comma);
-            if (!token.empty() && path == token) {
-                return true;
-            }
-            if (comma == std::string_view::npos) {
-                break;
-            }
-            list.remove_prefix(comma + 1);
-        }
-        return false;
-    }
 
     explicit Impl()
     {
@@ -202,35 +177,6 @@ struct LlamaLinear::Impl {
             desc_D.offsets = const_cast<int*>(offsets.data());
         }
 
-        const bool fp16_m8 = desc_A.rows <= 8 && desc_A.type == kHalf && desc_B.type == kHalf && !op.quant_a
-                               && !op.quant_b && weight.epilogue == Epilogue::kNone;
-        const bool trace = fp16_m8 && std::getenv("TM_GEMM_TRACE_FP16_M8");
-        std::string weight_path;
-        if (trace || (fp16_m8 && std::getenv("TM_GEMM_FP16_M8_BACKEND"))) {
-            weight_path = weight.full_path();
-            op.tag      = weight_path.c_str();
-        }
-        if (fp16_m8 && PathMatches(weight_path, std::getenv("TM_GEMM_FP16_M8_PATHS"))) {
-            const std::string_view backend{std::getenv("TM_GEMM_FP16_M8_BACKEND")
-                                               ? std::getenv("TM_GEMM_FP16_M8_BACKEND")
-                                               : ""};
-            if (backend == "native") {
-                op.backend = 0;
-            }
-            else if (backend == "cublas") {
-                op.backend = 1;
-            }
-        }
-
-        std::string trace_label;
-        if (trace) {
-            std::ostringstream os;
-            os << "gemmFp16M8:" << weight_path << ":m=" << desc_A.rows << ":n=" << desc_B.cols
-               << ":k=" << desc_A.cols << ":forced=" << op.backend;
-            trace_label = os.str();
-            PUSH_RANGE(trace_label);
-        }
-
         MatrixLayout desc_W{};
         void*        W_ptr = nullptr;
         if (weight.output_dtype() == kFloat8_e4m3) {
@@ -264,9 +210,6 @@ struct LlamaLinear::Impl {
                             workspace_,
                             core::Context::stream().handle());
 
-        if (trace) {
-            POP_RANGE;
-        }
         if (ec) {
             TM_LOG_ERROR("{}: {}", __PRETTY_FUNCTION__, ec);
         }
