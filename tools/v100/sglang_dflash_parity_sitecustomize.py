@@ -59,21 +59,18 @@ if _TRACE_ROOT:
             return
         if last_row and tensor.ndim:
             tensor = tensor.reshape(-1, tensor.shape[-1])[-1:]
+        # Never serialize while CUDA is capturing, even when the external arm
+        # marker already exists: DFlash may lazily recapture on the first real
+        # request. Keep the latest graph-owned address and flush it only after
+        # replay. This prevents armed lazy-capture placeholders from winning.
+        try:
+            capturing = torch.cuda.is_current_stream_capturing()
+        except Exception:
+            capturing = False
+        if capturing:
+            _graph_refs[name] = tensor.detach()
+            return
         if not _armed():
-            # The production DFlash path executes from CUDA graphs. During
-            # startup capture, retain only references to graph-owned tensors;
-            # do not synchronize or write anything. Graph replay updates these
-            # same addresses for the audited request. The outer worker hook
-            # flushes them after the first armed real decode replay.
-            try:
-                capturing = torch.cuda.is_current_stream_capturing()
-            except Exception:
-                capturing = False
-            if capturing:
-                # Graph initialization can recapture the same batch shape.
-                # The model runner replays the final graph, so retain the most
-                # recent graph-owned address for each boundary.
-                _graph_refs[name] = tensor.detach()
             return
         tensor = tensor.detach().contiguous().cpu()
         dtype_name = {
@@ -259,16 +256,17 @@ if _TRACE_ROOT:
             if _armed():
                 # These are the live inputs staged by DFlashWorkerV2 for this
                 # exact audited replay, not CUDA-graph capture placeholders.
-                _dump("block.ids", getattr(forward_batch, "input_ids", None))
-                _dump("block.positions", getattr(forward_batch, "positions", None))
-                _dump("block.embedding", getattr(forward_batch, "input_embeds", None))
+                # Remove any same-name startup artifact so the manifest's last
+                # record is guaranteed to describe this request.
+                for name, value in (
+                    ("block.ids", getattr(forward_batch, "input_ids", None)),
+                    ("block.positions", getattr(forward_batch, "positions", None)),
+                    ("block.embedding", getattr(forward_batch, "input_embeds", None)),
+                ):
+                    _seen.discard(name)
+                    _dump(name, value)
             output = original_forward(forward_batch, *forward_args, **forward_kwargs)
-            if (
-                _armed()
-                and _graph_refs
-                and not _graph_flushed
-                and bool(getattr(output, "can_run_graph", False))
-            ):
+            if _armed() and _graph_refs and not _graph_flushed and bool(getattr(output, "can_run_graph", False)):
                 _graph_flushed = True
                 for name, tensor in _graph_refs.items():
                     _dump(name, tensor)
