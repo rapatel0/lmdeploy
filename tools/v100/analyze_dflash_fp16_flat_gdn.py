@@ -40,13 +40,28 @@ def cycle(root: Path, name: str) -> dict[str, float]:
     }
 
 
-def kernel_metric(path: Path, native: bool, verification_steps: int) -> dict[str, object]:
+def kernel_metric(path: Path, native: bool) -> dict[str, object]:
     try:
         db = sqlite3.connect(path)
+        ranges = db.execute(
+            """SELECT k.deviceId, COUNT(DISTINCT n.rowid)
+               FROM NVTX_EVENTS n JOIN StringIds nt ON nt.id=n.textId
+               JOIN CUPTI_ACTIVITY_KIND_RUNTIME r
+                    ON r.globalTid=n.globalTid AND r.start BETWEEN n.start AND n.end
+               JOIN CUPTI_ACTIVITY_KIND_KERNEL k
+                    ON k.correlationId=r.correlationId AND k.globalPid=(r.globalTid & -16777216)
+               WHERE nt.value='targetVerify' GROUP BY k.deviceId"""
+        ).fetchall()
         rows = db.execute(
             """SELECT s.value, k.deviceId, k.gridX, k.gridY, k.gridZ, k.blockX,
                       COUNT(*), SUM(k.end-k.start)
-               FROM CUPTI_ACTIVITY_KIND_KERNEL k JOIN StringIds s ON s.id=k.demangledName
+               FROM NVTX_EVENTS n JOIN StringIds nt ON nt.id=n.textId
+               JOIN CUPTI_ACTIVITY_KIND_RUNTIME r
+                    ON r.globalTid=n.globalTid AND r.start BETWEEN n.start AND n.end
+               JOIN CUPTI_ACTIVITY_KIND_KERNEL k
+                    ON k.correlationId=r.correlationId AND k.globalPid=(r.globalTid & -16777216)
+               JOIN StringIds s ON s.id=k.demangledName
+               WHERE nt.value='targetVerify'
                GROUP BY s.value,k.deviceId,k.gridX,k.gridY,k.gridZ,k.blockX"""
         ).fetchall()
         db.close()
@@ -92,20 +107,25 @@ def kernel_metric(path: Path, native: bool, verification_steps: int) -> dict[str
             selected.append((name, device, grid_x, grid_y, grid_z, block_x, launches, total_ns))
     if not selected:
         fail(f"{path}: missing {'native' if native else 'cuBLAS'} GDN kernel")
-    expected_per_device = 48 * verification_steps
+    try:
+        expected_by_device = {int(device): 48 * int(count) for device, count in ranges}
+    except (TypeError, ValueError) as exc:
+        fail(f"{path}: invalid targetVerify range count: {exc}")
+    if sorted(expected_by_device) != [0, 1, 2, 3]:
+        fail(f"{path}: targetVerify ranges did not cover exactly devices 0..3: {expected_by_device}")
     by_device: dict[int, int] = {}
     for row in selected:
         by_device[row[1]] = by_device.get(row[1], 0) + row[6]
     if sorted(by_device) != [0, 1, 2, 3]:
         fail(f"{path}: route did not cover exactly devices 0..3: {by_device}")
-    if any(count != expected_per_device for count in by_device.values()):
-        fail(f"{path}: incomplete or duplicate GDN route: expected {expected_per_device}/device, got {by_device}")
+    if by_device != expected_by_device:
+        fail(f"{path}: incomplete or duplicate GDN route: expected {expected_by_device}, got {by_device}")
     launches = sum(row[6] for row in selected)
     total_ns = sum(row[7] for row in selected)
-    expected_launches = expected_per_device * 4
+    expected_launches = sum(expected_by_device.values())
     if launches != expected_launches:
         fail(f"{path}: expected {expected_launches} complete GDN launches, got {launches}")
-    logical_ranges = 4 * verification_steps
+    logical_ranges = sum(count // 48 for count in expected_by_device.values())
     return {
         "total_ms": total_ns / 1e6,
         "launches": launches,
@@ -130,14 +150,7 @@ def main() -> None:
     root = args.result_dir
     unprofiled = {arm: cycle(root, arm) for arm in ARMS}
     profiled = {arm: cycle(root, f"profile_{arm}") for arm in ARMS}
-    try:
-        profile_steps = {arm: int(profiled[arm]["verification_steps"]) for arm in ARMS}
-    except (KeyError, TypeError, ValueError) as exc:
-        fail(f"invalid profiled verification-step count: {exc}")
-    kernels = {
-        arm: kernel_metric(root / f"profile_{arm}.sqlite", arm == "native", profile_steps[arm])
-        for arm in ARMS
-    }
+    kernels = {arm: kernel_metric(root / f"profile_{arm}.sqlite", arm == "native") for arm in ARMS}
     try:
         native_ms = float(kernels["native"]["ms_per_48_layer_range"])
         transposed_ms = float(kernels["transposed"]["ms_per_48_layer_range"])
