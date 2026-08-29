@@ -187,6 +187,8 @@ Thus the 0.0625 policy discards roughly 0.22-0.26 tokens per verification and co
 
 A zero margin can still flag exact ties, as seen in the round-on arm. The no-round/zero-margin configuration passed exact audited-prompt identity, so the default margin was changed to zero while preserving the environment override for conservative diagnostics.
 
+A later exact-tie replay A/B did not qualify disabling replay as a default. Replay-on and replay-off ran in separate processes and followed different acceptance trajectories: replay-on had no ambiguous steps, commit length 2.669, and 63.28 decode tok/s; replay-off had 12 ambiguous steps, commit length 2.547, and 60.23 tok/s. Replay-off passed audited identity twice and hit only the known position-220 split once, so the control remains useful, but there is no matched evidence of a speed uplift. Exact-tie replay remains enabled by default. Artifacts: `/results/20260829_001752-dflash-exact-tie-79fc95e78c15`.
+
 ## Confirmed checkpoint attention-policy defect
 
 The published checkpoint declares:

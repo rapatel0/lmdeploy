@@ -30,6 +30,7 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Context round had little effect: raw commit remained approximately 2.1.
   - Removing the 0.0625 ambiguity margin raised final commit from 1.83-1.87 to 2.05-2.09 and throughput from 42-43 to about 47.4 tok/s.
   - Every arm passed the 256-token short-prompt identity gate; the selected no-round/zero-margin arm also passed exact audited-prompt identity.
+  - Disabling replay for remaining exact ties passed two of three audited controls; the third was the known position-220 split. Separate-process throughput was lower rather than higher, so exact-tie replay remains enabled by default.
 
 - [x] **Inspect the draft checkpoint architecture and unmatched weight keys.**
   - The checkpoint is generic `DFlash2DraftModel`, not Laguna.
