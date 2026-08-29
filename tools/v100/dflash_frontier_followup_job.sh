@@ -8,14 +8,20 @@ exec > >(tee "${RESULTS}/console.log") 2>&1
 trap 'rc=$?; echo "$rc" >"${RESULTS}/exit_code"; if [ "$rc" -ne 0 ]; then touch "${RESULTS}/incomplete"; fi; echo "artifacts in ${RESULTS} (exit ${rc})"' EXIT
 
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo "FAIL: no prebuilt wheel" >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo "FAIL: no prebuilt wheel" >&2
+    exit 2
+}
 echo "commit=${COMMIT} wheel=${WHEEL}"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd /
 export TM_LOG_LEVEL=INFO FT_NVTX=ON
 NSYS="$(command -v nsys 2>/dev/null || true)"
 if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then NSYS=/opt/nsys/nsys; fi
-[ -n "${NSYS}" ] || { echo "FAIL: nsys unavailable" >&2; exit 2; }
+[ -n "${NSYS}" ] || {
+    echo "FAIL: nsys unavailable" >&2
+    exit 2
+}
 
 profile_arm() {
     local name=$1
