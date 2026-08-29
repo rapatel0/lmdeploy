@@ -282,3 +282,30 @@ if _TRACE_ROOT:
         self.draft_model_runner.forward = _traced_draft_forward
 
     _dw.DFlashWorkerV2.__init__ = _traced_worker_init
+
+    # The pinned overlap scheduler drops the prefill-produced draft input and
+    # presents create_idle_input() on the first decode iteration. Preserve the
+    # target prefill bonus locally and restore it only when that empty relay is
+    # observed. This is trace-harness orchestration; draft-model math remains
+    # unchanged and the exact expected anchor is still enforced by the job.
+    _orig_worker_forward_generation = _dw.DFlashWorkerV2.forward_batch_generation
+
+    def _traced_worker_forward_generation(self, batch, on_publish=None):
+        spec_info = getattr(batch, "spec_info", None)
+        bonus = getattr(spec_info, "bonus_tokens", None)
+        saved = getattr(self, "_parity_prefill_bonus", None)
+        if (
+            isinstance(bonus, torch.Tensor)
+            and bonus.numel() == 0
+            and isinstance(saved, torch.Tensor)
+            and saved.numel() == len(batch.seq_lens)
+        ):
+            spec_info.bonus_tokens = saved
+        result = _orig_worker_forward_generation(self, batch, on_publish=on_publish)
+        next_draft = getattr(result, "next_draft_input", None)
+        next_bonus = getattr(next_draft, "bonus_tokens", None)
+        if isinstance(next_bonus, torch.Tensor) and next_bonus.numel():
+            self._parity_prefill_bonus = next_bonus.detach().clone()
+        return result
+
+    _dw.DFlashWorkerV2.forward_batch_generation = _traced_worker_forward_generation
