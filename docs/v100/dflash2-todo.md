@@ -88,7 +88,7 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - [x] **Compare residual RMSNorm reduction and rounding schedules.**
   - A flagged full-product/BF16-output arm made `block.initial_norm` bit-exact and brought layer-0 convolution projection/side-0 within FP16 parity tolerance.
   - Acceptance was unchanged at commit length `2.669`; normalized cycle cost regressed from `41.76` to `41.98` ms. Audited identity hit only the known position-220 instability.
-  - The exact local fidelity fix did not improve output economics, so its kernel and flag were removed. The next material mismatch is layer-0 attention before output convolution: reduce-first max abs `6.92`, RMS `0.0746`.
+  - The exact local fidelity fix did not improve output economics, so its kernel and flag were removed. The next material mismatch is layer-0 attention before output convolution: reduce-first `attention.conv_side1` max abs `21.06`, RMS `0.2188`.
   - Artifacts: `/results/20260829_040158-dflash-full-product-rmsnorm-1dced68ec22b` and `/results/20260829_041033-dflash-reduce-first-parity`.
 
 ## P1: speculative cycle cost
