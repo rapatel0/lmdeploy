@@ -182,7 +182,8 @@ struct Operation {
     QuantDesc      quant_a;
     QuantDesc      quant_b;
     int            batch_dim;
-    // void*          reserved;
+    int            backend{-1};  // -1: normal dispatch, 0: native, 1: cuBLAS
+    const char*    tag{};        // optional diagnostic operation identity
 };
 
 inline Operation transpose(Operation o)

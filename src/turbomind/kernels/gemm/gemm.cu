@@ -12,11 +12,15 @@
 #include "src/turbomind/kernels/gemm/tuner/sampler.h"
 #include "src/turbomind/kernels/gemm/types.h"
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <iostream>
 #include <iterator>
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <set>
+#include <sstream>
 #include <vector>
 
 namespace turbomind::gemm {
@@ -61,14 +65,18 @@ struct Gemm::Impl {
             warn_cache_miss_ = true;
         }
         measurer_.emplace(CreateStoppingCriterion(tuning_.min_iter, tuning_.max_iter, tuning_.max_time));
+        backend_caches_[0] = std::make_unique<DispatchCache>(registry_.kernels());
+        backend_caches_[1] = std::make_unique<DispatchCache>(registry_.kernels());
     }
 
     // find launch spec in dispatch cache, dispatch by heuristic on cache miss
-    LaunchSpec Dispatch(Context& ctx, DispatchPolicy policy, size_t barriers_size, size_t partials_size)
+    LaunchSpec
+    Dispatch(Context& ctx, DispatchPolicy policy, size_t barriers_size, size_t partials_size, int forced_backend)
     {
         const auto& desc = ctx.desc();
+        auto& cache = forced_backend >= 0 ? *backend_caches_.at(forced_backend) : cache_;
         if (policy & DispatchPolicy::kReuse) {
-            if (auto spec = cache_.LowerBound(desc)) {
+            if (auto spec = cache.LowerBound(desc)) {
                 return *spec;
             }
             if (warn_cache_miss_) {
@@ -77,21 +85,28 @@ struct Gemm::Impl {
             }
         }
 
-        if (auto spec = cache_.Find(desc)) {
+        if (auto spec = cache.Find(desc)) {
             return *spec;
         }
 
-        auto specs = Find(ctx, barriers_size, partials_size, 1);
+        auto specs = Find(ctx, barriers_size, partials_size, 1, forced_backend);
         if (!specs.empty()) {
-            cache_.Insert(desc, specs.front());
+            cache.Insert(desc, specs.front());
             return specs.front();
         }
         return {};
     }
 
-    std::vector<LaunchSpec> Find(Context& ctx, size_t barrier_size, size_t partials_size, int top_k)
+    std::vector<LaunchSpec>
+    Find(Context& ctx, size_t barrier_size, size_t partials_size, int top_k, int forced_backend = -1)
     {
         std::vector<Kernel*> feasible = ctx.Filter(registry_.kernels());
+        if (forced_backend >= 0) {
+            feasible.erase(std::remove_if(feasible.begin(),
+                                          feasible.end(),
+                                          [=](const Kernel* kernel) { return kernel->desc().backend != forced_backend; }),
+                           feasible.end());
+        }
 
         std::vector<std::vector<LaunchSpec>> clusters;
         {
@@ -175,16 +190,22 @@ struct Gemm::Impl {
     }
 
     template<class LaunchFunc>
-    int Measure(
-        Context& ctx, size_t barriers_size, size_t partials_size, int top_k, LaunchFunc launch_func, cudaStream_t st)
+    int Measure(Context&   ctx,
+                size_t     barriers_size,
+                size_t     partials_size,
+                int        top_k,
+                LaunchFunc launch_func,
+                cudaStream_t st,
+                int        forced_backend)
     {
+        auto& cache = forced_backend >= 0 ? *backend_caches_.at(forced_backend) : cache_;
         // Early exit on exact match
-        if (cache_.Find(ctx.desc())) {
+        if (cache.Find(ctx.desc())) {
             return 0;
         }
         // std::cerr << "GEMM: " << desc.m << "x" << desc.n << "x" << desc.k << "\n";
 
-        const auto tmp = Find(ctx, barriers_size, partials_size, tuning_.top_k);
+        const auto tmp = Find(ctx, barriers_size, partials_size, tuning_.top_k, forced_backend);
 
         std::vector<LaunchSpec> specs;
         for (const auto& spec : tmp) {
@@ -213,7 +234,7 @@ struct Gemm::Impl {
         // }
 
         if (!specs.empty()) {
-            cache_.Insert(ctx.desc(), specs.front());
+            cache.Insert(ctx.desc(), specs.front());
         }
         else {
             std::cerr << "No valid kernel found for the problem\n";
@@ -246,6 +267,8 @@ struct Gemm::Impl {
     std::optional<Measurer> measurer_;
 
     DispatchCache cache_;
+    std::array<std::unique_ptr<DispatchCache>, 2> backend_caches_;
+    std::set<std::string>                         traced_dispatches_;
 };
 
 // implementation of GEMM interfaces
@@ -274,6 +297,11 @@ int Gemm::Run(const Operation&    operation,
               const Workspace&    workspace,
               cudaStream_t        stream)
 {
+
+    if (operation.backend < -1 || operation.backend > 1) {
+        TM_LOG_FATAL("invalid forced GEMM backend: {}", operation.backend);
+        return -1;
+    }
 
     Context context{*impl_->props_};
 
@@ -326,12 +354,30 @@ int Gemm::Run(const Operation&    operation,
     LaunchSpec spec{};
 
     if (operation.dispatch & DispatchPolicy::kMeasure) {
-        impl_->Measure(context, workspace.barriers_size, workspace.partials_size, 1, launch, stream);
+        impl_->Measure(
+            context, workspace.barriers_size, workspace.partials_size, 1, launch, stream, operation.backend);
     }
 
-    spec = impl_->Dispatch(context, operation.dispatch, workspace.barriers_size, workspace.partials_size);
+    spec = impl_->Dispatch(
+        context, operation.dispatch, workspace.barriers_size, workspace.partials_size, operation.backend);
 
     if (spec.kernel) {
+        if (operation.tag && std::getenv("TM_GEMM_TRACE_FP16_M8")) {
+            std::ostringstream key;
+            key << operation.tag << ':' << desc->m << ':' << desc->n << ':' << desc->k << ':'
+                << spec.kernel->desc().backend;
+            if (impl_->traced_dispatches_.insert(key.str()).second) {
+                const auto tile = spec.kernel->cta_tile_size();
+                std::ostringstream line;
+                line << "GEMM_FP16_M8_ROUTE tag=" << operation.tag << " m=" << desc->m << " n=" << desc->n
+                     << " k=" << desc->k << " backend=" << spec.kernel->desc().backend
+                     << " splits=" << spec.splits << " swizzle=" << spec.swizzle << " tile=" << tile.x << 'x'
+                     << tile.y << 'x' << tile.z << '\n';
+                const auto text = line.str();
+                std::fwrite(text.data(), 1, text.size(), stderr);
+                std::fflush(stderr);
+            }
+        }
         // std::cout << "[Gemm] dispatch: " << spec.kernel->name()  //
         //           << " split_k=" << spec.splits                  //
         //           << " swizzle=" << spec.swizzle << std::endl;
