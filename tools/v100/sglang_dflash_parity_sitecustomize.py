@@ -246,32 +246,34 @@ if _TRACE_ROOT:
     # deliberately before target verification/acceptance: the pinned SGLang
     # image has an independent V100 accept-kernel failure, but the first draft
     # block is already complete and is the parity artifact we need.
-    import sglang.srt.model_executor.model_runner as _mr
+    import sglang.srt.speculative.dflash_worker_v2 as _dw
 
-    _orig_runner_forward = _mr.ModelRunner.forward
+    _orig_worker_init = _dw.DFlashWorkerV2.__init__
 
-    def _traced_runner_forward(self, *args, **kwargs):
-        global _graph_flushed
-        is_draft = isinstance(getattr(self, "model", None), _df.DFlashDraftModel)
-        if is_draft and _armed():
-            forward_batch = args[0] if args else kwargs.get("forward_batch")
-            if forward_batch is not None:
-                # Unlike inner graph references, these are the live inputs
-                # staged by DFlashWorkerV2 for this exact audited replay.
+    def _traced_worker_init(self, *args, **kwargs):
+        _orig_worker_init(self, *args, **kwargs)
+        original_forward = self.draft_model_runner.forward
+
+        def _traced_draft_forward(forward_batch, *forward_args, **forward_kwargs):
+            global _graph_flushed
+            if _armed():
+                # These are the live inputs staged by DFlashWorkerV2 for this
+                # exact audited replay, not CUDA-graph capture placeholders.
                 _dump("block.ids", getattr(forward_batch, "input_ids", None))
                 _dump("block.positions", getattr(forward_batch, "positions", None))
                 _dump("block.embedding", getattr(forward_batch, "input_embeds", None))
-        output = _orig_runner_forward(self, *args, **kwargs)
-        if (
-            is_draft
-            and _armed()
-            and _graph_refs
-            and not _graph_flushed
-            and bool(getattr(output, "can_run_graph", False))
-        ):
-            _graph_flushed = True
-            for name, tensor in _graph_refs.items():
-                _dump(name, tensor)
-        return output
+            output = original_forward(forward_batch, *forward_args, **forward_kwargs)
+            if (
+                _armed()
+                and _graph_refs
+                and not _graph_flushed
+                and bool(getattr(output, "can_run_graph", False))
+            ):
+                _graph_flushed = True
+                for name, tensor in _graph_refs.items():
+                    _dump(name, tensor)
+            return output
 
-    _mr.ModelRunner.forward = _traced_runner_forward
+        self.draft_model_runner.forward = _traced_draft_forward
+
+    _dw.DFlashWorkerV2.__init__ = _traced_worker_init
