@@ -103,17 +103,17 @@ Done when every graph input and output uses a stable address.
 
 Target: eliminate steady allocation from every captured path.
 
-### A3. Capture the draft and selector graph — active
+### A3. Capture the draft and selector graph — capability complete, speed target missed
 
-- Selector-only capture now succeeds on all four TP ranks with thread-local stream capture.
-- Selector-only replay did not reduce cycle time and is rejected as a speed path.
-- A full draft-plus-selector graph now exists behind `TM_DFLASH_DRAFT_GRAPH=1`.
-- The full graph uses two warmups, one capture launch, stable phase buffers, and an ordinary fallback.
-- TP4 build, replay, identity, and matched profiling remain.
+- Selector-only capture succeeds on all four TP ranks but does not reduce cycle time.
+- Full draft-plus-selector capture also succeeds on all ranks and passes audited identity.
+- Full capture reduced the draft/select range from 6.99 to 6.60 ms and aggregate kernel launches from 193,044 to 166,932.
+- Five-trial whole-cycle normalization improved only 0.6%; matched profiled normalization regressed as target/rollback scheduling shifted.
+- Keep both graph modes off by default. Reuse the lifecycle for broader target capture rather than tuning this slice further.
 
-Done when full graph replay passes identity and reduces matched cycle time.
+Done: graph capability and NCCL capture are proven. The standalone speed target was not met.
 
-Target: reduce cycle time to at most 32 ms.
+Next target: include enough target verification work to reduce whole-cycle time beyond run variance.
 
 ### A4. Capture target verification
 

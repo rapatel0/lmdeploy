@@ -267,7 +267,7 @@ First-block comparison was also confounded before the changed attention path: fl
 
 Artifacts: `/results/20260828_234307-dflash-graph-paged-79fc95e78c15`, `/results/20260829_000639-dflash-paged-followup-79fc95e78c15`, `/results/20260829_001458-dflash-paged-parity-79fc95e78c15`, and `/results/20260829_001656-dflash-parity-control-79fc95e78c15`.
 
-A larger draft-plus-selector graph now exists behind `TM_DFLASH_DRAFT_GRAPH=1`. It uses phase-owned sequence offsets and fixed paged-attention launch geometry. Runtime qualification remains pending.
+The larger draft-plus-selector graph behind `TM_DFLASH_DRAFT_GRAPH=1` captured and replayed successfully on all four TP ranks. Audited identity passed. Its five-trial normalized cycle improved only from 41.88 to 41.65 ms, about 0.6%. Matched profiling showed the draft/select range itself falling from 6.99 to 6.60 ms, but whole-cycle normalization regressed from 47.17 to 48.63 ms as target/rollback scheduling shifted under Nsight. CUDA kernel launches fell from 193,044 to 166,932 and 204 graph launches covered the profiled replay cycles. The graph remains off by default and is retained as infrastructure for broader capture, not as a qualified standalone speed default. Artifacts: `/results/20260829_002508-dflash-draft-graph-2892674f32d2`.
 
 ## Current speculative-cycle attribution
 

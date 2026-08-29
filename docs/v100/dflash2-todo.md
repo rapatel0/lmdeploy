@@ -113,9 +113,11 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - [ ] **Capture fixed-shape target verification and draft execution in CUDA graphs.**
   - Selector-only capture now succeeds on all four TP ranks with thread-local capture.
   - The selector-only slice is rejected: profiled cycle time regressed from 47.20 to 48.17 ms, while `dflashDraftAndSelect` remained 7.071 versus 7.068 ms.
-  - A full draft-plus-selector graph is implemented behind `TM_DFLASH_DRAFT_GRAPH=1` and awaits TP4 validation.
+  - The full draft-plus-selector graph captured/replayed on all four TP ranks and passed audited identity.
+  - It reduced `dflashDraftAndSelect` from 6.99 to 6.60 ms and kernel launches from 193,044 to 166,932, but whole-cycle gain was only 0.6% unprofiled and regressed under Nsight.
+  - Keep it off by default as infrastructure for broader capture.
   - Target verification still needs stable addresses and a separate graph lifecycle.
-  - Done when: full graph replay passes identity and matched profiling shows reduced cycle wall time.
+  - Done when: broader graph replay passes identity and reduces matched whole-cycle wall time by more than run variance.
 
 - [ ] **Qualify direct paged Q=8 attention.**
   - The SM70 block-iterator path now bypasses flattened KV and runs on TP4.
