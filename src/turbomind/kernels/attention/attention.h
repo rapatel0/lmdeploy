@@ -14,4 +14,7 @@ void dispatchAttention(const AttentionParams<T>& params);
 template<typename T>
 void dispatchPagedAttention(const AttentionParams<T>& params);
 
+template<typename T>
+void dispatchGroupedPagedAttention(const AttentionParams<T>& params);
+
 }  // namespace turbomind

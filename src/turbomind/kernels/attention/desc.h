@@ -14,6 +14,7 @@ struct AttnDesc {
     {
         kPrefill,
         kPagedPrefill,
+        kGroupedPagedPrefill,
         kDecoding
     };
     Mode     mode;
@@ -28,7 +29,8 @@ inline std::string to_string(const AttnDesc& d)
 {
     std::ostringstream ss;
     ss << (d.mode == AttnDesc::kPrefill ? "prefill" :
-               d.mode == AttnDesc::kPagedPrefill ? "paged_prefill" : "decode");
+               d.mode == AttnDesc::kPagedPrefill ? "paged_prefill" :
+               d.mode == AttnDesc::kGroupedPagedPrefill ? "grouped_paged_prefill" : "decode");
     ss << "_d" << d.head_dim;
     ss << "_" << to_string(d.data_type);
     if (d.mode == AttnDesc::kDecoding) {
@@ -66,7 +68,8 @@ inline std::string to_string(const KernelDesc& d)
 {
     std::ostringstream ss;
     ss << (d.mode == AttnDesc::kPrefill ? "prefill" :
-               d.mode == AttnDesc::kPagedPrefill ? "paged_prefill" : "decode");
+               d.mode == AttnDesc::kPagedPrefill ? "paged_prefill" :
+               d.mode == AttnDesc::kGroupedPagedPrefill ? "grouped_paged_prefill" : "decode");
     ss << "_sm" << d.arch / 10;
     ss << "_d" << d.head_dim;
     ss << "_" << to_string(d.data_type);

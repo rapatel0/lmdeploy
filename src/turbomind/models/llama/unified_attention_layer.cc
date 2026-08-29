@@ -21,11 +21,17 @@
 
 #include "src/turbomind/engine/block.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
-#include <string>
+#include <fstream>
 #include <functional>
 #include <math.h>
+#include <mutex>
 #include <numeric>
+#include <set>
+#include <string>
+#include <unistd.h>
+#include <vector>
 
 #include "src/turbomind/core/allocator.h"
 #include "src/turbomind/core/check.h"
@@ -85,6 +91,92 @@ struct BlockConfig {
     }
 };
 // clang-format on
+
+bool ClaimGroupedQ8Parity(int device, int layer_id)
+{
+    if (!std::getenv("TM_DFLASH_GROUPED_PAGED_Q8_PARITY_DIR")) {
+        return false;
+    }
+    static std::mutex                    mutex;
+    static std::set<std::pair<int, int>> captured;
+    std::lock_guard<std::mutex>          lock(mutex);
+    return captured.emplace(device, layer_id).second;
+}
+
+void CheckGroupedQ8Parity(const Tensor& reference,
+                          const Tensor& grouped,
+                          int           layer_id,
+                          int           context_len,
+                          cudaStream_t  stream)
+{
+    TM_CHECK(reference.shape() == grouped.shape());
+    TM_CHECK_EQ(reference.dtype(), kHalf);
+    TM_CHECK_EQ(grouped.dtype(), kHalf);
+
+    int device{};
+    TM_CUDA_CHECK(cudaGetDevice(&device));
+    const char* output_dir = TM_CHECK_NOTNULL(std::getenv("TM_DFLASH_GROUPED_PAGED_Q8_PARITY_DIR"));
+
+    std::vector<half> reference_host(reference.size());
+    std::vector<half> grouped_host(grouped.size());
+    TM_CUDA_CHECK(cudaMemcpyAsync(reference_host.data(),
+                                  reference.raw_data(),
+                                  reference.byte_size(),
+                                  cudaMemcpyDeviceToHost,
+                                  stream));
+    TM_CUDA_CHECK(cudaMemcpyAsync(
+        grouped_host.data(), grouped.raw_data(), grouped.byte_size(), cudaMemcpyDeviceToHost, stream));
+    TM_CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    bool   finite = true;
+    double squared_error{};
+    float  max_abs{};
+    for (size_t i = 0; i < reference_host.size(); ++i) {
+        const float expected = __half2float(reference_host[i]);
+        const float actual   = __half2float(grouped_host[i]);
+        finite               = finite && std::isfinite(expected) && std::isfinite(actual);
+        const float error    = std::abs(actual - expected);
+        max_abs              = std::max(max_abs, error);
+        squared_error += (double)error * error;
+    }
+    const double rms = std::sqrt(squared_error / reference_host.size());
+
+    constexpr float  kMaxAbsLimit = .125f;
+    constexpr double kRmsLimit    = .01;
+    const bool pass = finite && max_abs <= kMaxAbsLimit && rms <= kRmsLimit;
+    const int  tiles = (context_len + 63) / 64;
+    const int  splits = std::min(8, std::max(1, tiles));
+
+    const std::string path = std::string(output_dir) + "/grouped-q8h4-pid-" + std::to_string(getpid())
+                             + "-device-" + std::to_string(device) + ".jsonl";
+    {
+        static std::mutex       output_mutex;
+        std::lock_guard<std::mutex> lock(output_mutex);
+        std::ofstream out(path, std::ios::app);
+        TM_CHECK(out) << "failed to open grouped Q8 parity report " << path;
+        out << "{\"device\":" << device << ",\"layer\":" << layer_id << ",\"queries\":8"
+            << ",\"local_q_heads\":6,\"local_kv_heads\":1,\"cta_q\":8,\"cta_h\":4"
+            << ",\"base_ctas\":2,\"splits\":" << splits << ",\"launched_ctas\":" << 2 * splits
+            << ",\"context_len\":" << context_len << ",\"elements\":" << reference_host.size()
+            << ",\"finite\":" << (finite ? "true" : "false") << ",\"max_abs\":" << max_abs
+            << ",\"rms\":" << rms << ",\"max_abs_limit\":" << kMaxAbsLimit
+            << ",\"rms_limit\":" << kRmsLimit << ",\"pass\":" << (pass ? "true" : "false") << "}\n";
+    }
+
+    TM_LOG_INFO("[DFlash2] GROUPED_Q8H4_ACTIVE device={} layer={} context={} base_ctas=2 splits={} "
+                "launched_ctas={} max_abs={} rms={} pass={}",
+                device,
+                layer_id,
+                context_len,
+                splits,
+                2 * splits,
+                max_abs,
+                rms,
+                pass);
+    TM_CHECK(pass) << "grouped Q8H4 attention parity failed on device " << device << " layer " << layer_id
+                   << ": finite=" << finite << " max_abs=" << max_abs << " rms=" << rms;
+}
+
 }  // namespace
 
 struct AttentionData {
@@ -855,6 +947,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         const char* value = std::getenv("TM_DFLASH_PAGED_Q8");
         return value && value[0] == '1';
     }();
+    static const bool enable_dflash_grouped_paged_q8 = [] {
+        const char* value = std::getenv("TM_DFLASH_GROUPED_PAGED_Q8");
+        return value && value[0] == '1';
+    }();
     static const bool enable_dflash_draft_graph = [] {
         const char* value = std::getenv("TM_DFLASH_DRAFT_GRAPH");
         return value && value[0] == '1';
@@ -862,10 +958,18 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
     const int dflash_block = engine_param_.speculative_dflash_block_size > 0 ?
                                  engine_param_.speculative_dflash_block_size :
                                  engine_param_.num_draft_tokens + 1;
-    const bool use_dflash_paged_q8 = enable_dflash_paged_q8 &&
-                                     engine_param_.speculative_algorithm == "dflash2" && arch_ == 70 && !is_mla &&
-                                     weights.causal && quant_policy_ == 0 &&
-                                     d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == dflash_block;
+    const bool dflash_paged_q8_eligible = engine_param_.speculative_algorithm == "dflash2" && arch_ == 70 &&
+                                          !is_mla && weights.causal && quant_policy_ == 0 && d.decode.n == 0 &&
+                                          d.prefill.n == 1 && d.prefill.q_sum == dflash_block;
+    // Keep this specialization strict. The audited target has 6Q:1KV per TP
+    // rank and sixteen full-attention layers. Sliding and draft layers retain
+    // their existing paths.
+    const bool use_dflash_grouped_paged_q8 = enable_dflash_grouped_paged_q8 && dflash_paged_q8_eligible &&
+                                             dtype == kHalf && dflash_block == 8 && q_count == 8 &&
+                                             local_head_num == 6 && local_kv_head_num == 1 &&
+                                             size_per_head == 256 && weights.window_size == 0;
+    const bool use_dflash_paged_q8 = (enable_dflash_paged_q8 || use_dflash_grouped_paged_q8) &&
+                                     dflash_paged_q8_eligible;
     const bool use_fixed_dflash_graph_geometry =
         use_dflash_paged_q8 && enable_dflash_draft_graph && p.use_dflash_workspace;
     const int dflash_graph_k_bound = weights.window_size > 0 ?
@@ -1064,13 +1168,28 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         const int offset = d.decode.n;
         // We are executing prefill & decoding kernels concurrently, but only have 1 workspace
         // disable split kv for prefill for now
-        auto params = CreateParams(offset, d.prefill, 1, pf_stream);
+        auto params = CreateParams(offset, d.prefill, use_dflash_grouped_paged_q8 ? 8 : 1, pf_stream);
         if constexpr (sizeof(T) == 2) {
             invokeProcessKV_v2_(params);
             TM_CUDA_CHECK(cudaGetLastError());
 
             if (!p.kv_only) {
-                if (use_dflash_paged_q8) {
+                if (use_dflash_grouped_paged_q8) {
+                    int device{};
+                    TM_CUDA_CHECK(cudaGetDevice(&device));
+                    if (ClaimGroupedQ8Parity(device, p.layer_id)) {
+                        Tensor reference{attn.shape(), attn.dtype(), attn.device()};
+                        auto   reference_params = params;
+                        reference_params.out    = (T*)reference.raw_data();
+                        dispatchPagedAttention(reference_params);
+                        dispatchGroupedPagedAttention(params);
+                        CheckGroupedQ8Parity(reference, attn, p.layer_id, d.prefill.k_max, pf_stream);
+                    }
+                    else {
+                        dispatchGroupedPagedAttention(params);
+                    }
+                }
+                else if (use_dflash_paged_q8) {
                     dispatchPagedAttention(params);
                 }
                 else {

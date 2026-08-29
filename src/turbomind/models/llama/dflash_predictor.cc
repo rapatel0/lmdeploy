@@ -250,6 +250,8 @@ struct DFlashPredictor::ParityTrace {
                                              "TM_DFLASH_SELECTOR_GRAPH",
                                              "TM_DFLASH_DRAFT_GRAPH",
                                              "TM_DFLASH_PAGED_Q8",
+                                             "TM_DFLASH_GROUPED_PAGED_Q8",
+                                             "TM_DFLASH_GROUPED_PAGED_Q8_PARITY_DIR",
                                              "TM_DFLASH_EXACT_TIE_REPLAY",
                                              "TM_DFLASH_REDUCE_BEFORE_CONV",
                                              "TM_DFLASH_CONTEXT_BF16_ROUND",

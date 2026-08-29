@@ -15,7 +15,7 @@ struct AttentionCtaMap {
     __host__ __device__
     AttentionCtaMap(int max_q_len, int batch_size, int head_num, int cta_q, int cta_h, int split_cnt):
         q_cta_cnt_((max_q_len + cta_q - 1) / cta_q),
-        h_cta_cnt_(head_num / cta_h),
+        h_cta_cnt_((head_num + cta_h - 1) / cta_h),
         batch_size_(batch_size),
         split_cnt_(split_cnt)
     {
@@ -62,7 +62,7 @@ struct AttentionCtaMap {
     __host__ __device__
     AttentionCtaMap(int max_q_len, int batch_size, int head_num, int cta_q, int cta_h, int split_cnt):
         q_cta_cnt_((max_q_len + cta_q - 1) / cta_q),
-        h_cta_cnt_(head_num / cta_h),
+        h_cta_cnt_((head_num + cta_h - 1) / cta_h),
         batch_size_(batch_size),
         split_cnt_(split_cnt)
     {

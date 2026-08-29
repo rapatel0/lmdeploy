@@ -39,11 +39,13 @@ class KernelImpl: public Kernel {
     static constexpr bool kIsDecoding = std::is_same_v<typename K::CtaMap, DecodingCtaMap>;
     static constexpr bool kIsPagedPrefill =
         !kIsDecoding && IsPagedCacheIterator<typename K::CacheIteratorFactory>::value;
+    static constexpr bool kIsGroupedPagedPrefill = kIsPagedPrefill && K::CTA_H > 1;
 
 public:
     KernelImpl()
     {
         desc_.mode = kIsDecoding ? AttnDesc::kDecoding :
+                         kIsGroupedPagedPrefill ? AttnDesc::kGroupedPagedPrefill :
                          kIsPagedPrefill ? AttnDesc::kPagedPrefill : AttnDesc::kPrefill;
         desc_.arch      = K::Arch::value;
         desc_.head_dim  = K::kHeadDim;
@@ -57,7 +59,7 @@ public:
         }
         else {
             desc_.kv_quant = 0;
-            desc_.qh       = 1;
+            desc_.qh       = K::CTA_H;
         }
 
         auto func               = &attention_kernel<K>;

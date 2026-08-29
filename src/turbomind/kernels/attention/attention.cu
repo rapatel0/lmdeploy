@@ -39,11 +39,19 @@ void dispatchPagedAttention(const AttentionParams<T>& params)
     dispatchAttentionImpl(params, attention::AttnDesc::kPagedPrefill);
 }
 
+template<class T>
+void dispatchGroupedPagedAttention(const AttentionParams<T>& params)
+{
+    dispatchAttentionImpl(params, attention::AttnDesc::kGroupedPagedPrefill);
+}
+
 template void dispatchAttention(const AttentionParams<half>& params);
 template void dispatchPagedAttention(const AttentionParams<half>& params);
+template void dispatchGroupedPagedAttention(const AttentionParams<half>& params);
 #if ENABLE_BF16
 template void dispatchAttention(const AttentionParams<nv_bfloat16>& params);
 template void dispatchPagedAttention(const AttentionParams<nv_bfloat16>& params);
+template void dispatchGroupedPagedAttention(const AttentionParams<nv_bfloat16>& params);
 #endif
 
 }  // namespace turbomind

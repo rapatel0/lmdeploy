@@ -67,8 +67,7 @@ struct AttentionUniversal {
 
     __device__ bool check_h(int hi)
     {
-        if constexpr (CTA_Q > 1) {
-            // bypass the check for prefill kernels since `hi == 0` constantly
+        if constexpr (CTA_H == 1) {
             return true;
         }
         else {
@@ -135,11 +134,16 @@ struct AttentionUniversal {
                 }
             }
         }
-        else if constexpr (CTA_Q == 1) {
-            Array<T, kVecSize> bias_Q[ITER_S][ITER_C];
+        else {
+            // The grouped prefill kernel flattens [query, GQA head] into the
+            // Q thread-map row. Bias depends on the head only, so decode the
+            // head from that row for all CTA_Q values. Zero initialization is
+            // required for the masked 4+2 tail group.
+            Array<T, kVecSize> bias_Q[ITER_S][ITER_C]{};
             PRAGMA_UNROLL
             for (int s = 0; s < ITER_S; ++s) {
-                const int hi = offset.y + s * Map::kDeltaS;
+                const int si = offset.y + s * Map::kDeltaS;
+                const int hi = si % CTA_H;
                 PRAGMA_UNROLL
                 for (int c = 0; c < ITER_C; ++c) {
                     const int di    = offset.x + c * Map::kDeltaC;
@@ -159,9 +163,6 @@ struct AttentionUniversal {
                     }
                 }
             }
-        }
-        else {
-            static_assert(CTA_Q == 1 || CTA_H == 1);
         }
     }
 
@@ -539,7 +540,10 @@ struct AttentionUniversal {
             // Store actual split count, only used by separate reduction kernel
             for (int ti = threadIdx.x; ti < CTA_Q; ti += kWarpCount * WARP_SIZE) {
                 if (qi_begin + ti < qi_end) {
-                    params.split_cnt[qi_begin + ti] = split_idx ? split_idx + 1 : (params.cp_size > 1 ? 1 : 0);
+                    // Publish the number of active partials, including the
+                    // split-zero-only case produced by fixed graph geometry
+                    // when the live context is shorter than the capture bound.
+                    params.split_cnt[qi_begin + ti] = split_idx + 1;
                 }
             }
         }

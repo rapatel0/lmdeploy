@@ -42,7 +42,11 @@ void invokeAttention(const typename Kernel::ParamType& params, int sm_count, int
     dim3 grid = cta_map.get_grid_shape();
 
     const int grid_size = grid.x * grid.y * grid.z;
-    const int split_cnt = GetSplitCount(max_split_count, grid_size, max_active_ctas, sm_count, 8);
+    // The grouped Q=8 kernel starts from only two head CTAs. Use every legal
+    // 64-token tile pair at 1K so eight 128-token split spans expose 16 CTAs.
+    // Existing one-head kernels retain the occupancy cost model.
+    const int split_cnt = Kernel::CTA_H > 1 ? max_split_count :
+                                             GetSplitCount(max_split_count, grid_size, max_active_ctas, sm_count, 8);
 
     // printf("max split cnt: %d, split cnt: %d\n", max_split_count, split_cnt);
 
@@ -52,15 +56,12 @@ void invokeAttention(const typename Kernel::ParamType& params, int sm_count, int
 
     auto cache_iter_factory = CreateCacheIterFactory<typename Kernel::CacheIteratorFactory>::apply(params);
 
-    const int q_group_size = params.num_heads / params.num_kv_heads;
+    const int q_group_size    = params.num_heads / params.num_kv_heads;
+    const int q_head_per_cta  = std::min(q_group_size, Kernel::CTA_H);
+    const int cta_per_q_group = cdiv(q_group_size, q_head_per_cta);
 
-    kernel_func<<<grid, block, kSmemSize, params.stream>>>(params,
-                                                           cache_iter_factory,
-                                                           cta_map,
-                                                           q_group_size,
-                                                           1,            // q_head_per_cta
-                                                           q_group_size  // cta_per_q_group
-    );
+    kernel_func<<<grid, block, kSmemSize, params.stream>>>(
+        params, cache_iter_factory, cta_map, q_group_size, q_head_per_cta, cta_per_q_group);
 
     TM_CUDA_CHECK(cudaGetLastError());
 

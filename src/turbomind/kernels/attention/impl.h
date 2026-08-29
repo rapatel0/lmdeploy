@@ -18,6 +18,12 @@ struct MMA_1688 {
 struct MMA_884 {
 };
 
+// The grouped SM70 variant flattens [query, GQA head] into the MMA M
+// dimension. Its specialization restores logical query and head indices at
+// every callback boundary.
+struct MMA_884_GROUPED {
+};
+
 struct MMA_SIMT {
 };
 
