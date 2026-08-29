@@ -90,9 +90,10 @@ void LinearWeight::copy_metadata_to(LinearWeight& dst) const
     dst.input_format  = input_format;
     dst.output_format = output_format;
     dst.epilogue      = epilogue;
-    dst.has_bias_     = has_bias_;
-    dst.is_grouped_   = is_grouped_;
-    dst.prepared_     = prepared_;
+    dst.has_bias_       = has_bias_;
+    dst.is_grouped_     = is_grouped_;
+    dst.is_output_head_ = is_output_head_;
+    dst.prepared_       = prepared_;
     dst.k_desc        = k_desc;
     dst.q_desc        = q_desc;
 }
@@ -120,6 +121,46 @@ void LinearWeight::prepare()
     k_desc.cols  = output_dim;
     k_desc.ld    = output_dim;
 
+    auto stream = core::Context::stream().handle();
+
+    // The vocabulary projection follows the trivial checkpoint path, but owns
+    // storage separate from token embeddings. Replace only that output-owned
+    // allocation with output-major physical rows, preserving logical KxN as a
+    // column-major descriptor. Mode 1 isolates layout under cuBLAS; mode 2 also
+    // registers the native SM70 candidate qualified on the M=1/7/8 hot paths.
+    const int fp16_flat_head_mode = gemm::Sm70Fp16FlatHeadMode();
+    if (fp16_flat_head_mode && is_output_head_ && getSMVersion() == 70 && !is_grouped_ && input_dim == 5120
+        && output_dim == 62080 && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
+        TM_CHECK_EQ(weight.shape(0), input_dim);
+        TM_CHECK_EQ(weight.shape(1), output_dim);
+        Tensor trans{{weight.shape(1), weight.shape(0)}, weight.dtype(), kDEVICE};
+        invokeTransposeAxis01(
+            (half*)trans.raw_data(), (half*)weight.raw_data(), weight.shape(0), weight.shape(1), 1, stream);
+        weight       = std::move(trans);
+        k_desc.type  = weight.dtype();
+        k_desc.order = gemm::kColMajor;
+        k_desc.rows  = input_dim;
+        k_desc.cols  = output_dim;
+        k_desc.ld    = input_dim;
+        k_desc.pack  = {};
+
+        int device = -1;
+        TM_CUDA_CHECK(cudaGetDevice(&device));
+        TM_CHECK(device >= 0 && device < 16);
+        static std::atomic<bool> logged[16]{};
+        if (!logged[device].exchange(true, std::memory_order_relaxed)) {
+            std::fprintf(stderr,
+                         "SM70_FP16_FLAT_HEAD_ACTIVE device=%d mode=%d shape=%dx%d\n",
+                         device,
+                         fp16_flat_head_mode,
+                         input_dim,
+                         output_dim);
+            std::fflush(stderr);
+        }
+        prepared_ = true;
+        return;
+    }
+
     // No format conversion needed if weight_spec was never set (trivial weights
     // loaded via commit_tensor, e.g. tok_embeddings, output head).
     if (weight_format.dtype == DataType{}) {
@@ -130,8 +171,6 @@ void LinearWeight::prepare()
         prepared_ = true;
         return;
     }
-
-    auto stream = core::Context::stream().handle();
 
     const int fp16_flat_gdn_mode = gemm::Sm70Fp16FlatGdnMode();
     if (fp16_flat_gdn_mode && getSMVersion() == 70 && !is_grouped_ && input_dim == 5120 && output_dim == 4120

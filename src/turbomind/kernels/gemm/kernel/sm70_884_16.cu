@@ -33,25 +33,32 @@ Registrar reg([](Collector& c, int /*arch*/) {
         c.add<C::Type<  8, 128,  64, 1, 4, 1, D, S, 2, true, 1, 1>>();
         // clang-format on
     }
-    if (Sm70Fp16FlatGdnMode() == 2) {
+    const bool register_flat_gdn  = Sm70Fp16FlatGdnMode() == 2;
+    const bool register_flat_head = Sm70Fp16FlatHeadMode() == 2;
+    if (register_flat_gdn || register_flat_head) {
         using F = Config_F16_Flat<kColMajor>;
-        // The one-build sweep selected this exact 8x64x64 kernel on every TP
-        // rank. Keep only the winner to avoid retuning five rejected variants
-        // for each of the 48 separately cached GDN projections.
+        // The GDN sweep selected this exact 8x64x64 kernel. Reuse the same
+        // unpacked SM70 catalog entry for an explicitly transposed output head;
+        // one registration serves both logical KxN shapes.
         c.add<F::Type<8, 64, 64, 1, 2, 1, D, S, 2, true, 1, 1>>();
         int device = -1;
         const auto status = cudaGetDevice(&device);
         if (status != cudaSuccess || device < 0 || device >= 16) {
             std::fprintf(stderr,
-                         "SM70_FP16_FLAT_GDN_REGISTRATION_ERROR status=%d device=%d\n",
+                         "SM70_FP16_FLAT_REGISTRATION_ERROR status=%d device=%d\n",
                          static_cast<int>(status),
                          device);
             std::fflush(stderr);
         }
         else {
-            static std::atomic<bool> logged[16]{};
-            if (!logged[device].exchange(true, std::memory_order_relaxed)) {
+            static std::atomic<bool> logged_gdn[16]{};
+            static std::atomic<bool> logged_head[16]{};
+            if (register_flat_gdn && !logged_gdn[device].exchange(true, std::memory_order_relaxed)) {
                 std::fprintf(stderr, "SM70_FP16_FLAT_GDN_REGISTERED device=%d candidates=1\n", device);
+                std::fflush(stderr);
+            }
+            if (register_flat_head && !logged_head[device].exchange(true, std::memory_order_relaxed)) {
+                std::fprintf(stderr, "SM70_FP16_FLAT_HEAD_REGISTERED device=%d candidates=1\n", device);
                 std::fflush(stderr);
             }
         }

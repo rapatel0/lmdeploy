@@ -58,6 +58,13 @@ public:
         is_grouped_ = grouped;
     }
 
+    /// Mark the model vocabulary projection explicitly. Its trivial checkpoint
+    /// format is otherwise indistinguishable from token embeddings by metadata.
+    void set_output_head()
+    {
+        is_output_head_ = true;
+    }
+
     /// SM90 FP8 fused-SiLU: output is e4m3 with dynamic group-128 scales.
     void set_fp8_fused_silu_output()
     {
@@ -106,9 +113,10 @@ public:
     TM_MODULE_DECLARE(LinearWeight, LINEAR_WEIGHT_CHILDREN, LINEAR_WEIGHT_PARAMS)
 
 private:
-    bool has_bias_   = false;
-    bool is_grouped_ = false;
-    bool prepared_   = false;
+    bool has_bias_       = false;
+    bool is_grouped_     = false;
+    bool is_output_head_ = false;
+    bool prepared_       = false;
 };
 
 }  // namespace turbomind

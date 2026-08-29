@@ -19,6 +19,14 @@ ModelWeight::~ModelWeight() = default;
 
 void ModelWeight::prepare()
 {
+    // The vocabulary projection is a separately sharded allocation even when
+    // the checkpoint semantically ties it to token embeddings. Mark only this
+    // LinearWeight so SM70 may replace its physical layout without touching
+    // embedding lookup storage.
+    if (output) {
+        output->set_output_head();
+    }
+
     // The shared meta-MoE packs must be fully prepared before any layer
     // weight aliases their routed gate/expert tensors (MoeWeight::prepare).
     if (meta_experts) {

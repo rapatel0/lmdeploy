@@ -122,6 +122,27 @@ int Sm70Fp16FlatGdnMode()
     return v;
 }
 
+int Sm70Fp16FlatHeadMode()
+{
+    static const int v = [] {
+        const char* p = std::getenv("TM_SM70_FP16_FLAT_HEAD");
+        if (!p) {
+            return 0;
+        }
+        if (p[0] == '0' && p[1] == '\0') {
+            return 0;
+        }
+        if (p[0] == '1' && p[1] == '\0') {
+            return 1;
+        }
+        if (p[0] == '2' && p[1] == '\0') {
+            return 2;
+        }
+        return 0;
+    }();
+    return v;
+}
+
 std::array<const LayoutConverter*, 2> GetConverters(DataType data_type,
                                                     DataType weight_type,  //
                                                     DataType input_type,
