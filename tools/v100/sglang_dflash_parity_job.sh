@@ -53,6 +53,7 @@ setsid env \
     SGLANG_ENABLE_SPEC_V2=1 \
     sglang serve \
     --trust-remote-code \
+    --skip-server-warmup \
     --model-path "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --dtype float16 \
     --kv-cache-dtype fp8_e5m2 \
@@ -105,6 +106,7 @@ server_pid=
 python3 - "${RESULTS}/trace/sglang" <<'PY'
 import json
 import pathlib
+import struct
 import sys
 root = pathlib.Path(sys.argv[1])
 dirs = sorted(path for path in root.glob("rank-*-pid-*") if path.is_dir())
@@ -119,6 +121,13 @@ for directory in dirs:
     records = [json.loads(line) for line in (directory / "manifest.jsonl").read_text().splitlines()]
     names = {record["name"] for record in records}
     assert required <= names, f"missing {sorted(required - names)} from {directory}"
+    by_name = {record["name"]: record for record in records}
+    block_record = by_name["block.ids"]
+    block_payload = (directory / block_record["file"]).read_bytes()
+    assert block_record["dtype"] == "i64" and len(block_payload) == 64
+    block_ids = list(struct.unpack("<8q", block_payload))
+    expected_ids = [1144] + [248070] * 7
+    assert block_ids == expected_ids, f"non-audited block IDs in {directory}: {block_ids}"
     for record in records:
         data = directory / record["file"]
         assert data.stat().st_size == record["bytes"]
