@@ -73,14 +73,14 @@ bench() {
     fi
     if [ "${trace}" = 1 ]; then env_args+=(TM_GEMM_TRACE_FP16_M8=1); fi
     env "${env_args[@]}" python3 /job/bench_decode.py \
-            --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
-            --num-draft-tokens 7 --speculative-algorithm dflash2 \
-            --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
-            --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
-            --input-tokens 1000 --output-tokens "${tokens}" --trials "${trials}" \
-            --sglang-corpus /sglang-corpus \
-            --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-            --cache-max-entry-count 0.05 --json-out "${RESULTS}/${name}.json" \
+        --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
+        --num-draft-tokens 7 --speculative-algorithm dflash2 \
+        --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
+        --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
+        --input-tokens 1000 --output-tokens "${tokens}" --trials "${trials}" \
+        --sglang-corpus /sglang-corpus \
+        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
+        --cache-max-entry-count 0.05 --json-out "${RESULTS}/${name}.json" \
         2>&1 | tee "${RESULTS}/${name}.log"
     local bench_rc=${PIPESTATUS[0]}
     if [ "${bench_rc}" -ne 0 ]; then
@@ -180,17 +180,17 @@ for i in "${!arms[@]}"; do
         profile_env+=("TM_GEMM_FP16_M8_BACKEND=${backend}" "TM_GEMM_FP16_M8_PATHS=${path}")
     fi
     env "${profile_env[@]}" "${NSYS}" profile --force-overwrite=true --trace=cuda,nvtx,osrt \
-            --cuda-memory-usage=true \
-            --capture-range=cudaProfilerApi --capture-range-end=stop --output="${RESULTS}/profile_${arm}" \
-            python3 /job/bench_decode.py \
-            --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
-            --num-draft-tokens 7 --speculative-algorithm dflash2 \
-            --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
-            --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
-            --input-tokens 1000 --output-tokens 128 --trials 1 \
-            --sglang-corpus /sglang-corpus \
-            --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-            --cache-max-entry-count 0.05 --cuda-profiler-range --json-out "${RESULTS}/profile_${arm}.json" \
+        --cuda-memory-usage=true \
+        --capture-range=cudaProfilerApi --capture-range-end=stop --output="${RESULTS}/profile_${arm}" \
+        python3 /job/bench_decode.py \
+        --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
+        --num-draft-tokens 7 --speculative-algorithm dflash2 \
+        --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
+        --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
+        --input-tokens 1000 --output-tokens 128 --trials 1 \
+        --sglang-corpus /sglang-corpus \
+        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
+        --cache-max-entry-count 0.05 --cuda-profiler-range --json-out "${RESULTS}/profile_${arm}.json" \
         2>&1 | tee "${RESULTS}/profile_${arm}.log"
     validate_bench "${RESULTS}/profile_${arm}.json" 1 128
     "${NSYS}" stats --report nvtx_sum,cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,osrt_sum \

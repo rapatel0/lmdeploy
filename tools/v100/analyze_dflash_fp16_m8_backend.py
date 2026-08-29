@@ -78,19 +78,13 @@ def main() -> None:
     parser.add_argument("result_dir", type=Path)
     args = parser.parse_args()
     root = args.result_dir
-    valid = [
-        arm
-        for arm in ARMS
-        if (root / f"{arm}.json").is_file() and (root / f"profile_{arm}.json").is_file()
-    ]
+    valid = [arm for arm in ARMS if (root / f"{arm}.json").is_file() and (root / f"profile_{arm}.json").is_file()]
     if tuple(valid) != ARMS:
         fail(f"complete four-arm matrix required, found {valid}")
 
     unprofiled = {arm: cycle(root, arm) for arm in valid}
     profiled = {arm: cycle(root, f"profile_{arm}") for arm in valid}
-    kernels = {
-        arm: kernel_totals(root / f"profile_{arm}_stats_cuda_gpu_kern_sum.csv") for arm in valid
-    }
+    kernels = {arm: kernel_totals(root / f"profile_{arm}_stats_cuda_gpu_kern_sum.csv") for arm in valid}
     baseline_kernels = kernels["baseline"]
     if baseline_kernels["cutlass_launches"] <= 0 or baseline_kernels["cutlass_ms"] <= 0:
         fail("baseline profile does not contain the attributed CUTLASS kernel")
@@ -114,9 +108,7 @@ def main() -> None:
     eligible = [
         arm
         for arm, change in changes.items()
-        if substitution[arm]
-        and change["unprofiled_cycle_pct"] <= -1.0
-        and change["profiled_cycle_pct"] <= 0.5
+        if substitution[arm] and change["unprofiled_cycle_pct"] <= -1.0 and change["profiled_cycle_pct"] <= 0.5
     ]
     winner = min(eligible, key=lambda arm: changes[arm]["unprofiled_cycle_pct"]) if eligible else None
     result = {
