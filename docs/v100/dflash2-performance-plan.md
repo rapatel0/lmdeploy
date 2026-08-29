@@ -212,7 +212,7 @@ Artifact: `/results/20260829_125003-dflash-gdn-value-cols-b85fb4e04bf8`.
 - Stable 128-token identity passed exactly; the 256-token control hit only the established position-145 fresh-process near-tie.
 - Default-on for the exact SM70 shape; `TM_SM70_FP16_FLAT_GDN=0` retains row-major cuBLAS and `=1` retains the transposed-cuBLAS diagnostic control.
 
-Artifacts: `/results/20260829_135435-dflash-fp16-flat-gdn-31d8741be859`, `/results/20260829_140755-dflash-fp16-flat-gdn-followup`, and `/results/20260829_141145-dflash-fp16-flat-gdn-identity`.
+Artifacts: `/results/20260829_135435-dflash-fp16-flat-gdn-31d8741be859`, `/results/20260829_140755-dflash-fp16-flat-gdn-followup`, `/results/20260829_141145-dflash-fp16-flat-gdn-identity`, and rebuilt default smoke `/results/20260829_141818-dflash-fp16-flat-gdn-default-a3ecd22e3946`.
 
 ### A6. Evaluate target FP8 KV separately
 

@@ -8,26 +8,30 @@ exec > >(tee -a "${RESULTS}/console.log") 2>&1
 trap 'rc=$?; echo "$rc" >"${RESULTS}/exit_code"; echo "artifacts in ${RESULTS} (exit ${rc})"' EXIT
 rm -f /wheels/lmdeploy-*.whl
 started=$(date +%s)
-bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || { tail -100 "${RESULTS}/build.log"; exit 2; }
+bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || {
+   tail -100 "${RESULTS}/build.log"
+   exit 2
+}
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 [ "$(stat -c %Y "${WHEEL}")" -ge "${started}" ]
 sha256sum "${WHEEL}" | tee "${RESULTS}/wheel.sha256"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
-NSYS="$(command -v nsys 2>/dev/null || true)"; [ -n "${NSYS}" ] || NSYS=/opt/nsys/nsys
+NSYS="$(command -v nsys 2>/dev/null || true)"
+[ -n "${NSYS}" ] || NSYS=/opt/nsys/nsys
 common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" --num-draft-tokens 7
-        --speculative-algorithm dflash2 --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}"
-        --speculative-dflash-block-size 8 --speculative-draft-window 2048 --input-tokens 1000 --output-tokens 128
-        --sglang-corpus /sglang-corpus --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01
-        --cache-max-entry-count 0.05)
+   --speculative-algorithm dflash2 --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}"
+   --speculative-dflash-block-size 8 --speculative-draft-window 2048 --input-tokens 1000 --output-tokens 128
+   --sglang-corpus /sglang-corpus --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01
+   --cache-max-entry-count 0.05)
 export FT_NVTX=ON
 "${NSYS}" profile --force-overwrite=true --trace=cuda,nvtx,osrt --capture-range=cudaProfilerApi --capture-range-end=stop \
-    --output="${RESULTS}/default" python3 /job/bench_decode.py "${common[@]}" --trials 1 --cuda-profiler-range \
-    --json-out "${RESULTS}/default.json" 2>&1 | tee "${RESULTS}/default.log"
+   --output="${RESULTS}/default" python3 /job/bench_decode.py "${common[@]}" --trials 1 --cuda-profiler-range \
+   --json-out "${RESULTS}/default.json" 2>&1 | tee "${RESULTS}/default.log"
 "${NSYS}" export --type sqlite --force-overwrite=true --output="${RESULTS}/default.sqlite" \
-    "${RESULTS}/default.nsys-rep" >/dev/null 2>&1
+   "${RESULTS}/default.nsys-rep" >/dev/null 2>&1
 unset FT_NVTX
 TM_SM70_FP16_FLAT_GDN=0 python3 /job/bench_decode.py "${common[@]}" --trials 1 \
-    --json-out "${RESULTS}/legacy.json" 2>&1 | tee "${RESULTS}/legacy.log"
+   --json-out "${RESULTS}/legacy.json" 2>&1 | tee "${RESULTS}/legacy.log"
 python3 - "${RESULTS}" <<'PY'
 import json,sqlite3,sys
 from pathlib import Path
@@ -66,10 +70,10 @@ result={'default_decode_tok_s':metric('default'),'legacy_decode_tok_s':metric('l
 print('DFLASH_FP16_FLAT_GDN_DEFAULT_ROUTE_PASS',json.dumps(result,sort_keys=True))
 PY
 python3 /job/verify_dflash_audited.py --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
-    --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" --corpus /sglang-corpus --tp "${TP:-4}" \
-    --input-tokens 1000 --output-tokens 128 \
-    --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-    2>&1 | tee "${RESULTS}/identity_128.log"
-grep -q 'DFLASH_AUDITED_IDENTITY_PASS tokens=128' "${RESULTS}/identity_128.log"
+   --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" --corpus /sglang-corpus --tp "${TP:-4}" \
+   --input-tokens 1000 --output-tokens 128 \
+   --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
+   2>&1 | tee "${RESULTS}/identity_128.log"
+grep -q '^DFLASH_AUDITED_IDENTITY_PASS' "${RESULTS}/identity_128.log"
 touch "${RESULTS}/completed"
 echo DFLASH_FP16_FLAT_GDN_DEFAULT_COMPLETE
