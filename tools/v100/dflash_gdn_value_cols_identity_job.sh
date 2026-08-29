@@ -6,16 +6,31 @@ RESULTS="${GDN_VALUE_COLS_RESULT_DIR:-}"
 if [ -z "${RESULTS}" ]; then
     RESULTS="$(find /results -maxdepth 1 -type d -name '*-dflash-gdn-value-cols-*' | sort | tail -1)"
 fi
-[ -d "${RESULTS}" ] || { echo "FAIL: missing result directory ${RESULTS}" >&2; exit 2; }
+[ -d "${RESULTS}" ] || {
+    echo "FAIL: missing result directory ${RESULTS}" >&2
+    exit 2
+}
+for driver in /job/verify_dflash_audited.py /job/bench_decode.py; do
+    [ -f "${driver}" ] || {
+        echo "FAIL: missing ${driver}" >&2
+        exit 2
+    }
+done
 exec > >(tee -a "${RESULTS}/identity_followup_console.log") 2>&1
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo 'FAIL: no wheel' >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo 'FAIL: no wheel' >&2
+    exit 2
+}
 sha256sum "${WHEEL}" | tee "${RESULTS}/identity_wheel.sha256"
 diff -u "${RESULTS}/wheel.sha256" "${RESULTS}/identity_wheel.sha256"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 python3 /src/tools/v100/analyze_dflash_gdn_value_cols.py "${RESULTS}" | tee "${RESULTS}/analysis_followup.log"
 WINNER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["winner"] or "")' "${RESULTS}/analysis.json")"
-[ -n "${WINNER}" ] || { echo DFLASH_GDN_VALUE_COLS_REJECTED_NO_WINNER; exit 4; }
+[ -n "${WINNER}" ] || {
+    echo DFLASH_GDN_VALUE_COLS_REJECTED_NO_WINNER
+    exit 4
+}
 WINNER_VALUE=${WINNER#v}
 
 run_identity() {
