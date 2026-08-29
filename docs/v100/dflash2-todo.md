@@ -1,7 +1,7 @@
 # DFlash2 V100 fix backlog
 
 Status: active
-Last updated: 2026-08-28
+Last updated: 2026-08-29
 Companion evidence log: [`dflash2-investigation.md`](./dflash2-investigation.md)
 Execution plan: [`dflash2-performance-plan.md`](./dflash2-performance-plan.md)
 
@@ -63,7 +63,8 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 - [ ] **Add first-block tensor parity against SGLang.**
   - Commit `33c0cf2c` added a trace-only first-real-block capture for target features, context FC/norm, draft boundaries, production candidates, unary scores, selector state, edge scores, and selected IDs.
   - The capture uses pinned host copies, unique process/rank directories, and one final synchronization.
-  - Next: validate the trace on TP4 and compare the first mismatch against read-only SGLang reference behavior; all durable changes remain in TurboMind.
+  - A complete first-block trace passed on all four TP ranks with the audited 64-output workload.
+  - Next: run the read-only SGLang harness and identify the earliest cross-runtime mismatch; all durable changes remain in TurboMind.
   - Done when: the first numerical divergence is identified and either fixed or documented as intentional.
 
 - [x] **Validate selector edge-score narrowing semantics.**
@@ -109,9 +110,20 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - The alternate kernels were removed; Q64/KV64 remains the default. Tile size alone does not reproduce SGLang's grouped/split attention design.
 
 - [ ] **Capture fixed-shape target verification and draft execution in CUDA graphs.**
-  - Nsight shows substantial target submission/synchronization time around the eight-token verification shape.
-  - First make allocations and addresses stable; then capture batch-size-one K=7 paths.
-  - Done when: graph replay passes identity and matched profiling shows reduced cycle wall time.
+  - Selector-only capture now succeeds on all four TP ranks with thread-local capture.
+  - The selector-only slice is rejected: profiled cycle time regressed from 47.20 to 48.17 ms, while `dflashDraftAndSelect` remained 7.071 versus 7.068 ms.
+  - A full draft-plus-selector graph is implemented behind `TM_DFLASH_DRAFT_GRAPH=1` and awaits TP4 validation.
+  - Target verification still needs stable addresses and a separate graph lifecycle.
+  - Done when: full graph replay passes identity and matched profiling shows reduced cycle wall time.
+
+- [ ] **Qualify direct paged Q=8 attention.**
+  - The SM70 block-iterator path now bypasses flattened KV and runs on TP4.
+  - Allocator/free calls fell from 90,476 to 86,192.
+  - Unprofiled normalization improved from 42.66 to 41.61 ms, but profiled normalization regressed from 47.20 to 47.64 ms.
+  - Repeated exactness produced one paged pass plus known position-145/220 splits; flattened controls hit the same positions and had no pass in three attempts.
+  - Flattened-versus-paged and flattened-versus-flattened parity both first diverged at the pre-attention target residual and changed intermediate candidate IDs, while final selected IDs remained exact.
+  - Keep the path off by default and use it only as the current full-graph prerequisite.
+  - Done when: full-graph qualification proves a net benefit, or the graph is redesigned around flattened KV and this path is removed.
 
 - [ ] **Eliminate mandatory draft candidate device-to-host synchronization.**
   - Keep candidate IDs and accepted-prefix decisions on device through verification setup where possible.

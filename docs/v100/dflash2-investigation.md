@@ -1,7 +1,7 @@
 # DFlash2 V100 investigation
 
 Status: active investigation
-Last updated: 2026-08-28
+Last updated: 2026-08-29
 Target: Qwen3.8-27B-FP8, TP4 V100, DFlash2 block size 8
 
 Action tracker: [`dflash2-todo.md`](./dflash2-todo.md)
@@ -251,6 +251,22 @@ Artifacts: `/results/20260828_230149-dflash-one-pass-reject-622e491b2e4a`.
 
 A second stacked qualification at commit `014fcebd` added phase-owned local/TP top-16 tensors and `UnifiedAttentionLayer` qkv, attention-output, and flattened-KV arenas. Four-rank parity and audited identity passed. The expanded workspace reduced profiled allocator/free calls from 108,040 to 90,476 per captured aggregate (16.3%). Matched commit-length profiling improved normalized cycle time from 48.72 to 48.37 ms (0.7%); five-trial unprofiled normalization improved from 43.26 to 42.57 ms (1.6%). The direct gain is modest, but the DFlash draft path now has stable addresses through attention and candidate selection. Artifacts: `/results/20260828_231817-dflash-one-pass-reject-014fcebdbe49`.
 
+## Selector graph and direct paged Q=8 experiments
+
+Commit `347ac480` fixed TP4 selector-graph capture by changing stream capture from global to thread-local mode. All four ranks then captured and replayed successfully.
+
+The selector-only graph did not reduce the speculative cycle. Its matched profile changed normalized cycle time from 47.20 to 48.17 ms. The `dflashDraftAndSelect` range remained 7.071 versus 7.068 ms. Unprofiled reruns changed sign, so this graph slice is rejected as a speed path. Exact audited identity passed.
+
+Commit `79fc95e7` fixed direct paged Q=8 parameter assembly. The paged path bypassed flattened KV for eligible SM70 proposal attention and reduced allocator/free calls from 90,476 to 86,192. Five-trial normalization changed from 42.66 to 41.61 ms, but matched profiling changed from 47.20 to 47.64 ms.
+
+Repeated exactness controls confirmed that the existing fresh-process oracle is unstable rather than exposing a paged-specific failure. Three flattened controls split at positions 220, 220, and 145. Three paged controls produced one exact pass and two known splits at 220 and 145. There was no unexpected divergence.
+
+First-block comparison was also confounded before the changed attention path: flattened-versus-paged first differed at `target.post_layer_residual` and changed 26 candidate IDs, while flattened-versus-flattened independently first differed at the same boundary and changed 19 candidate IDs. The final selected proposal IDs were exact in both comparisons. Paged Q=8 therefore remains experimental and off by default, but is retained as the current full-graph prerequisite.
+
+Artifacts: `/results/20260828_234307-dflash-graph-paged-79fc95e78c15`, `/results/20260829_000639-dflash-paged-followup-79fc95e78c15`, `/results/20260829_001458-dflash-paged-parity-79fc95e78c15`, and `/results/20260829_001656-dflash-parity-control-79fc95e78c15`.
+
+A larger draft-plus-selector graph now exists behind `TM_DFLASH_DRAFT_GRAPH=1`. It uses phase-owned sequence offsets and fixed paged-attention launch geometry. Runtime qualification remains pending.
+
 ## Current speculative-cycle attribution
 
 A matched K=0/K=7 Nsight Systems run at commit `930baf48` profiled the audited prompt from one wheel. K=7 decoded at 47.59 tok/s under profiler overhead with commit length 2.311, which implies 48.6 ms per verification cycle.
@@ -268,7 +284,7 @@ CUDA API attribution exposed the first host-control target. The K=7 capture issu
 
 The three-arm result falsified pageable staging as a useful optimization. Acceptance-normalized cycle time was 43.04 ms with pageable buffers, 42.92 ms with pinned buffers, and 42.99 ms with pinned buffers plus a combined rollback barrier. The maximum difference was 0.3%. Exact audited identity passed for the combined arm. Raw decode throughput was not used for attribution because fresh-process commit length differed at 2.620, 2.478, and 2.669.
 
-The large `cudaMemcpyAsync` API attribution therefore mostly represents outstanding GPU work encountered at host-control synchronization boundaries, not removable host staging overhead. The pinned hot-path buffers and controls were removed. The trace smoke subtest requested only eight outputs, which suppresses a seven-token draft near the generation limit, so it produced no parity trace; parity capture remains separately unvalidated rather than failed. Experiment artifacts: `/results/20260828_214332-dflash-pinned-staging-057db9a76ebc`. Profile artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
+The large `cudaMemcpyAsync` API attribution therefore mostly represents outstanding GPU work encountered at host-control synchronization boundaries, not removable host staging overhead. The pinned hot-path buffers and controls were removed. The trace smoke subtest requested only eight outputs, which suppresses a seven-token draft near the generation limit, so it produced no parity trace. A later 64-output run validated complete first-block manifests on all four TP ranks. Experiment artifacts: `/results/20260828_214332-dflash-pinned-staging-057db9a76ebc`. Profile artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 
 ## Rollback barrier merge
 

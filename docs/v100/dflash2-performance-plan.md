@@ -1,7 +1,7 @@
 # DFlash2 V100 performance plan
 
 Status: active
-Date: 2026-08-28
+Date: 2026-08-29
 Evidence log: [`dflash2-investigation.md`](./dflash2-investigation.md)
 Detailed backlog: [`dflash2-todo.md`](./dflash2-todo.md)
 
@@ -91,29 +91,27 @@ Done when the steady cycle contains no mandatory host synchronization.
 
 Target: reduce cycle time from 43.4 ms to at most 39 ms.
 
-### A2. Stabilize all workspace addresses
+### A2. Stabilize all workspace addresses — partial
 
-- Inventory every allocation inside target verification, rollback, draft, and selection.
-- Allocate fixed batch-one K=7 buffers per phase during model initialization.
-- Reuse buffers for logits, candidates, selector scores, metadata, and recurrent-state slots.
-- Preserve separate phase buffers for concurrent scheduler phases.
-- Verify constant addresses across at least 1,000 speculative cycles.
-- Confirm zero steady-cycle allocator calls with Nsight Systems.
+- Phase-owned workspaces now cover context projection, five draft layers, attention QKV/output/flattened KV, local top-16, TP exchange, selector tensors, and sequence offsets.
+- Four-rank parity and audited identity passed for the qualified workspace stack.
+- Profiler allocator/free calls fell from 108,040 to 90,476, a 16.3% reduction.
+- Matched profiled normalization improved by 0.7%; five-trial unprofiled normalization improved by 1.6%.
+- Target verification, rollback, and lower-level library allocations remain.
 
 Done when every graph input and output uses a stable address.
 
-Target: reduce cycle time to at most 37 ms before graph capture.
+Target: eliminate steady allocation from every captured path.
 
-### A3. Capture the draft and selector graph
+### A3. Capture the draft and selector graph — active
 
-- Capture context projection, draft layers, local top-16, NCCL gathers, merge, and selector kernels.
-- Store dynamic token IDs, positions, lengths, and pointers in stable device buffers.
-- Use graph replay only for batch-one K=7 requests with valid fixed shapes.
-- Use the ordinary path for unsupported shapes and terminal transitions.
-- Verify NCCL graph support with the deployed CUDA and NCCL versions.
-- Measure graph launch count and CPU submission time.
+- Selector-only capture now succeeds on all four TP ranks with thread-local stream capture.
+- Selector-only replay did not reduce cycle time and is rejected as a speed path.
+- A full draft-plus-selector graph now exists behind `TM_DFLASH_DRAFT_GRAPH=1`.
+- The full graph uses two warmups, one capture launch, stable phase buffers, and an ordinary fallback.
+- TP4 build, replay, identity, and matched profiling remain.
 
-Done when graph replay passes identity and reduces matched cycle time.
+Done when full graph replay passes identity and reduces matched cycle time.
 
 Target: reduce cycle time to at most 32 ms.
 
@@ -129,14 +127,16 @@ Done when target verification replays without host intervention.
 
 Target: reduce cycle time to at most 30 ms.
 
-### A5. Add direct paged verification attention
+### A5. Add direct paged verification attention — prototype active
 
-- Implement a dedicated SM70 kernel for Q=8 and head dimension 256.
-- Read the paged KV cache directly without `invokeFlattenKV_v2_`.
-- Group GQA query heads so each group shares KV loads.
-- Split long contexts to expose approximately 80 useful V100 CTAs.
-- Reduce split outputs with deterministic FP32 accumulation.
-- Compare 1K, 8K, and 25K contexts against the generic kernel.
+- A first SM70 Q=8 block-iterator path now reads paged KV without `invokeFlattenKV_v2_`.
+- It reduced allocator/free calls from 90,476 to 86,192.
+- Unprofiled normalization improved by 2.5%, but matched profiling regressed by 0.9%.
+- This prototype does not yet implement grouped GQA or split-context scheduling.
+- Repeated exactness yielded one paged pass and only the known position-145/220 splits; flattened controls hit the same splits.
+- Cross-process parity first diverged before attention for both paged and baseline-repeat comparisons, while final selected IDs stayed exact.
+- Keep this prototype off by default and retain it only as the current full-graph prerequisite.
+- Group GQA query heads and split long contexts only after full-graph qualification proves the prerequisite worthwhile.
 
 Done when the kernel passes identity and beats generic attention at every selected context.
 
@@ -250,13 +250,13 @@ A6 remains optional until the graph and attention work reaches its measured limi
 
 ## Immediate execution queue
 
-1. Produce one NVTX cycle report with host and GPU phase times.
-2. Remove the candidate-ID and sequence-limit host reads.
-3. Add persistent buffers for the draft and selector path.
-4. Capture the first draft-and-selector CUDA graph.
-5. Capture first-block tensors from both runtimes.
-6. Fix the earliest acceptance mismatch.
-7. Start direct paged verification attention after graph replay works.
+1. Finish direct paged Q=8 exactness and first-block parity controls.
+2. Run the full draft-plus-selector graph on TP4.
+3. Run the read-only SGLang parity harness.
+4. Fix the earliest cross-runtime acceptance mismatch.
+5. Move proposal eligibility, rollback, and publication to device control.
+6. Stabilize target-verification addresses.
+7. Capture fixed-shape target verification.
 
 ## Stop conditions
 
