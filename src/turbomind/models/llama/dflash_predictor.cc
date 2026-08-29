@@ -610,13 +610,37 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden, int phase) c
     TM_CHECK_EQ(target_hidden.shape(1), (ssize_t)num_context_features_ * hidden_units_);
     TM_CHECK_EQ(target_hidden.dtype(), dtype_);
 
-    const int token_num = target_hidden.shape(0);
+    const Tensor* context_input = &target_hidden;
+    Tensor        replay;
+    const char*   replay_path = std::getenv("TM_DFLASH_CONTEXT_REPLAY_FILE");
+    if (replay_path && replay_path[0] && target_hidden.shape(0) == 1 && !context_replay_consumed_) {
+        TM_CHECK_EQ(dtype_, kHalf);
+        const size_t expected_bytes = target_hidden.size() * sizeof(__half);
+        std::ifstream stream(replay_path, std::ios::binary | std::ios::ate);
+        TM_CHECK(stream.is_open()) << "failed to open DFlash context replay file: " << replay_path;
+        const auto file_bytes = static_cast<std::streamoff>(stream.tellg());
+        TM_CHECK_EQ(file_bytes, static_cast<std::streamoff>(expected_bytes));
+        stream.seekg(0, std::ios::beg);
+        Tensor host{target_hidden.shape(), dtype_, kCPU};
+        stream.read(static_cast<char*>(host.raw_data()), expected_bytes);
+        TM_CHECK(stream.good()) << "failed to read DFlash context replay file: " << replay_path;
+        replay = Tensor{target_hidden.shape(), dtype_, kDEVICE};
+        Copy(host, replay);
+        core::Context::stream().Sync();
+        context_input = &replay;
+        context_replay_consumed_ = true;
+        TM_LOG_INFO("[DFlash2] replaying first eligible target context from {} bytes={}",
+                    replay_path,
+                    expected_bytes);
+    }
+
+    const int token_num = context_input->shape(0);
     // Prompt projection can exceed the fixed K=7 capacity. Only the steady
     // speculative shape uses phase-owned storage.
     Workspace* workspace = persistent_workspace_ && token_num <= max_workspace_rows_ ? &workspaces_.at(phase) : nullptr;
     Tensor projected = workspace ? workspace->context_projected.slice(0, token_num) :
                                    Tensor{{token_num, hidden_units_}, dtype_, kDEVICE};
-    linear_.Forward(target_hidden, *weights_.fc, projected);
+    linear_.Forward(*context_input, *weights_.fc, projected);
     TM_CUDA_CHECK(cudaGetLastError());
 
     Tensor normalized = workspace ? workspace->context_normalized.slice(0, token_num) :
@@ -638,7 +662,7 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden, int phase) c
         invokeDFlashRoundBFloat16(normalized, core::Context::stream().handle());
         TM_CUDA_CHECK(cudaGetLastError());
     }
-    PrepareParityContext(target_hidden, projected, normalized);
+    PrepareParityContext(*context_input, projected, normalized);
     return normalized;
 }
 

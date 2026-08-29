@@ -149,6 +149,7 @@ private:
     mutable std::vector<std::unique_ptr<SelectorGraph>> selector_graphs_;
     mutable std::vector<std::unique_ptr<DraftGraph>> draft_graphs_;
     mutable std::unique_ptr<ParityTrace> parity_trace_;
+    mutable bool                         context_replay_consumed_{};
 };
 
 }  // namespace turbomind
