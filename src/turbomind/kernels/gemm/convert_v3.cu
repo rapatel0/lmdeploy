@@ -127,7 +127,7 @@ int Sm70Fp16FlatHeadMode()
     static const int v = [] {
         const char* p = std::getenv("TM_SM70_FP16_FLAT_HEAD");
         if (!p) {
-            return 0;
+            return 1;
         }
         if (p[0] == '0' && p[1] == '\0') {
             return 0;

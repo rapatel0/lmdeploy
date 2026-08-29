@@ -372,6 +372,24 @@ This change is retained as device-control infrastructure, not as a standalone sp
 
 Nsight measured the per-rank `DFlashTopK16Half` candidate scan and serial 256-lane merge at about 1.1 ms per speculative cycle. Replacing the serial shared-memory merge with `cub::BlockReduce<TopK<float,16>>` improved acceptance-normalized cycle time from 43.87 to 43.45 ms, approximately **1.0%**, over five measured trials. The separate-process acceptance trajectories differed, so raw decode was 57.36 versus 55.56 tok/s and is not the attribution metric; both implementations compute the same deterministic score/ID ordering, and the CUB arm passed the audited 256-token identity gate. CUB is now the default, with `TM_DFLASH_CUB_TOPK=0` retaining the legacy control. Artifacts: `/results/20260828_204616-dflash-cub-topk-9ebbe196cada`.
 
+## Transposed FP16 vocabulary head
+
+The separately owned local `5120x62080` FP16 vocabulary projection previously retained checkpoint row-major storage and used a cuBLAS `ttt` route. Transposing only `text_model.output` at load time exposes an output-major column-major B descriptor without changing the separately sharded token embedding. The transposed path was bit-identical to the legacy head for M=1, M=7, and M=8.
+
+Matched profiling showed all four ranks routing all 60 measured head calls through transposed cuBLAS. Whole-head time fell from 2.188 to 1.107 ms, **49.42%**. With exactly matched profiled commit length 2.311, normalized cycle time fell from 42.095 to 39.921 ms, **5.16%**. Five-trial normalized cycle time improved from 36.440 to 34.730 ms, **4.69%**.
+
+A counter-ordered production comparison on top of the qualified native GDN projection improved pooled normalized cycle time from 35.899 to 33.544 ms, **6.56%**. Exact 128-token audited identity passed both transposed-head-only and combined transposed-head-plus-native-GDN arms. The custom native small-M head candidate was not promoted: warmed cuBLAS and native M=1 were effectively tied near 1 ms, and autotuning selected native only on two ranks.
+
+Transposed cuBLAS is default-on for the exact SM70 head shape. `TM_SM70_FP16_FLAT_HEAD=0` retains row-major cuBLAS; mode 2 retains the native diagnostic. Artifact: `/results/20260829_232739-dflash-fp16-flat-head-4a3faf70212a`.
+
+## Exact TP-local verification top-2
+
+DFlash verification previously materialized local `[8,62080]` FP16 logits, exchanged the complete padded `[8,248320]` vocabulary across TP4, then ran deterministic global rejection. The new compact path preserves the local logits but applies valid-vocabulary and position-dependent EOS masking before a deterministic local top-2 reduction. Each rank exchanges only two FP32 score/global-ID pairs per row, and every rank merges the eight candidates by score descending and token ID ascending. Full logits remain the fallback for requested logits, parity/rejection diagnostics, unsupported shapes, and terminal blocks smaller than K=7.
+
+The semantic micro-suite passed exact tie ordering, padded-tail exclusion, EOS masking, and zero/partial/full acceptance cases. All four ranks proved compact activation. Five-trial decode rose from 70.08 to 74.92 tok/s; acceptance-normalized cycle time improved from 36.729 to 35.117 ms, **4.39%**. Matched Nsight improved the normalized cycle **2.25%**. The profile contained 204 compact ranges and 36 intentional full-logit fallback ranges versus 240 full ranges in the baseline. Exact audited 128-token K=0/K=7 identity passed.
+
+The compact verifier is default-on. `TM_DFLASH_TP_LOCAL_VERIFY_TOP2=0` retains the full-vocabulary TP exchange and rejection control. Artifact: `/results/20260829_232344-dflash-tp-local-top2-4a3faf70212a`.
+
 ## Acceptance gap
 
 Current audited comparison:

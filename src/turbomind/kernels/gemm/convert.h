@@ -33,8 +33,9 @@ int WeightPackEnv();
 // native SM70 candidate, 0 = legacy row-major cuBLAS, 1 = transposed cuBLAS.
 int Sm70Fp16FlatGdnMode();
 
-// TM_SM70_FP16_FLAT_HEAD: 0 = legacy row-major cuBLAS, 1 = transposed
-// cuBLAS, 2 = transposed with the native SM70 small-M candidate.
+// TM_SM70_FP16_FLAT_HEAD: unset/1 = qualified transposed cuBLAS,
+// 0 = legacy row-major cuBLAS, 2 = transposed with the diagnostic native
+// SM70 small-M candidate.
 int Sm70Fp16FlatHeadMode();
 
 // Free with `cudaFree`

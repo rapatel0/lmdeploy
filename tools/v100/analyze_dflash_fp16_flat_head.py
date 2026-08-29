@@ -44,6 +44,14 @@ def kernel_metric(arm: str) -> dict[str, object]:
                ON r.globalTid=n.globalTid AND r.start BETWEEN n.start AND n.end
                JOIN CUPTI_ACTIVITY_KIND_KERNEL k ON k.correlationId=r.correlationId
                AND k.globalPid=(r.globalTid & -16777216)
+               WHERE nt.value='targetVerify' GROUP BY k.deviceId"""
+        ).fetchall()
+        head_ranges = db.execute(
+            """SELECT k.deviceId,COUNT(DISTINCT n.rowid) FROM NVTX_EVENTS n
+               JOIN StringIds nt ON nt.id=n.textId JOIN CUPTI_ACTIVITY_KIND_RUNTIME r
+               ON r.globalTid=n.globalTid AND r.start BETWEEN n.start AND n.end
+               JOIN CUPTI_ACTIVITY_KIND_KERNEL k ON k.correlationId=r.correlationId
+               AND k.globalPid=(r.globalTid & -16777216)
                WHERE nt.value='postDecodeEmbedding' GROUP BY k.deviceId"""
         ).fetchall()
         rows = db.execute(
@@ -55,7 +63,8 @@ def kernel_metric(arm: str) -> dict[str, object]:
                WHERE nt.value='postDecodeEmbedding' GROUP BY s.value,k.deviceId,k.gridX,k.gridY,k.gridZ,k.blockX"""
         ).fetchall()
         db.close()
-        expected = {int(device): int(count) for device, count in ranges}
+        expected_verify = {int(device): int(count) for device, count in ranges}
+        expected_head = {int(device): int(count) for device, count in head_ranges}
         converted = [
             (str(name), int(device), int(gx), int(gy), int(gz), int(bx), int(count), int(total))
             for name, device, gx, gy, gz, bx, count, total in rows
@@ -66,27 +75,52 @@ def kernel_metric(arm: str) -> dict[str, object]:
     for row in converted:
         name, _device, gx, gy, _gz, _bx, _count, _total = row
         lower = name.lower()
-        if arm == "native":
-            match = (
-                "gemm_kernel" in lower
-                and "operand_b<" in lower
-                and "half" in lower
-                and "operand_b_pack" not in lower
-            )
-        else:
-            match = "cutlass" in lower and "gemm" in lower
-        if match:
+        native = "gemm_kernel" in lower and "operand_b<" in lower and "half" in lower and "operand_b_pack" not in lower
+        cublas = "cutlass" in lower and "gemm" in lower
+        if native or cublas:
             selected.append(row)
     got: dict[int, int] = {}
     for row in selected:
         got[row[1]] = got.get(row[1], 0) + row[6]
-    if sorted(expected) != [0, 1, 2, 3] or got != expected:
-        fail(f"{arm}: incomplete head route expected={expected} got={got}")
-    total_ns = sum(row[7] for row in selected)
-    logical = sum(expected.values())
+    native_by_device: dict[int, int] = {}
+    for row in selected:
+        if (
+            "gemm_kernel" in row[0].lower()
+            and "operand_b<" in row[0].lower()
+            and "half" in row[0].lower()
+            and "operand_b_pack" not in row[0].lower()
+        ):
+            native_by_device[row[1]] = native_by_device.get(row[1], 0) + row[6]
+    cublas_by_device = {device: got.get(device, 0) - native_by_device.get(device, 0) for device in got}
+    if sorted(expected_verify) != [0, 1, 2, 3] or sorted(expected_head) != [0, 1, 2, 3]:
+        fail(f"{arm}: missing four-rank range coverage verify={expected_verify} head={expected_head}")
+    route_complete = True
+    if arm == "baseline":
+        route_complete = cublas_by_device == expected_verify
+    elif arm == "transposed":
+        route_complete = cublas_by_device == expected_head
+    else:
+        expected_native = {device: expected_head[device] - expected_verify[device] for device in expected_head}
+        route_complete = cublas_by_device == expected_verify and native_by_device == expected_native
+    total_ns = sum(row[7] for row in converted)
+    logical = sum(expected_head.values())
+    native_launches = sum(
+        row[6]
+        for row in selected
+        if "gemm_kernel" in row[0].lower()
+        and "operand_b<" in row[0].lower()
+        and "half" in row[0].lower()
+        and "operand_b_pack" not in row[0].lower()
+    )
     return {
         "ms_per_head": total_ns / 1e6 / logical,
-        "launches_by_device": got,
+        "head_ranges_by_device": expected_head,
+        "verify_ranges_by_device": expected_verify,
+        "selected_launches_by_device": got,
+        "cublas_launches_by_device": cublas_by_device,
+        "native_launches_by_device": native_by_device,
+        "native_launches": native_launches,
+        "route_complete": route_complete,
         "signatures": sorted({f"{r[0]} grid={r[2]}x{r[3]}x{r[4]} block={r[5]}" for r in selected}),
     }
 
@@ -100,19 +134,35 @@ def main() -> None:
     profiled = {arm: cycle(f"profile_{arm}") for arm in ARMS}
     kernels = {arm: kernel_metric(arm) for arm in ARMS}
     try:
-        kernel_pct = pct(float(kernels["native"]["ms_per_head"]), float(kernels["transposed"]["ms_per_head"]))
+        transposed_kernel_pct = pct(
+            float(kernels["transposed"]["ms_per_head"]), float(kernels["baseline"]["ms_per_head"])
+        )
+        native_kernel_pct = pct(float(kernels["native"]["ms_per_head"]), float(kernels["baseline"]["ms_per_head"]))
+        transposed_unprofiled_pct = pct(unprofiled["transposed"]["cycle_ms"], unprofiled["baseline"]["cycle_ms"])
         unprofiled_pct = pct(unprofiled["native"]["cycle_ms"], unprofiled["baseline"]["cycle_ms"])
+        transposed_profiled_pct = pct(profiled["transposed"]["cycle_ms"], profiled["baseline"]["cycle_ms"])
         profiled_pct = pct(profiled["native"]["cycle_ms"], profiled["baseline"]["cycle_ms"])
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
         fail(f"invalid normalized metrics: {exc}")
-    winner = "native" if kernel_pct <= -10.0 and unprofiled_pct <= -1.0 and profiled_pct <= 0.5 else None
+    winner = (
+        "transposed"
+        if bool(kernels["baseline"]["route_complete"])
+        and bool(kernels["transposed"]["route_complete"])
+        and transposed_kernel_pct <= -10.0
+        and transposed_unprofiled_pct <= -1.0
+        and transposed_profiled_pct <= 0.5
+        else None
+    )
     result = {
         "unprofiled": unprofiled,
         "profiled": profiled,
         "kernels": kernels,
-        "kernel_pct_vs_transposed": kernel_pct,
+        "transposed_kernel_pct_vs_baseline": transposed_kernel_pct,
+        "native_kernel_pct_vs_baseline": native_kernel_pct,
+        "transposed_unprofiled_cycle_pct": transposed_unprofiled_pct,
         "unprofiled_cycle_pct": unprofiled_pct,
         "profiled_cycle_pct": profiled_pct,
+        "transposed_profiled_cycle_pct": transposed_profiled_pct,
         "winner": winner,
     }
     try:

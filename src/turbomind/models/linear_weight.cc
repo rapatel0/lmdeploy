@@ -126,8 +126,8 @@ void LinearWeight::prepare()
     // The vocabulary projection follows the trivial checkpoint path, but owns
     // storage separate from token embeddings. Replace only that output-owned
     // allocation with output-major physical rows, preserving logical KxN as a
-    // column-major descriptor. Mode 1 isolates layout under cuBLAS; mode 2 also
-    // registers the native SM70 candidate qualified on the M=1/7/8 hot paths.
+    // column-major descriptor. Mode 1 is the qualified transposed-cuBLAS path;
+    // mode 2 additionally registers the rejected native small-M diagnostic.
     const int fp16_flat_head_mode = gemm::Sm70Fp16FlatHeadMode();
     if (fp16_flat_head_mode && is_output_head_ && getSMVersion() == 70 && !is_grouped_ && input_dim == 5120
         && output_dim == 62080 && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {

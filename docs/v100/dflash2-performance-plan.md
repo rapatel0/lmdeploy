@@ -214,6 +214,27 @@ Artifact: `/results/20260829_125003-dflash-gdn-value-cols-b85fb4e04bf8`.
 
 Artifacts: `/results/20260829_135435-dflash-fp16-flat-gdn-31d8741be859`, `/results/20260829_140755-dflash-fp16-flat-gdn-followup`, `/results/20260829_141145-dflash-fp16-flat-gdn-identity`, and rebuilt default smoke `/results/20260829_141818-dflash-fp16-flat-gdn-default-a3ecd22e3946`.
 
+### A5.8. Replace full-vocabulary verification exchange with exact TP-local top-2 — complete
+
+- Keep the local `[8,62080]` FP16 head output, apply exact valid-vocabulary and position-dependent EOS masks, and reduce each row to deterministic score-descending/global-ID-ascending top-2.
+- Exchange only two FP32 score/global-ID pairs per TP rank and merge the eight candidates identically on all ranks. Preserve full-logit fallback for diagnostics, requested logits, unsupported shapes, and terminal short blocks.
+- Semantic ties, padded tail, EOS, and zero/partial/full acceptance passed. All four ranks proved compact routing, and exact 128-token audited identity passed.
+- Five-trial normalized cycle time improved from 36.729 to 35.117 ms, or 4.39%. Matched Nsight improved 2.25%; baseline used 240 full-logit ranges, while the new arm used 204 compact ranges plus 36 intentional full fallbacks.
+- Default-on; `TM_DFLASH_TP_LOCAL_VERIFY_TOP2=0` retains the full-vocabulary exchange.
+
+Artifact: `/results/20260829_232344-dflash-tp-local-top2-4a3faf70212a`.
+
+### A5.9. Transpose the separately owned FP16 vocabulary head — complete
+
+- Transpose only `text_model.output` at load time; the separately sharded token embedding remains unchanged. Preserve exact logical KxN semantics through a column-major B descriptor.
+- M=1/M=7/M=8 outputs were bit-identical. All four ranks routed all 60 profiled head calls through transposed cuBLAS.
+- Whole-head time fell from 2.188 to 1.107 ms, or 49.42%. Five-trial normalized cycle improved 4.69%; matched-profile normalized cycle improved 5.16% at identical commit length 2.311.
+- A counter-ordered production comparison on top of native GDN improved pooled normalized cycle from 35.899 to 33.544 ms, or 6.56%. Isolated and combined 128-token audited identity passed.
+- The native small-M diagnostic was not promoted because warmed cuBLAS tied it near 1 ms and autotuning selected it on only two ranks.
+- Transposed cuBLAS is default-on for the exact SM70 head shape. `TM_SM70_FP16_FLAT_HEAD=0` retains row-major cuBLAS; mode 2 retains the native diagnostic.
+
+Artifact: `/results/20260829_232739-dflash-fp16-flat-head-4a3faf70212a`.
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.

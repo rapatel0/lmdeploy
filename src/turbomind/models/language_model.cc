@@ -493,7 +493,7 @@ LanguageModel::Impl::Impl(
     }();
     static const bool dflash_tp_local_verify_top2 = [] {
         const char* value = std::getenv("TM_DFLASH_TP_LOCAL_VERIFY_TOP2");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     static const bool trace_dflash_workspace = [] {
         const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");
@@ -802,7 +802,7 @@ bool LanguageModel::Impl::PostEmbeddingVerifyTop2(int phase, const Tensor& featu
 {
     static const bool enabled = [] {
         const char* value = std::getenv("TM_DFLASH_TP_LOCAL_VERIFY_TOP2");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     if (!enabled || !dflash_predictor_ || tp_size_ != 4 || K != 7 || features.dtype() != kHalf
         || features.shape(0) != 8 || weights_.output->output_dim != 62080 || weights_.vocab_size > 248320) {
@@ -1505,7 +1505,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                                 && PostEmbeddingVerifyTop2(phase, hidden_states, verify_k);
     static const bool compact_verify_requested = [] {
         const char* s = std::getenv("TM_DFLASH_TP_LOCAL_VERIFY_TOP2");
-        return s && s[0] == '1';
+        return !s || s[0] != '0';
     }();
     if (compact_verify_requested && spec_verify && verify_k == 7 && hidden_states.dtype() == kHalf
         && hidden_states.shape(0) == 8 && !trace_logit_parity && !dump_rejections && !needs_step_logits) {
