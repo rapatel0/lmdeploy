@@ -6,9 +6,15 @@ set -euo pipefail
 SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/null)"
 [ -n "${SRC_COMMIT}" ] || SRC_COMMIT=unknown
 SOURCE_RESULTS="$(find /results -maxdepth 1 -type d -name '*-dflash-fp8-m8-reuse-*' ! -name '*-followup-*' -print | sort | tail -1)"
-[ -n "${SOURCE_RESULTS}" ] || { echo 'FAIL: no prior scale-reuse result' >&2; exit 2; }
+[ -n "${SOURCE_RESULTS}" ] || {
+    echo 'FAIL: no prior scale-reuse result' >&2
+    exit 2
+}
 for file in baseline.json baseline.log reuse.json reuse.log ncu_summary.json wheel.sha256; do
-    [ -f "${SOURCE_RESULTS}/${file}" ] || { echo "FAIL: missing ${SOURCE_RESULTS}/${file}" >&2; exit 2; }
+    [ -f "${SOURCE_RESULTS}/${file}" ] || {
+        echo "FAIL: missing ${SOURCE_RESULTS}/${file}" >&2
+        exit 2
+    }
 done
 RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-fp8-m8-reuse-followup-${SRC_COMMIT}
 mkdir -p "${RESULTS}"
@@ -22,14 +28,20 @@ finish() {
 trap finish EXIT
 
 for driver in /job/bench_decode.py /job/verify_dflash_audited.py; do
-    [ -f "${driver}" ] || { echo "FAIL: missing ${driver}" >&2; exit 2; }
+    [ -f "${driver}" ] || {
+        echo "FAIL: missing ${driver}" >&2
+        exit 2
+    }
 done
 cat /src/SOURCE_STAMP
 printf 'resuming from %s\n' "${SOURCE_RESULTS}"
 cp "${SOURCE_RESULTS}"/{baseline.json,baseline.log,reuse.json,reuse.log,ncu_summary.json,wheel.sha256} "${RESULTS}/"
 
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo 'FAIL: no built wheel' >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo 'FAIL: no built wheel' >&2
+    exit 2
+}
 expected_sha="$(cut -d' ' -f1 "${SOURCE_RESULTS}/wheel.sha256")"
 actual_sha="$(sha256sum "${WHEEL}" | cut -d' ' -f1)"
 [ "${actual_sha}" = "${expected_sha}" ] || {
@@ -42,7 +54,10 @@ NSYS="$(command -v nsys 2>/dev/null || true)"
 if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then
     NSYS=/opt/nsys/nsys
 fi
-[ -n "${NSYS}" ] || { echo 'FAIL: nsys unavailable' >&2; exit 2; }
+[ -n "${NSYS}" ] || {
+    echo 'FAIL: nsys unavailable' >&2
+    exit 2
+}
 
 validate_bench() {
     local path=$1 trials=$2 tokens=$3
@@ -110,8 +125,8 @@ TM_SM70_FP8_M8_REUSE_SCALE=1 python3 /job/verify_dflash_audited.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
     --corpus /sglang-corpus --tp "${TP:-4}" --input-tokens 1000 --output-tokens 256 \
-    --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-    | tee "${RESULTS}/identity.log"
+    --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 |
+    tee "${RESULTS}/identity.log"
 grep -q '^DFLASH_AUDITED_IDENTITY_PASS$' "${RESULTS}/identity.log"
 
 python3 - "${RESULTS}/analysis.json" <<'PY'
