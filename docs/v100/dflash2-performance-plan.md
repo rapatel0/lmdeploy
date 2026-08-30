@@ -271,10 +271,10 @@ Done when the first mismatch matches the agreed tolerance.
 
 - Rejected verifier K/V poisoning exactly matched a complete control, falsifying suffix visibility.
 - Live key-span assertions established the post-rollback contract as committed sequence length plus block size.
-- Rebuilding stale aggregate attention metadata changed 8.59% of matched proposal blocks and raised commit length from 2.631 to 2.716 with only 0.29% cycle overhead.
-- The corrected metadata rebuild is default-on; the stale path remains available as `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=0`.
+- Rebuilding stale aggregate attention metadata changed 8.59% of matched proposal blocks. Two five-trial confirmations raised commit length from 2.631 to 2.716-2.756 and decode throughput by 2.93-4.87%, with normalized cycle cost between 0.29% slower and 0.12% faster.
+- The corrected metadata rebuild is default-on; the stale path remains available as `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=0`. Repeated 256-token controls produced one exact corrected pass and otherwise only the established fresh-process position-145 split, with no novel divergence and 1,124 live-span assertions passing.
 
-Artifacts: `/results/20260830_002516-dflash-rejected-kv-poison-f0d92882a2c3` and `/results/20260830_004745-dflash-metadata-rebuild-ebf7927919a5`.
+Artifacts: `/results/20260830_002516-dflash-rejected-kv-poison-f0d92882a2c3`, `/results/20260830_004745-dflash-metadata-rebuild-ebf7927919a5`, and `/results/20260830_010502-dflash-metadata-identity-followup-2d2b33f76fbe`.
 
 ### B3. Close remaining layer-level parity gaps
 

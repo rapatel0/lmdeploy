@@ -59,8 +59,9 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - The live post-rollback key span is `committed_sequence_length + block_size`; assertions passed on all four TP ranks and across request reuse.
   - Rebuilding Setup/Prepare metadata after Rollback changes stale aggregate key spans and proposal blocks: 2,188 corrected records, 91.41% exact candidate-block overlap, with the first candidate difference at frontier 1165.
   - Five-trial decode improved from 80.59 to 82.95 tok/s (+2.93%) as commit length rose from 2.631 to 2.716 (+3.23%); normalized cycle cost changed only from 32.65 to 32.74 ms (+0.29%). Audited 128-token identity passed.
-  - The rebuild is now default-on; `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=0` retains the stale-metadata control. Final default-on audited 256-token confirmation is pending.
-  - Artifact: `/results/20260830_004745-dflash-metadata-rebuild-ebf7927919a5`.
+  - The rebuild is now default-on; `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=0` retains the stale-metadata control.
+  - A rebuilt-wheel rerun measured 80.62 versus 84.55 tok/s (+4.87%), commit length 2.631 versus 2.756 (+4.75%), and a 0.12% faster normalized cycle. One of three corrected 256-token identity arms passed exactly; the other two and all three stale controls split only at the established fresh-process near-tie position 145. No novel split occurred, and 1,124 live-span assertions passed.
+  - Artifacts: `/results/20260830_004745-dflash-metadata-rebuild-ebf7927919a5`, `/results/20260830_005648-dflash-metadata-rebuild-5faa9810904e`, and `/results/20260830_010502-dflash-metadata-identity-followup-2d2b33f76fbe`.
 
 - [x] **Add first-block tensor parity against SGLang.**
   - Commit `b753831d` produced four complete 102-boundary SGLang manifests for the exact forced block `[1144, 248070 x 7]` at positions `1000..1007`; TurboMind block IDs and embeddings match exactly.
