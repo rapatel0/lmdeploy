@@ -151,7 +151,12 @@ for directory in dirs:
 print(f"SGLANG_DFLASH_PARITY_TRACE_PASS ranks={len(dirs)}")
 PY
 
-LM_PARITY_REF="${LM_DFLASH_PARITY_REF:-/results/20260828_231817-dflash-one-pass-reject-014fcebdbe49/parity/lmdeploy}"
+LM_PARITY_REF=${LM_DFLASH_PARITY_REF:-}
+if [ -z "${LM_PARITY_REF}" ]; then
+    while IFS= read -r candidate; do
+        LM_PARITY_REF=${candidate}
+    done < <(find /results -maxdepth 4 -type d -path '*/parity/lmdeploy' | sort)
+fi
 [ -d "${LM_PARITY_REF}" ] || {
     echo "FAIL: LMDeploy parity reference not found: ${LM_PARITY_REF}" >&2
     exit 4
