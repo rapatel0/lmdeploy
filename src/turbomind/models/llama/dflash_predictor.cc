@@ -1185,6 +1185,26 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
             report("layer" + std::to_string(layer) + stage, value);
         }
     };
+    auto replay_parity_tensor = [&](const char* env_name, Tensor& value, bool& consumed) {
+        const char* path = std::getenv(env_name);
+        if (!ParityActive() || consumed || !path || !path[0]) {
+            return false;
+        }
+        TM_CHECK_EQ(value.dtype(), kHalf);
+        const size_t expected_bytes = value.byte_size();
+        std::ifstream input(path, std::ios::binary | std::ios::ate);
+        TM_CHECK(input.is_open()) << "failed to open DFlash parity replay file: " << path;
+        TM_CHECK_EQ(static_cast<std::streamoff>(input.tellg()), static_cast<std::streamoff>(expected_bytes));
+        input.seekg(0, std::ios::beg);
+        Tensor host{value.shape(), value.dtype(), kCPU};
+        input.read(static_cast<char*>(host.raw_data()), expected_bytes);
+        TM_CHECK(input.good()) << "failed to read DFlash parity replay file: " << path;
+        Copy(host, value);
+        core::Context::stream().Sync();
+        consumed = true;
+        TM_LOG_INFO("[DFlash2] replaying parity tensor {} from {} bytes={}", env_name, path, expected_bytes);
+        return true;
+    };
     report_named("block.embedding", hidden);
 
     // DFlash2 was trained in BF16 and its unnormalized residual can exceed
@@ -1268,6 +1288,12 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         auto attn_input = PrepareGroupedConv(
             hidden, *attn_conv, std::move(attn_conv_output), std::move(attn_conv_delta));
         report_layer(i, ".attention.conv_delta", attn_input.delta);
+        if (i == 0) {
+            report_layer(i, ".attention.conv_side0_native", attn_input.output);
+            replay_parity_tensor("TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE",
+                                 attn_input.output,
+                                 draft_attention_input_replay_consumed_);
+        }
         report_layer(i, ".attention.conv_side0", attn_input.output);
         Tensor attn_output = layer_workspace ? layer_workspace->attention_output.slice(0, token_num) :
                                                 Tensor{{token_num, hidden_units_}, dtype_, kDEVICE};
@@ -1282,7 +1308,18 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         report_layer(i, ".attention.wo_local", attn_output);
         if (reduce_before_conv) {
             reduce_branch(attn_output);
+            if (i == 0) {
+                report_layer(i, ".attention.tp_reduced_pre_conv_native", attn_output);
+                replay_parity_tensor("TM_DFLASH_DRAFT_ATTENTION_OUTPUT_REPLAY_FILE",
+                                     attn_output,
+                                     draft_attention_output_replay_consumed_);
+            }
             report_layer(i, ".attention.tp_reduced_pre_conv", attn_output);
+        }
+        else {
+            const char* replay_path = std::getenv("TM_DFLASH_DRAFT_ATTENTION_OUTPUT_REPLAY_FILE");
+            TM_CHECK(!replay_path || !replay_path[0])
+                << "TM_DFLASH_DRAFT_ATTENTION_OUTPUT_REPLAY_FILE requires TM_DFLASH_REDUCE_BEFORE_CONV=1";
         }
         Tensor attn_finished =
             layer_workspace ? layer_workspace->attention_conv_finished.slice(0, token_num) : Tensor{};
