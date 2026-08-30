@@ -120,6 +120,29 @@ struct LanguageModel::Impl {
     Buffer_<int>  sequence_length_buf_;
     Buffer_<bool> finished_buf_;
 
+    struct DFlashTargetGraph {
+        ~DFlashTargetGraph()
+        {
+            if (exec) {
+                cudaGraphExecDestroy(exec);
+            }
+            if (graph) {
+                cudaGraphDestroy(graph);
+            }
+        }
+
+        cudaGraph_t     graph{};
+        cudaGraphExec_t exec{};
+        int             warmups{};
+        bool            disabled{};
+        bool            capture_logged{};
+        bool            replay_logged{};
+        const void*     input_ptr{};
+        const void*     selected_pos_ptr{};
+        const void*     target_hidden_ptr{};
+        Tensor          hidden_states;
+    };
+
     struct Data {
         Buffer_<int>  sequence_length;
         Buffer_<int>  readonly_block_num;
@@ -145,6 +168,7 @@ struct LanguageModel::Impl {
         // target verification boundary. Prompt prefill keeps its dynamic path.
         Tensor dflash_target_input;
         Tensor dflash_target_hidden;
+        std::unique_ptr<DFlashTargetGraph> dflash_target_graph;
 
         // Verification-only exact TP-local top-2 workspace. The gathered
         // layout is [tp_rank, row, score0/id0/score1/id1].
@@ -557,6 +581,7 @@ LanguageModel::Impl::Impl(
                                        (ssize_t)weights_.dflash->target_layer_ids.size() * weights_.hidden_units},
                                       weights_.data_type,
                                       kDEVICE};
+            d.dflash_target_graph = std::make_unique<DFlashTargetGraph>();
         }
         if (dflash_tp_local_verify_top2 && engine.speculative_algorithm == "dflash2" && weights_.dflash
             && engine.max_batch_size == 1 && tp_size_ == 4 && weights_.data_type == kHalf
@@ -1401,7 +1426,142 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
     {
         NvtxScope scope(HasDraftsToVerify(phase) ? "targetVerify" : "targetDecode");
-        unified_decoder_->Forward(phase, env, weights_.layers_list());
+        static const bool use_dflash_target_graph = [] {
+            const char* value = std::getenv("TM_DFLASH_CONTIGUOUS_TARGET_GRAPH");
+            return value && value[0] == '1';
+        }();
+        static const bool trace_dflash_target_graph = [] {
+            const char* value = std::getenv("TM_DFLASH_GRAPH_TRACE");
+            return value && value[0] == '1';
+        }();
+        const bool graph_eligible = use_dflash_target_graph && HasDraftsToVerify(phase)
+                                    && d.dflash_target_graph && env.try_("dflash_target_workspace")
+                                    && !env.try_("dflash_target_trajectory") && d.rows.size() == 1
+                                    && env.at("input_embeds").shape(0) == 8
+                                    && env.at("selected_token_pos").size() == 8
+                                    && !env.try_("output_hidden_states") && !unified_decoder_->is_warm_up();
+        if (!graph_eligible || d.dflash_target_graph->disabled) {
+            unified_decoder_->Forward(phase, env, weights_.layers_list());
+        }
+        else {
+            auto& graph = *d.dflash_target_graph;
+            Tensor input_arg = env.at("input_embeds");
+            Tensor selected_arg = env.at("selected_token_pos");
+            const void* input_ptr = input_arg.raw_data();
+            const void* selected_ptr = selected_arg.raw_data();
+            const void* target_hidden_ptr = env.at("dflash_target_hidden").raw_data();
+            const auto stream = core::Context::stream().handle();
+
+            auto restore_args = [&] {
+                if (env.try_("hidden_states")) {
+                    env.consume("hidden_states");
+                }
+                if (env.try_("full_hidden_states")) {
+                    env.consume("full_hidden_states");
+                }
+                if (!env.try_("input_embeds")) {
+                    env.produce("input_embeds", input_arg);
+                }
+                if (!env.try_("selected_token_pos")) {
+                    env.produce("selected_token_pos", selected_arg);
+                }
+            };
+            auto remember_output = [&] {
+                const Tensor output = env.at("hidden_states");
+                if (!graph.hidden_states) {
+                    graph.input_ptr = input_ptr;
+                    graph.selected_pos_ptr = selected_ptr;
+                    graph.target_hidden_ptr = target_hidden_ptr;
+                    graph.hidden_states = output;
+                }
+                TM_CHECK_EQ(graph.input_ptr, input_ptr);
+                TM_CHECK_EQ(graph.selected_pos_ptr, selected_ptr);
+                TM_CHECK_EQ(graph.target_hidden_ptr, target_hidden_ptr);
+                TM_CHECK_EQ(graph.hidden_states.raw_data(), output.raw_data());
+            };
+
+            if (graph.exec) {
+                TM_CHECK_EQ(graph.input_ptr, input_ptr);
+                TM_CHECK_EQ(graph.selected_pos_ptr, selected_ptr);
+                TM_CHECK_EQ(graph.target_hidden_ptr, target_hidden_ptr);
+                env.consume("input_embeds");
+                env.consume("selected_token_pos");
+                TM_CUDA_CHECK(cudaGraphLaunch(graph.exec, stream));
+                env.produce("hidden_states", graph.hidden_states);
+                if (trace_dflash_target_graph && !graph.replay_logged) {
+                    graph.replay_logged = true;
+                    TM_LOG_INFO("[DFlash2] contiguous target graph replay phase={} exec={} input={} output={}",
+                                phase,
+                                (uintptr_t)graph.exec,
+                                (uintptr_t)graph.input_ptr,
+                                (uintptr_t)graph.hidden_states.raw_data());
+                }
+            }
+            else if (graph.warmups++ < 2) {
+                unified_decoder_->Forward(phase, env, weights_.layers_list());
+                remember_output();
+            }
+            else {
+                cudaError_t status = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+                if (status != cudaSuccess) {
+                    graph.disabled = true;
+                    TM_LOG_WARNING("[DFlash2] contiguous target graph disabled at begin: {}",
+                                   cudaGetErrorString(status));
+                    cudaGetLastError();
+                    unified_decoder_->Forward(phase, env, weights_.layers_list());
+                    remember_output();
+                }
+                else {
+                    unified_decoder_->Forward(phase, env, weights_.layers_list());
+                    remember_output();
+                    cudaGraph_t captured_graph{};
+                    status = cudaStreamEndCapture(stream, &captured_graph);
+                    if (status != cudaSuccess || !captured_graph) {
+                        if (captured_graph) {
+                            cudaGraphDestroy(captured_graph);
+                        }
+                        graph.disabled = true;
+                        TM_LOG_WARNING("[DFlash2] contiguous target graph disabled at end: {}",
+                                       cudaGetErrorString(status));
+                        cudaGetLastError();
+                        restore_args();
+                        unified_decoder_->Forward(phase, env, weights_.layers_list());
+                        remember_output();
+                    }
+                    else {
+                        cudaGraphExec_t captured_exec{};
+                        status = cudaGraphInstantiate(&captured_exec, captured_graph, nullptr, nullptr, 0);
+                        if (status != cudaSuccess || !captured_exec) {
+                            if (captured_exec) {
+                                cudaGraphExecDestroy(captured_exec);
+                            }
+                            cudaGraphDestroy(captured_graph);
+                            graph.disabled = true;
+                            TM_LOG_WARNING("[DFlash2] contiguous target graph disabled at instantiate: {}",
+                                           cudaGetErrorString(status));
+                            cudaGetLastError();
+                            restore_args();
+                            unified_decoder_->Forward(phase, env, weights_.layers_list());
+                            remember_output();
+                        }
+                        else {
+                            graph.graph = captured_graph;
+                            graph.exec = captured_exec;
+                            TM_CUDA_CHECK(cudaGraphLaunch(graph.exec, stream));
+                            if (trace_dflash_target_graph && !graph.capture_logged) {
+                                graph.capture_logged = true;
+                                TM_LOG_INFO("[DFlash2] contiguous target graph captured phase={} graph={} exec={} input={} output={}",
+                                            phase,
+                                            (uintptr_t)graph.graph,
+                                            (uintptr_t)graph.exec,
+                                            (uintptr_t)graph.input_ptr,
+                                            (uintptr_t)graph.hidden_states.raw_data());
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     if (env.try_("dflash_target_workspace")) {
         env.consume("dflash_target_workspace");
