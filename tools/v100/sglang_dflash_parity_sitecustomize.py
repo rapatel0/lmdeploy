@@ -206,12 +206,11 @@ if _TRACE_ROOT:
                 raise RuntimeError("DFLASH target trace received invalid frontier tokens") from error
         if not matches:
             return
-        if len(matches) != 1:
-            raise RuntimeError(
-                f"DFLASH target trace expected one position/token {_target_position}/{_target_token_id}, "
-                f"got {len(matches)}"
-            )
-        candidate_row = matches[0]
+        # Target verification can broadcast the same bonus token over several
+        # merged 8-row blocks. TurboMind retains the final row of its submitted
+        # verifier slab, so align to the final exact token match and persist the
+        # resolved row/position below rather than assuming scheduler order.
+        candidate_row = matches[-1]
         try:
             token_id = int(host_ids[candidate_row]) if host_ids is not None else -1
         except (TypeError, ValueError) as error:
