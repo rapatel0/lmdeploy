@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compare the read-only SGLang target trajectory against the latest TurboMind trace.
 set -euo pipefail
-LM_REF="$(find /results -maxdepth 3 -type d -path '*-dflash-target-trajectory-*/parity/lmdeploy' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
+LM_REF="$(find /results -maxdepth 3 -type d -path '*-dflash-target-trajectory-*/parity/lmdeploy' -print | sort | tail -1)"
 [ -n "${LM_REF}" ] || {
     echo "FAIL: no TurboMind target trajectory reference exists under /results" >&2
     exit 4
