@@ -566,9 +566,7 @@ if _TRACE_ROOT:
                             [
                                 float(
                                     torch.sqrt(
-                                        torch.mean(
-                                            (selected[output_index] - expected_segments[input_index]) ** 2
-                                        )
+                                        torch.mean((selected[output_index] - expected_segments[input_index]) ** 2)
                                     ).item()
                                 )
                                 for input_index in range(5)
@@ -586,8 +584,7 @@ if _TRACE_ROOT:
                 except (RuntimeError, TypeError, ValueError, IndexError) as error:
                     raise RuntimeError(f"cannot compare target projector alignment: {error}") from error
                 print(
-                    "SGLANG_DFLASH_TARGET_PROJECT_ALIGNMENT "
-                    + json.dumps(report, sort_keys=True),
+                    "SGLANG_DFLASH_TARGET_PROJECT_ALIGNMENT " + json.dumps(report, sort_keys=True),
                     flush=True,
                 )
         _dump("target.post_layer_residual", target_hidden, last_row=True)
