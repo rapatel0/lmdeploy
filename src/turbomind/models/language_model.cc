@@ -1707,6 +1707,12 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
         dflash_predictor_->ValidateDraftAttentionMetadata(
             phase, tips->data(), bsz, rebuild_this_step, assert_dflash_metadata);
     }
+    else if (assert_dflash_metadata) {
+        // A phase persists across requests. Disarm the prior request's live
+        // offset assertion until this request has published its first rollback
+        // frontier; otherwise the first draft compares against stale spans.
+        dflash_predictor_->ValidateDraftAttentionMetadata(phase, tips->data(), bsz, false, false);
+    }
 
     for (int i = 0; i < bsz; ++i) {
         if (d.rows[i]->max_seq_len - (*tips)[i] - 1 < K) {
