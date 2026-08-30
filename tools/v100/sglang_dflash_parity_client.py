@@ -44,6 +44,9 @@ def main() -> None:
     del prompt
     if prompt_hash != args.expected_hash:
         raise RuntimeError(f"prompt hash mismatch: {prompt_hash} != {args.expected_hash}")
+    if len(input_ids) != 1000:
+        raise RuntimeError(f"audited prompt must contain 1000 IDs, got {len(input_ids)}")
+    print(f"SGLANG_DFLASH_PROMPT_FRONTIER position=999 token_id={input_ids[999]}", flush=True)
     payload = {
         "input_ids": input_ids,
         "sampling_params": {
