@@ -121,6 +121,15 @@ private:
         core::Tensor                                 chunked_workspace;
         Buffer_<uint8_t>                             recurrent_state_tma_descs;
 
+        // Fixed batch-one Q=8 target-verification arena. All GDN layers share
+        // the same dimensions and execute sequentially inside one phase.
+        Tensor target_all_proj;
+        Tensor target_beta;
+        Tensor target_g;
+        Tensor target_attn_out;
+        Tensor target_conv_out;
+        bool   target_workspace_traced{};
+
         // The main thread may prepare the next phase while the executor still
         // snapshots or restores this one. Keep the frontier identity with the
         // phase plan; a shared vector can silently redirect rollback into the

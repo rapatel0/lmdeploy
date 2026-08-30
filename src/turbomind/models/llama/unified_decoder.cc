@@ -272,6 +272,7 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
 
     Tensor      local_residual   = args.try_consume("input_embeds");
     const auto& local_token_nums = args.at("batch").data<BatchData*>()[0]->local_token_num;
+    const bool  use_dflash_target_workspace = args.try_("dflash_target_workspace") != nullptr;
 
     const auto local_token_num  = local_residual.shape(0);
     const auto global_token_num = std::accumulate(local_token_nums.begin(), local_token_nums.end(), ssize_t{});
@@ -368,7 +369,8 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
         }
         else {
             auto* attn = weights.at(layer)->attention.get();
-            attn_layer_->Forward({phase, local_hidden_states, local_hidden_states, attn, layer});
+            attn_layer_->Forward(
+                {phase, local_hidden_states, local_hidden_states, attn, layer, 1.f, false, use_dflash_target_workspace});
         }
 
         TM_DEBUG_TENSOR(local_hidden_states, Concat("attn_block", layer), 2);
@@ -423,8 +425,12 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
             auto ffn_input_shared =
                 moe_ffn_layer_ ? moe_ffn_layer_->GetShardFfnInput(global_hidden_states) : global_hidden_states;
             if (ffn_input_shared.shape(0) > 0) {
-                ffn_layer_->forward(
-                    {ffn_input_shared, ffn_input_shared, weights.at(layer)->feed_forward.get(), (int)layer});
+                ffn_layer_->forward({ffn_input_shared,
+                                     ffn_input_shared,
+                                     weights.at(layer)->feed_forward.get(),
+                                     (int)layer,
+                                     phase,
+                                     use_dflash_target_workspace});
             }
         }
 

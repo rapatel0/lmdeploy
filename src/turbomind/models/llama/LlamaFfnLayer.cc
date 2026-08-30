@@ -18,6 +18,11 @@
 // Modified from https://github.com/NVIDIA/FasterTransformer/blob/main/src/fastertransformer/layers/FfnLayer.h
 
 #include "src/turbomind/models/llama/LlamaFfnLayer.h"
+
+#include <cstdint>
+#include <cstdlib>
+
+#include "src/turbomind/core/logger.h"
 #include "src/turbomind/core/scope.h"
 #include "src/turbomind/kernels/activation.h"
 #include "src/turbomind/models/llama/llama_utils.h"
@@ -39,17 +44,46 @@ void LlamaFfnLayer::forward(ForwardParam param)
 
     const auto stream = core::Context::stream().handle();
 
-    Tensor gating;
-    Tensor inter;
-
     auto* fused     = mlp.w1w3.get();
     bool  use_fused = fused && fused->weight;
 
-    Tensor inter_scales;
+    Workspace* target_workspace = nullptr;
+    if (param.use_target_workspace && param.phase >= 0 && token_num == 8) {
+        auto& workspace = target_workspaces_[param.phase];
+        if (use_fused) {
+            const int mix_dim = fused->epilogue == gemm::Epilogue::kGatedSilu ? fused->output_dim / 2 :
+                                                                                 fused->output_dim;
+            if (!workspace.mix) {
+                workspace.mix = {{8, mix_dim}, fused->output_dtype(), kDEVICE};
+                if (fused->output_dtype() == kFloat8_e4m3) {
+                    constexpr int group_size = 128;
+                    constexpr int alignment  = 16 / sizeof(float);
+                    const int     scale_dim  = cdiv(mix_dim, group_size);
+                    const int     aligned_m  = round_up(8, alignment);
+                    workspace.inter_scales =
+                        Tensor_<float>{{{scale_dim, 8}, {aligned_m, 1}}, kDEVICE};
+                }
+            }
+        }
+        else if (!workspace.gating) {
+            workspace.gating = {{8, inter_size}, param.input.dtype(), kDEVICE};
+            workspace.inter  = {{8, inter_size}, param.input.dtype(), kDEVICE};
+        }
+        target_workspace = &workspace;
+    }
+
+    Tensor gating = target_workspace && target_workspace->gating ?
+                        target_workspace->gating.slice(0, token_num) :
+                        Tensor{};
+    Tensor inter = target_workspace && target_workspace->inter ? target_workspace->inter.slice(0, token_num) :
+                                                                 Tensor{};
+    Tensor inter_scales = target_workspace && target_workspace->inter_scales ?
+                              target_workspace->inter_scales :
+                              Tensor{};
     Tensor unused_scales;
 
     if (use_fused) {
-        Tensor mix;
+        Tensor mix = target_workspace ? target_workspace->mix.slice(0, token_num) : Tensor{};
         if (mlp.is_fused_silu && fused->output_dtype() == kFloat8_e4m3) {
             TM_SCOPE_CALL(linear_.Forward(param.input, unused_scales, *fused, mix, inter_scales));
             gating = mix;  // FP8 fused output is already half-N (inter_size)
@@ -77,6 +111,20 @@ void LlamaFfnLayer::forward(ForwardParam param)
         Activation(gating, inter, mlp.act_type, stream);
         TM_CUDA_CHECK(cudaGetLastError());
         TM_DEBUG_TENSOR(gating, Concat("act", layer_id), 3);
+    }
+
+    static const bool trace_workspace = [] {
+        const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");
+        return value && value[0] == '1';
+    }();
+    if (target_workspace && trace_workspace && !target_workspace->traced) {
+        target_workspace->traced = true;
+        TM_LOG_INFO("[DFlash2] target FFN workspace phase={} mix={} gating={} inter={} scales={}",
+                    param.phase,
+                    (uintptr_t)target_workspace->mix.raw_data(),
+                    (uintptr_t)target_workspace->gating.raw_data(),
+                    (uintptr_t)target_workspace->inter.raw_data(),
+                    (uintptr_t)target_workspace->inter_scales.raw_data());
     }
 
     {  // w2(x)

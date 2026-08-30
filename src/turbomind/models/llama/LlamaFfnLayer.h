@@ -24,6 +24,8 @@
 #include "src/turbomind/models/llama/LlamaLinear.h"
 #include "src/turbomind/models/llama/context.h"
 
+#include <unordered_map>
+
 namespace turbomind {
 
 class LlamaFfnLayer {
@@ -35,12 +37,23 @@ public:
         Tensor           output;
         const FfnWeight* weights;
         int              layer_id;
+        int              phase{-1};
+        bool             use_target_workspace{false};
     };
 
     void forward(ForwardParam param);
 
 private:
-    LlamaLinear& linear_;
+    struct Workspace {
+        Tensor mix;
+        Tensor gating;
+        Tensor inter;
+        Tensor inter_scales;
+        bool   traced{};
+    };
+
+    LlamaLinear&                       linear_;
+    std::unordered_map<int, Workspace> target_workspaces_;
 };
 
 }  // namespace turbomind

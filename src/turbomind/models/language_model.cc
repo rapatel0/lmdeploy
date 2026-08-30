@@ -141,6 +141,11 @@ struct LanguageModel::Impl {
         Buffer_<float> dflash_gathered_scores;
         Buffer_<int>   dflash_k_offsets;
 
+        // Experimental graph-prerequisite storage for the fixed batch-one Q=8
+        // target verification boundary. Prompt prefill keeps its dynamic path.
+        Tensor dflash_target_input;
+        Tensor dflash_target_hidden;
+
         // Verification-only exact TP-local top-2 workspace. The gathered
         // layout is [tp_rank, row, score0/id0/score1/id1].
         Tensor         dflash_verify_local_logits;
@@ -528,6 +533,13 @@ LanguageModel::Impl::Impl(
                                          engine.max_batch_size * (weights_.dflash->block_size - 1) :
                                          0;
     const int local_vocab_size = weights_.output ? weights_.output->output_dim : 0;
+    static const bool dflash_target_workspace = [] {
+        const char* value = std::getenv("TM_DFLASH_TARGET_WORKSPACE");
+        return value && value[0] == '1';
+    }();
+    const bool allocate_dflash_target = dflash_target_workspace && engine.speculative_algorithm == "dflash2"
+                                        && weights_.dflash && engine.max_batch_size == 1
+                                        && weights_.dflash->block_size == 8;
     for (int i = 0; i < phases; ++i) {
         auto& d                      = data_.emplace_back();
         d.sequence_length_host       = {engine.max_batch_size, kCPUpinned};
@@ -538,6 +550,14 @@ LanguageModel::Impl::Impl(
         d.finished           = empty_like(finished_buf_, kDEVICE);
         d.autoregres         = {engine.max_batch_size, kCPU};
         d.generating         = {engine.max_batch_size, kCPU};
+        if (allocate_dflash_target) {
+            constexpr int rows = 8;
+            d.dflash_target_input = {{rows, weights_.hidden_units}, weights_.data_type, kDEVICE};
+            d.dflash_target_hidden = {{rows,
+                                       (ssize_t)weights_.dflash->target_layer_ids.size() * weights_.hidden_units},
+                                      weights_.data_type,
+                                      kDEVICE};
+        }
         if (dflash_tp_local_verify_top2 && engine.speculative_algorithm == "dflash2" && weights_.dflash
             && engine.max_batch_size == 1 && tp_size_ == 4 && weights_.data_type == kHalf
             && weights_.dflash->block_size == 8) {
@@ -1313,8 +1333,16 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             }
         }
 
-        Tensor input_embeds = LookupEmbedding(input_ids, symm_buf_);
+        const bool use_target_workspace = HasDraftsToVerify(phase) && d.dflash_target_input
+                                          && input_ids.size() <= d.dflash_target_input.shape(0);
+        Tensor embedding_output = use_target_workspace ? d.dflash_target_input.slice(0, input_ids.size()) : Tensor{};
+        Tensor input_embeds = LookupEmbedding(input_ids, symm_buf_, std::move(embedding_output));
         TM_DEBUG_TENSOR(input_embeds, "embeddings", 1);
+        if (use_target_workspace) {
+            // A stable view is sufficient as a TensorMap marker. Do not add a
+            // host allocation to the path whose allocator churn this arm tests.
+            env.produce("dflash_target_workspace", d.dflash_target_input.slice(0, 1));
+        }
 
         auto& copy = *env.at("copy").data<BatchCopy*>()[0];
         input_processor_->PatchEmbedding(phase, input_embeds, copy, env);
@@ -1334,10 +1362,12 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     if (weights_.dflash && engine_param_.speculative_algorithm == "dflash2"
         && (engine_param_.num_draft_tokens > 0 || force_dflash_capture)) {
         const auto token_num = env.at("input_embeds").shape(0);
-        Tensor capture{{token_num,
-                        (ssize_t)weights_.dflash->target_layer_ids.size() * weights_.hidden_units},
-                       weights_.data_type,
-                       kDEVICE};
+        Tensor capture = env.try_("dflash_target_workspace") && d.dflash_target_hidden ?
+                             d.dflash_target_hidden.slice(0, token_num) :
+                             Tensor{{token_num,
+                                     (ssize_t)weights_.dflash->target_layer_ids.size() * weights_.hidden_units},
+                                    weights_.data_type,
+                                    kDEVICE};
         Clear(capture);
         env.produce("dflash_target_hidden", std::move(capture));
 
@@ -1372,6 +1402,9 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     {
         NvtxScope scope(HasDraftsToVerify(phase) ? "targetVerify" : "targetDecode");
         unified_decoder_->Forward(phase, env, weights_.layers_list());
+    }
+    if (env.try_("dflash_target_workspace")) {
+        env.consume("dflash_target_workspace");
     }
 
     if (dflash_predictor_ && env.try_("dflash_target_hidden") && !unified_decoder_->is_warm_up()) {

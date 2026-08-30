@@ -596,7 +596,22 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
     const int value_dim = num_v_heads_ * head_dim_;
     const int conv_dim  = key_dim * 2 + value_dim;
 
-    Tensor all_proj;
+    static const bool target_workspace_enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_TARGET_WORKSPACE");
+        return value && value[0] == '1';
+    }();
+    const bool use_target_workspace = target_workspace_enabled && token_num == 8 && phase_data.batch_size == 1
+                                      && dtype == kHalf;
+    if (use_target_workspace && !phase_data.target_all_proj) {
+        const int projection_dim = weights.in_proj_all->output_dim;
+        phase_data.target_all_proj = {{8, projection_dim}, dtype, device};
+        phase_data.target_beta = {{core::ssize_t(8) * gate_stride_}, kFloat32, device};
+        phase_data.target_g = {{core::ssize_t(8) * gate_stride_}, kFloat32, device};
+        phase_data.target_attn_out = {{8, value_dim}, dtype, device};
+        phase_data.target_conv_out = {{8, conv_dim}, dtype, device};
+    }
+
+    Tensor all_proj = use_target_workspace ? phase_data.target_all_proj.slice(0, token_num) : Tensor{};
     TM_SCOPE_CALL(linear_.Forward(param.input, *weights.in_proj_all, all_proj));
 
     const int value_heads       = num_v_heads_;
@@ -605,15 +620,40 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
 
     const core::ssize_t gate_capacity = core::ssize_t(token_num) * gate_stride_;
     const core::Layout  gate_layout{{1, token_num, num_v_heads_}, {gate_capacity, gate_stride_, 1}};
-    Tensor beta{core::Buffer{gate_capacity, kFloat32, device}, gate_layout, Tensor::PreserveBufferCapacity{}};
-    Tensor g{core::Buffer{gate_capacity, kFloat32, device}, gate_layout, Tensor::PreserveBufferCapacity{}};
+    Tensor beta = use_target_workspace ?
+                      Tensor{phase_data.target_beta.buffer(), gate_layout, Tensor::PreserveBufferCapacity{}} :
+                      Tensor{core::Buffer{gate_capacity, kFloat32, device},
+                             gate_layout,
+                             Tensor::PreserveBufferCapacity{}};
+    Tensor g = use_target_workspace ?
+                   Tensor{phase_data.target_g.buffer(), gate_layout, Tensor::PreserveBufferCapacity{}} :
+                   Tensor{core::Buffer{gate_capacity, kFloat32, device},
+                          gate_layout,
+                          Tensor::PreserveBufferCapacity{}};
 
     Tensor beta_projection  = all_proj.slice({0, value_gate_offset}, {-1, value_heads});
     Tensor decay_projection = all_proj.slice({0, decay_gate_offset}, {-1, value_heads});
     ComputeBetaG(beta, g, beta_projection, decay_projection, weights.A_log, weights.dt_bias, stream);
 
-    Tensor attn_out{{token_num, value_dim}, dtype, device};
-    Tensor conv_out{{token_num, conv_dim}, dtype, device};
+    Tensor attn_out = use_target_workspace ? phase_data.target_attn_out.slice(0, token_num) :
+                                             Tensor{{token_num, value_dim}, dtype, device};
+    Tensor conv_out = use_target_workspace ? phase_data.target_conv_out.slice(0, token_num) :
+                                             Tensor{{token_num, conv_dim}, dtype, device};
+
+    static const bool trace_workspace = [] {
+        const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");
+        return value && value[0] == '1';
+    }();
+    if (use_target_workspace && trace_workspace && !phase_data.target_workspace_traced) {
+        phase_data.target_workspace_traced = true;
+        TM_LOG_INFO("[DFlash2] target GDN workspace phase={} all_proj={} beta={} g={} attn_out={} conv_out={}",
+                    param.phase,
+                    (uintptr_t)all_proj.raw_data(),
+                    (uintptr_t)beta.raw_data(),
+                    (uintptr_t)g.raw_data(),
+                    (uintptr_t)attn_out.raw_data(),
+                    (uintptr_t)conv_out.raw_data());
+    }
 
     const bool    capture_intermediate = phase_data.snapshot_slots > 1;
     const int64_t snapshot_step_stride = capture_intermediate ? int64_t(snapshot_bytes_) : 0;
