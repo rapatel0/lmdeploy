@@ -36,7 +36,7 @@ import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-dirs = sorted(path for path in root.glob("rank-*-device-*-pid-*") if path.is_dir())
+dirs = sorted(path for path in root.glob("rank-*-pid-*") if path.is_dir())
 assert len(dirs) == 4, dirs
 for directory in dirs:
     records = [json.loads(line) for line in (directory / "manifest.jsonl").read_text().splitlines()]
