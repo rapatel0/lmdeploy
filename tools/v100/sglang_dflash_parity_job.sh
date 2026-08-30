@@ -21,6 +21,12 @@ command -v sglang >/dev/null
 mkdir -p /tmp/dflash-parity-site
 cp /job/sglang_dflash_parity_sitecustomize.py /tmp/dflash-parity-site/sitecustomize.py
 
+if [ "${SGLANG_PARITY_DISABLE_CUDA_GRAPH:-0}" = 1 ]; then
+    graph_args=(--disable-cuda-graph)
+else
+    graph_args=(--cuda-graph-max-bs 1 --cuda-graph-bs 1)
+fi
+
 wait_for_server() {
     for _ in $(seq 1 900); do
         # Both /health_generate and /health submit or wait on synthetic model
@@ -65,7 +71,7 @@ setsid env \
     --mem-fraction-static 0.75 \
     --context-length 16384 --max-total-tokens 16384 --max-running-requests 1 \
     --disable-overlap-schedule \
-    --cuda-graph-max-bs 1 --cuda-graph-bs 1 \
+    "${graph_args[@]}" \
     --chunked-prefill-size 8192 \
     --mamba-full-memory-ratio 0.1 --mamba-scheduler-strategy extra_buffer \
     --speculative-algorithm DFLASH \

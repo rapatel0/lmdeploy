@@ -8,4 +8,7 @@ LM_REF="$(find /results -maxdepth 3 -type d -path '*-dflash-target-trajectory-*/
 }
 export LM_DFLASH_PARITY_REF="${LM_REF}"
 export LM_DFLASH_TARGET_TRAJECTORY_REF="${LM_REF}"
+# Target boundary hooks need the live eager prefill, not a compiled replay.
+# The generic parity job retains production CUDA graphs by default.
+export SGLANG_PARITY_DISABLE_CUDA_GRAPH=1
 exec bash /src/tools/v100/sglang_dflash_parity_job.sh
