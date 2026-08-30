@@ -623,16 +623,16 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
         const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
         return value && value[0] == '1';
     }();
-    const int frontier_adjust = anchor_inclusive_frontier ? -1 : 0;
+    const int frontier_adjust = anchor_inclusive_frontier ? -1 : block_size;
     int       expected_k_sum{};
     int       expected_k_max{};
     for (int i = 0; i < batch_size; ++i) {
         TM_CHECK_GE(committed_seq_lens[i] + frontier_adjust, 0);
-        // The DFlash block includes the freshly generated anchor as row zero.
-        // When the host frontier already counts that anchor, its cache base is
-        // frontier-1 rather than frontier. The legacy control retains the old
-        // frontier+block contract for a one-build A/B.
-        const int expected = committed_seq_lens[i] + frontier_adjust + block_size;
+        // The DFlash block includes the freshly generated anchor as row zero,
+        // but SGLang's DFlash attention is frozen-KV: all eight parallel
+        // queries read only the context before that anchor. The corrected
+        // contract is frontier-1. The legacy control remains frontier+block.
+        const int expected = committed_seq_lens[i] + frontier_adjust;
         expected_k_sum += expected;
         expected_k_max = std::max(expected_k_max, expected);
         if (rebuild) {
@@ -655,7 +655,7 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
     if (assert_exact) {
         TM_CHECK_EQ((int)d.draft_k_lens_host.size(), batch_size);
         for (int i = 0; i < batch_size; ++i) {
-            TM_CHECK_EQ(d.draft_k_lens_host[i], committed_seq_lens[i] + frontier_adjust + block_size)
+            TM_CHECK_EQ(d.draft_k_lens_host[i], committed_seq_lens[i] + frontier_adjust)
                 << "DFlash draft metadata row " << i << " does not match the post-rollback committed frontier";
         }
         TM_CHECK_EQ(d.decode.n, 0);
@@ -1315,9 +1315,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         params.cu_k_len           = d.k_offsets.data() + offset;
         params.readonly_block_num = d.readonly_block_num.data() + offset;
 
-        params.num_heads     = local_head_num;
-        params.num_kv_heads  = local_kv_head_num;
-        params.size_per_head = size_per_head;
+        params.num_heads        = local_head_num;
+        params.num_kv_heads     = local_kv_head_num;
+        params.size_per_head    = size_per_head;
+        params.q_position_shift = p.frozen_kv ? stat.q_max : 0;
 
         double scaling = 1.;
         if (weights.softmax_scale) {  // model predefined softmax scale
@@ -1414,8 +1415,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         // disable split kv for prefill for now
         auto params = CreateParams(offset, d.prefill, use_dflash_grouped_paged_q8 ? 8 : 1, pf_stream);
         if constexpr (sizeof(T) == 2) {
-            invokeProcessKV_v2_(params);
-            TM_CUDA_CHECK(cudaGetLastError());
+            if (!p.frozen_kv) {
+                invokeProcessKV_v2_(params);
+                TM_CUDA_CHECK(cudaGetLastError());
+            }
 
             if (!p.kv_only) {
                 if (use_dflash_grouped_paged_q8) {

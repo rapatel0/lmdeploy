@@ -894,7 +894,13 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
     Tensor hidden    = embed_fn_(block_ids, std::move(embedding));
 
     Buffer_<int> k_offsets = env.at("k_offsets").buffer().view<int>();
-    AdvanceCuSeqLens(k_offsets.data(), batch_size, weights_.block_size, core::Context::stream().handle());
+    static const bool anchor_inclusive_frontier = [] {
+        const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
+        return value && value[0] == '1';
+    }();
+    if (!anchor_inclusive_frontier) {
+        AdvanceCuSeqLens(k_offsets.data(), batch_size, weights_.block_size, core::Context::stream().handle());
+    }
     static const bool assert_draft_metadata = [] {
         const char* value = std::getenv("TM_DFLASH_ASSERT_DRAFT_METADATA");
         return value && value[0] == '1';
@@ -903,7 +909,9 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
         AssertDraftAttentionKeySpans(phase, batch_size);
     }
     hidden = RunDraftLayers(std::move(hidden), phase);
-    AdvanceCuSeqLens(k_offsets.data(), batch_size, -weights_.block_size, core::Context::stream().handle());
+    if (!anchor_inclusive_frontier) {
+        AdvanceCuSeqLens(k_offsets.data(), batch_size, -weights_.block_size, core::Context::stream().handle());
+    }
     return hidden;
 }
 
@@ -1319,6 +1327,10 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         const char* value = std::getenv("TM_DFLASH_REDUCE_BEFORE_CONV");
         return value && value[0] == '1';
     }();
+    static const bool anchor_inclusive_frontier = [] {
+        const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
+        return value && value[0] == '1';
+    }();
 
     auto reduce_branch = [&](Tensor& value) {
         if (ctx_.comm.d_comm) {
@@ -1390,6 +1402,7 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                                                    1.f / kResidualScale,
                                                    false,
                                                    true};
+        params.frozen_kv = anchor_inclusive_frontier;
         if (i == 0 && ParityActive()) {
             const int q_width = layer->attention->head_num / layer->attention->tp_size * layer->attention->head_dim;
             const int k_width =

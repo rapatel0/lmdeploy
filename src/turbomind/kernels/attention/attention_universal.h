@@ -397,7 +397,7 @@ struct AttentionUniversal {
         const int lane_id = threadIdx.x % WARP_SIZE;
 
         const int context_len = params.cu_k_len[batch_idx + 1] - params.cu_k_len[batch_idx];
-        const int history_len = context_len - input_len;
+        const int history_len = context_len - input_len + params.q_position_shift;
 
         auto get_cp_len = [&](int length, int rank) -> int {
             int local_ti, local_ti_rank;

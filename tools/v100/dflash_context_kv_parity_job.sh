@@ -124,10 +124,10 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
     flattened_storage = load(lm_root, lm, 'layer0.attention.flattened_kv').reshape(-1)
     sg_prompt_k = load(sg_root, sg, 'context.prompt.layer0.cache_k')
     sg_prompt_v = load(sg_root, sg, 'context.prompt.layer0.cache_v')
-    sg_block_k = load(sg_root, sg, 'layer0.attention.k_rotated').reshape(8, 2, 128)
-    sg_block_v = sg_projection[:, 1280:1536].reshape(8, 2, 128)
-    sg_flat_k = np.concatenate([sg_prompt_k, sg_block_k], axis=0).transpose(1, 0, 2)
-    sg_flat_v = np.concatenate([sg_prompt_v, sg_block_v], axis=0).transpose(1, 0, 2)
+    # DFlash proposals use frozen KV: all eight queries attend only to the
+    # materialized prompt context, excluding their own parallel K/V rows.
+    sg_flat_k = sg_prompt_k.transpose(1, 0, 2)
+    sg_flat_v = sg_prompt_v.transpose(1, 0, 2)
     key_count = sg_flat_k.shape[1]
     flattened = flattened_storage[:2 * 2 * key_count * 128].reshape(2, 2, key_count, 128)
     pairs = {
