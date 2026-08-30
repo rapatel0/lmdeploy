@@ -180,17 +180,34 @@ if _TRACE_ROOT:
             # Chunked prefill and earlier decode calls may not yet contain the
             # requested verification position. Remain armed for the live call.
             return
-        if len(matches) != 1:
-            raise RuntimeError(f"DFLASH target trace expected one position {_target_position}, got {len(matches)}")
-        candidate_row = matches[0]
-        token_id = -1
-        if isinstance(input_ids, torch.Tensor) and input_ids.numel() > candidate_row:
+        host_ids = None
+        if isinstance(input_ids, torch.Tensor) and input_ids.numel():
             try:
-                token_id = int(input_ids.detach().reshape(-1)[candidate_row].cpu().item())
+                host_ids = input_ids.detach().reshape(-1).cpu().tolist()
             except (TypeError, ValueError, RuntimeError) as error:
-                raise RuntimeError("DFLASH target trace could not read the frontier token") from error
-        if _target_token_id >= 0 and token_id != _target_token_id:
+                raise RuntimeError("DFLASH target trace could not read frontier tokens") from error
+        # Merged scheduler batches can contain the same logical position more
+        # than once. Resolve the exact target-verification row by the audited
+        # token as well as the position; placeholder-only calls remain armed.
+        if _target_token_id >= 0 and host_ids is not None:
+            try:
+                matches = [
+                    index for index in matches if index < len(host_ids) and int(host_ids[index]) == _target_token_id
+                ]
+            except (TypeError, ValueError) as error:
+                raise RuntimeError("DFLASH target trace received invalid frontier tokens") from error
+        if not matches:
             return
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"DFLASH target trace expected one position/token {_target_position}/{_target_token_id}, "
+                f"got {len(matches)}"
+            )
+        candidate_row = matches[0]
+        try:
+            token_id = int(host_ids[candidate_row]) if host_ids is not None else -1
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("DFLASH target trace received an invalid selected token") from error
         _target_row = candidate_row
         print(
             f"SGLANG_DFLASH_TARGET_FRONTIER position={_target_position} "
