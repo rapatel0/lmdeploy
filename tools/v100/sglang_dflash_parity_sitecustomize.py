@@ -385,6 +385,7 @@ if _TRACE_ROOT:
                 gate_up = getattr(self.mlp, "gate_up_proj", None)
                 original_fused = getattr(gate_up, "forward_fused_silu_and_mul", None)
                 if gate_up is not None and original_fused is not None:
+
                     def traced_fused_activation(input_):
                         output = original_fused(input_)
                         if output is not None:
