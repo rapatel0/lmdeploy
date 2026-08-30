@@ -543,6 +543,53 @@ if _TRACE_ROOT:
             dtype_codes = [_target_trace_dtypes[name] for name in order]
             dtype_tensor = torch.tensor(dtype_codes, dtype=torch.int32, device=target_hidden.device)
             _dump("target.trajectory_dtypes", dtype_tensor)
+        feature_ids = (5, 19, 33, 47, 61)
+        if all(feature_id in _target_feature_trace for feature_id in feature_ids):
+            expected = torch.cat([_target_feature_trace[feature_id] for feature_id in feature_ids]).to(
+                target_hidden.device
+            )
+            matrix = target_hidden.detach().reshape(-1, target_hidden.shape[-1])
+            if matrix.shape[1] == expected.numel():
+                try:
+                    row_sums = []
+                    for start in range(0, matrix.shape[0], 64):
+                        delta = matrix[start : start + 64].float() - expected.float()
+                        row_sums.append((delta * delta).mean(dim=1).cpu())
+                    row_rms = torch.cat(row_sums).sqrt()
+                    best_row = int(torch.argmin(row_rms).item())
+                    selected_row = _target_row if 0 <= _target_row < matrix.shape[0] else matrix.shape[0] - 1
+                    segment_rms = []
+                    selected = matrix[selected_row].reshape(5, 5120).float()
+                    expected_segments = expected.reshape(5, 5120).float()
+                    for output_index in range(5):
+                        segment_rms.append(
+                            [
+                                float(
+                                    torch.sqrt(
+                                        torch.mean(
+                                            (selected[output_index] - expected_segments[input_index]) ** 2
+                                        )
+                                    ).item()
+                                )
+                                for input_index in range(5)
+                            ]
+                        )
+                    report = {
+                        "shape": list(matrix.shape),
+                        "resolved_row": _target_row,
+                        "selected_row": selected_row,
+                        "selected_rms": float(row_rms[selected_row].item()),
+                        "best_row": best_row,
+                        "best_rms": float(row_rms[best_row].item()),
+                        "segment_rms": segment_rms,
+                    }
+                except (RuntimeError, TypeError, ValueError, IndexError) as error:
+                    raise RuntimeError(f"cannot compare target projector alignment: {error}") from error
+                print(
+                    "SGLANG_DFLASH_TARGET_PROJECT_ALIGNMENT "
+                    + json.dumps(report, sort_keys=True),
+                    flush=True,
+                )
         _dump("target.post_layer_residual", target_hidden, last_row=True)
         return _orig_project(self, target_hidden)
 

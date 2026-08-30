@@ -69,12 +69,13 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Commit `4fe99716` replayed SGLang's exact target residual inside TurboMind across TP4. Context FC RMS fell from `44.2053` to `0.05926`, and normalized context passed parity at max abs `0.00390625`, RMS `0.000277`.
   - The context projector is functionally aligned after normalization; the dominant context mismatch is upstream target-model numerical trajectory drift. Artifacts: `/results/20260829_032508-sglang-dflash-parity-b753831db680` and `/results/20260829_035037-dflash-context-replay-4fe9971622bc`.
 
-- [ ] **Localize target drift beginning at the first full-attention layer.**
-  - The apparent layer-0 dense-FFN mismatch was a boundary error: SGLang captured globally reduced row-parallel output while TurboMind captured a local TP shard.
-  - Exact layer-0 MLP input and post-SwiGLU replay left that incomparable row unchanged, but shared post-allreduce residual RMS is only `1.96e-5`, `3.05e-5`, and `5.50e-5` after layers 0, 1, and 2 respectively.
-  - No target down-projection defect is established. The separate-SwiGLU arm accepted zero drafts and was removed.
-  - The eager SGLang trace becomes non-finite at layer 3, the first full-attention layer. Obtain a finite layer-3-plus trace with a safe attention backend, then compare shared post-allreduce residuals rather than local row-parallel outputs.
-  - Artifacts: `/results/20260830_195423-dflash-target-mlp-replay-a93b7e210cdf` and `/results/20260830_200112-dflash-target-mlp-replay-10a7d78d05df`.
+- [ ] **Align the actual SGLang ProjectContext input row and layout.**
+  - The apparent layer-0 dense-FFN mismatch was a local-versus-global TP boundary error. Shared residual RMS remains only `1.01e-4` through layer 5.
+  - Audited prompt-feature RMS drift grows gradually across target layers `[5,19,33,47,61]`: `0.000101`, `0.000446`, `0.001618`, `0.005997`, and `0.027449`.
+  - All 38 SGLang trajectory source dtypes are FP16; the hypothesized FP32 residual path is inactive for this request.
+  - Exact five-feature replay regressed commit length from `2.559` to `2.507` and decode from `77.80` to `75.94` tok/s, so prompt trajectory drift is not a standalone acceptance fix.
+  - The existing SGLang `target.post_layer_residual` record differs from the same run's audited `target.prompt_features` by RMS `0.9232` and maximum `39.5`. Determine which row and feature layout `project_target_hidden` consumes before any further context-projector attribution.
+  - Artifacts: `/results/20260830_202014-sglang-dflash-parity-f4a483fc5825`, `/results/20260830_203138-dflash-target-trajectory-8821fbf3867a`, and `/results/20260830_203748-dflash-prompt-feature-replay-8821fbf3867a`.
 
 - [x] **Validate selector edge-score narrowing semantics.**
   - Explicitly FP16-rounding `predecessor * hidden` produced the same 2.664 commit length and identical acceptance counts as FP32 intermediates.
