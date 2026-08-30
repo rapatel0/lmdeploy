@@ -23,8 +23,12 @@ while IFS= read -r candidate; do
         break
     fi
 done < <(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace/sglang' | sort -r)
-[ -n "$SG_ROOT" ] || { echo 'FAIL: no full SGLang context trace' >&2; exit 4; }
-FULL_CONTEXT=$(python3 - "$SG_ROOT" <<'PY'
+[ -n "$SG_ROOT" ] || {
+    echo 'FAIL: no full SGLang context trace' >&2
+    exit 4
+}
+FULL_CONTEXT=$(
+    python3 - "$SG_ROOT" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -70,7 +74,7 @@ run_perf full_context_reduce_first "$FULL_CONTEXT" 1
 
 mkdir -p "$RESULTS/parity"
 TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" TM_DFLASH_REDUCE_BEFORE_CONV=1 \
-TM_DFLASH_PARITY_DIR="$RESULTS/parity" \
+    TM_DFLASH_PARITY_DIR="$RESULTS/parity" \
     python3 /job/bench_decode.py "${common[@]}" --output-tokens 64 --trials 1 \
     --json-out "$RESULTS/parity.json" 2>&1 | tee "$RESULTS/parity.log"
 python3 /job/compare_dflash_parity.py \
