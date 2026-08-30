@@ -49,18 +49,17 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Keep open only as a tensor-parity discrepancy; it is not the current acceptance lead.
   - Done when: shared-tensor parity proves the required boundary and any adopted order avoids the measured regression.
 
-- [ ] **Write only committed verifier context K/V, or prove rejected suffixes are invisible.**
-  - Classification: lifecycle hypothesis.
+- [x] **Prove rejected verifier context K/V suffixes are invisible.**
   - SGLang uses `commit_lens` and prefix-valid cache writes. LMDeploy writes all verifier positions before acceptance and relies on logical lengths plus later overwrite.
-  - Experiment: poison rejected context-KV suffixes and verify that the next draft is unchanged.
-  - A default-off `TM_DFLASH_POISON_REJECTED_KV` diagnostic now overwrites only target-attention slots `[base + accepted, base + K)` after acceptance publication. Dedicated DFlash draft slots remain untouched. The one-build job compares the complete proposal multiset and final acceptance against two repeated controls, requires four-rank poison proof, and runs exact audited identity. GPU qualification remains pending.
-  - Done when: committed-prefix writes are implemented or the poison test proves the suffix cannot affect drafting/cache reuse.
+  - The default-off `TM_DFLASH_POISON_REJECTED_KV` diagnostic overwrote target-attention slots `[base + accepted, base + K)` across all 16 target attention layers while leaving dedicated DFlash draft slots untouched.
+  - All four ranks proved the intervention. The poison arm exactly reproduced one complete repeated control: all 2,332 TP proposal records and the full acceptance summary matched at commit/raw length 2.631/2.652 over 577 steps. The 128-token audited identity gate passed.
+  - Repeated fresh-process controls can follow different known near-tie trajectories, so matching one complete control is the valid null criterion. Rejected suffix visibility is falsified as an acceptance cause. Artifact: `/results/20260830_002516-dflash-rejected-kv-poison-f0d92882a2c3`.
 
 - [ ] **Validate draft attention metadata after partial acceptance.**
   - Classification: strongest unconfirmed lifecycle hypothesis.
-  - Assert for every row that the draft key span equals the newly published committed length plus block size.
+  - Assert for every row that the live draft key span equals zero-based committed tip plus one committed token plus block size.
   - Control: rebuild DFlash Setup/Prepare metadata after Rollback and compare candidates and acceptance.
-  - A TurboMind-only one-build control is available behind `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=1`. `TM_DFLASH_ASSERT_DRAFT_METADATA=1` checks every row against `committed_frontier + block_size`; `tools/v100/dflash_metadata_rebuild_job.sh` compares candidate blocks, acceptance, normalized cycle time, four-rank route proof, and audited identity. GPU qualification remains pending.
+  - A TurboMind-only one-build control is available behind `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=1`. The first GPU assertion exposed an off-by-one in the experiment itself: the published frontier is a zero-based tip while key span is a token count. Commit `7f4ab2cc` corrected the contract to `committed_tip + 1 + block_size`; corrected GPU qualification is pending.
   - Done when: metadata is refreshed correctly or the control falsifies this cause.
 
 - [x] **Add first-block tensor parity against SGLang.**
