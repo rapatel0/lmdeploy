@@ -22,6 +22,12 @@ if _TRACE_ROOT:
     _graph_flushed = False
     _ordinal = 0
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
+    _target_row = _safe_target_row = 999
+    try:
+        _safe_target_row = int(os.environ.get("SGLANG_DFLASH_TARGET_ROW", "999"))
+    except (TypeError, ValueError):
+        _safe_target_row = 999
+    _target_row = _safe_target_row
 
     def _armed() -> bool:
         # SGLang executes synthetic DFlash blocks while warming kernels during
@@ -125,7 +131,13 @@ if _TRACE_ROOT:
                 return
         except Exception:
             pass
-        row = tensor.detach().reshape(-1, tensor.shape[-1])[-1]
+        matrix = tensor.detach().reshape(-1, tensor.shape[-1])
+        # SGLang's DFlash prefill carries eight speculative placeholder rows
+        # after the 1,000 audited prompt rows. Compare prompt position 999,
+        # which is the context frontier consumed by TurboMind, not row 1007.
+        if matrix.shape[0] <= _target_row:
+            return
+        row = matrix[_target_row]
         _target_trace_dtypes[name] = 32 if row.dtype == torch.float32 else 16
         _target_trace[name] = row.to(torch.float16).clone()
 
