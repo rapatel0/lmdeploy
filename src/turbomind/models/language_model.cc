@@ -1699,7 +1699,11 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     const bool after_rollback = std::any_of(
         d.num_drafts.begin(), d.num_drafts.end(), [](int num_drafts) { return num_drafts > 0; });
     const bool rebuild_this_step = rebuild_dflash_metadata && after_rollback;
-    if (rebuild_this_step || assert_dflash_metadata) {
+    // The contract under test is the post-rollback refresh. Initial Setup
+    // metadata is constructed from input lengths before this host frontier is
+    // published, so asserting it here would compare different lifecycle
+    // boundaries. Arm validation only after at least one speculative rollback.
+    if (rebuild_this_step || (assert_dflash_metadata && after_rollback)) {
         dflash_predictor_->ValidateDraftAttentionMetadata(
             phase, tips->data(), bsz, rebuild_this_step, assert_dflash_metadata);
     }
