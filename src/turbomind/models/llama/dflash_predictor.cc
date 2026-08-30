@@ -573,6 +573,15 @@ void DFlashPredictor::BeginParityBlock(const Buffer_<int>& anchors,
         trace.ClearPending();
         return;
     }
+    static const int parity_block_index = [] {
+        const char* value = std::getenv("TM_DFLASH_PARITY_BLOCK_INDEX");
+        return value && value[0] ? std::max(1, std::atoi(value)) : 1;
+    }();
+    ++parity_blocks_seen_;
+    if (parity_blocks_seen_ < parity_block_index) {
+        trace.ClearPending();
+        return;
+    }
     trace.active = true;
     trace.uid = uid;
     trace.seq_len = seq_len;
@@ -664,8 +673,13 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
     Tensor        replay;
     const char*   replay_path = std::getenv("TM_DFLASH_CONTEXT_REPLAY_FILE");
     const bool parity_context_armed = parity_trace_ && parity_trace_->context_armed;
+    static const bool replay_full_only = [] {
+        const char* value = std::getenv("TM_DFLASH_CONTEXT_REPLAY_FULL_ONLY");
+        return value && value[0] == '1';
+    }();
     const bool replay_full_prompt = target_hidden.shape(0) == 1000 && !context_replay_consumed_;
-    const bool replay_frontier = parity_context_armed && target_hidden.shape(0) == 1 && !context_row_replay_consumed_;
+    const bool replay_frontier = !replay_full_only && parity_context_armed && target_hidden.shape(0) == 1
+                                 && !context_row_replay_consumed_;
     if (replay_path && replay_path[0] && (replay_full_prompt || replay_frontier)) {
         TM_CHECK_EQ(dtype_, kHalf);
         const size_t expected_bytes = target_hidden.size() * sizeof(__half);
@@ -727,8 +741,8 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
     }
     const char* norm_replay_path = std::getenv("TM_DFLASH_CONTEXT_NORM_REPLAY_FILE");
     const bool replay_full_norm = normalized.shape(0) == 1000 && !context_norm_replay_consumed_;
-    const bool replay_frontier_norm =
-        parity_context_armed && normalized.shape(0) == 1 && !context_norm_row_replay_consumed_;
+    const bool replay_frontier_norm = !replay_full_only && parity_context_armed && normalized.shape(0) == 1
+                                      && !context_norm_row_replay_consumed_;
     if (norm_replay_path && norm_replay_path[0] && (replay_full_norm || replay_frontier_norm)) {
         TM_CHECK_EQ(normalized.dtype(), kHalf);
         const size_t expected_bytes = normalized.size() * sizeof(__half);
