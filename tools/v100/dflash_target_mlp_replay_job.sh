@@ -35,15 +35,17 @@ common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
 TM_DFLASH_TARGET_TRAJECTORY=1 \
     TM_DFLASH_TARGET_PARITY_DIR="${RESULTS}/parity" \
     TM_DFLASH_TARGET_MLP_REPLAY_DIR="${RESULTS}/replay" \
+    TM_DFLASH_TARGET_SEPARATE_SILU=1 \
     python3 /job/bench_decode.py "${common[@]}" --output-tokens 64 --trials 1 \
     --json-out "${RESULTS}/trace.json" 2>&1 | tee "${RESULTS}/trace.log"
 grep -q 'target layer-0 MLP input replay active' "${RESULTS}/trace.log"
+grep -q 'target FFN separate SiLU active' "${RESULTS}/trace.log"
 
 for arm in baseline replay; do
     if [ "${arm}" = replay ]; then
-        replay_env=(env TM_DFLASH_TARGET_MLP_REPLAY_DIR="${RESULTS}/replay")
+        replay_env=(env -u TM_DFLASH_TARGET_MLP_REPLAY_DIR TM_DFLASH_TARGET_SEPARATE_SILU=1)
     else
-        replay_env=(env -u TM_DFLASH_TARGET_MLP_REPLAY_DIR)
+        replay_env=(env -u TM_DFLASH_TARGET_MLP_REPLAY_DIR -u TM_DFLASH_TARGET_SEPARATE_SILU)
     fi
     "${replay_env[@]}" python3 /job/bench_decode.py "${common[@]}" --output-tokens 256 --trials 5 \
         --json-out "${RESULTS}/${arm}.json" 2>&1 | tee "${RESULTS}/${arm}.log"
@@ -54,7 +56,7 @@ python3 /job/analyze_dflash_target_mlp_replay.py \
     --sglang "${SG_REF}" --benchmark-root "${RESULTS}" --output "${RESULTS}/analysis.json" |
     tee "${RESULTS}/analysis.log"
 
-env -u TM_DFLASH_TARGET_MLP_REPLAY_DIR \
+env -u TM_DFLASH_TARGET_MLP_REPLAY_DIR TM_DFLASH_TARGET_SEPARATE_SILU=1 \
     python3 /job/verify_dflash_audited.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
