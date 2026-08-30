@@ -169,7 +169,7 @@ if _TRACE_ROOT:
             flush=True,
         )
 
-    _orig_target_model_forward = _q35.Qwen3_5Model.forward
+    _orig_target_model_forward = _q35.Qwen3_5ForCausalLM.forward
 
     def _traced_target_model_forward(self, *args, **kwargs):
         input_ids = kwargs.get("input_ids", args[0] if args else None)
@@ -177,7 +177,7 @@ if _TRACE_ROOT:
         _resolve_target_frontier(input_ids, positions)
         return _orig_target_model_forward(self, *args, **kwargs)
 
-    _q35.Qwen3_5Model.forward = _traced_target_model_forward
+    _q35.Qwen3_5ForCausalLM.forward = _traced_target_model_forward
 
     # ModelRunner.forward is the live target entry even when TorchDynamo has
     # compiled past the Python Qwen model wrapper. Patch the external class
@@ -226,11 +226,7 @@ if _TRACE_ROOT:
                     _resolve_target_frontier(
                         getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
                     )
-                    if (
-                        _target_row is None
-                        and isinstance(hidden_states, torch.Tensor)
-                        and hidden_states.shape[0] > 999
-                    ):
+                    if _target_row is None and isinstance(hidden_states, torch.Tensor) and hidden_states.shape[0] > 999:
                         _target_position = 999
                         _target_row = 999
                         print(
