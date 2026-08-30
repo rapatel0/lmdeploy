@@ -20,6 +20,7 @@ if _TRACE_ROOT:
     _graph_refs: dict[str, torch.Tensor] = {}
     _target_trace: dict[str, torch.Tensor] = {}
     _target_trace_dtypes: dict[str, int] = {}
+    _target_feature_trace: dict[int, torch.Tensor] = {}
     _graph_flushed = False
     _ordinal = 0
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
@@ -203,6 +204,30 @@ if _TRACE_ROOT:
             flush=True,
         )
 
+    def _record_target_feature(layer_id: int, value) -> None:
+        """Retain audited prompt residuals consumed by DFlash ProjectContext."""
+        feature_ids = (5, 19, 33, 47, 61)
+        if layer_id not in feature_ids or layer_id in _target_feature_trace:
+            return
+        tensor = _tensor(value)
+        if not _armed() or tensor is None or tensor.numel() == 0:
+            return
+        try:
+            if torch.cuda.is_current_stream_capturing():
+                return
+        except Exception:
+            pass
+        matrix = tensor.detach().reshape(-1, tensor.shape[-1])
+        if _target_row < 0 or matrix.shape[0] <= _target_row:
+            return
+        _target_feature_trace[layer_id] = matrix[_target_row].to(torch.float16).clone()
+        print(f"SGLANG_DFLASH_TARGET_FEATURE layer={layer_id} row={_target_row}", flush=True)
+        if all(feature_id in _target_feature_trace for feature_id in feature_ids):
+            _dump(
+                "target.prompt_features",
+                torch.stack([_target_feature_trace[feature_id] for feature_id in feature_ids]),
+            )
+
     # Trace the target Qwen3.5 trajectory before DFlash context projection.
     # These are external in-memory hooks; the SGLang source remains read-only.
     import sglang.srt.layers.communicator as _communicator
@@ -348,10 +373,12 @@ if _TRACE_ROOT:
                 )
                 if layer_id == 0:
                     _record_target("target.layer0.attn_norm", normalized)
-                if 0 < layer_id <= 6:
+                if layer_id > 0:
                     previous = layer_id - 1
-                    _record_target(f"target.layer{previous}.output_residual", next_residual)
-                    _record_target(f"target.layer{previous}.next_attn_norm", normalized)
+                    _record_target_feature(previous, next_residual)
+                    if layer_id <= 6:
+                        _record_target(f"target.layer{previous}.output_residual", next_residual)
+                        _record_target(f"target.layer{previous}.next_attn_norm", normalized)
                 return normalized, next_residual
 
             self.layer_communicator.prepare_attn = traced_prepare_attn
@@ -439,10 +466,12 @@ if _TRACE_ROOT:
         )
         if layer_id == 0:
             _record_target("target.layer0.attn_norm", hidden_states)
-        if layer_id is not None and 0 < layer_id <= 6:
+        if layer_id is not None and layer_id > 0:
             previous = layer_id - 1
-            _record_target(f"target.layer{previous}.output_residual", residual)
-            _record_target(f"target.layer{previous}.next_attn_norm", hidden_states)
+            _record_target_feature(previous, residual)
+            if layer_id <= 6:
+                _record_target(f"target.layer{previous}.output_residual", residual)
+                _record_target(f"target.layer{previous}.next_attn_norm", hidden_states)
         return hidden_states, residual
 
     _communicator.LayerCommunicator.prepare_attn = _traced_target_prepare_attn

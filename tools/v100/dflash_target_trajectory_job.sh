@@ -52,8 +52,23 @@ for directory in dirs:
     ids = [item for item in records if item["name"] == "target.input_ids"]
     assert len(ids) == 1 and ids[0]["shape"] == [1000], (directory, ids)
     assert (directory / ids[0]["file"]).stat().st_size == 1000 * 4
+    features = [item for item in records if item["name"] == "target.prompt_features"]
+    assert len(features) == 1 and features[0]["shape"] == [5, 5120], (directory, features)
+    assert (directory / features[0]["file"]).stat().st_size == 5 * 5120 * 2
 print(f"DFLASH_TARGET_TRAJECTORY_TRACE_PASS ranks={len(dirs)}")
 PY
+
+SG_REF=""
+while IFS= read -r candidate; do
+    if grep -q 'target.prompt_features' "${candidate}"/rank-*/manifest.jsonl 2>/dev/null; then
+        SG_REF="${candidate}"
+        break
+    fi
+done < <(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace/sglang' -print | sort -r)
+[ -n "${SG_REF}" ] || { echo 'FAIL: no SGLang target prompt-feature trace exists' >&2; exit 4; }
+python3 /job/compare_dflash_target_features.py \
+    --lmdeploy "${RESULTS}/parity/lmdeploy" --sglang "${SG_REF}" \
+    --output "${RESULTS}/target_features.json" | tee "${RESULTS}/target_features.log"
 
 TM_DFLASH_TARGET_TRAJECTORY=0 \
     python3 /job/verify_dflash_audited.py \

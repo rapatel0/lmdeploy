@@ -1454,13 +1454,19 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         && env.at("input_ids").buffer().size() == 1000 && !unified_decoder_->is_warm_up()) {
         const Tensor& trajectory = env.at("dflash_target_trajectory");
         const Tensor& activation = env.at("dflash_target_mlp_activation");
+        const Tensor& target_hidden = env.at("dflash_target_hidden");
         TM_CHECK_EQ(trajectory.dtype(), kHalf);
         TM_CHECK_EQ(trajectory.shape(0), 38);
         TM_CHECK_EQ(trajectory.shape(1), weights_.hidden_units);
         Tensor host_trajectory{trajectory.layout(), trajectory.dtype(), kCPU};
         Tensor host_activation{activation.layout(), activation.dtype(), kCPU};
+        TM_CHECK_EQ(target_hidden.shape(0), 1000);
+        TM_CHECK_EQ(target_hidden.shape(1), (ssize_t)weights_.dflash->target_layer_ids.size() * weights_.hidden_units);
+        Tensor target_feature_row = target_hidden.slice({999, 0}, {1000, -1});
+        Tensor host_target_features{target_feature_row.layout(), target_feature_row.dtype(), kCPU};
         Copy(trajectory, host_trajectory);
         Copy(activation, host_activation);
+        Copy(target_feature_row, host_target_features);
         Buffer_<int> host_ids{env.at("input_ids").buffer().size(), kCPU};
         Copy(env.at("input_ids").buffer(), host_ids.size(), host_ids);
         core::Context::stream().Sync();
@@ -1474,6 +1480,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         const std::string trajectory_file = "000000-target.trajectory.bin";
         const std::string ids_file        = "000001-target.input_ids.bin";
         const std::string activation_file = "000002-target.layer0.mlp_activation.bin";
+        const std::string feature_file    = "000003-target.prompt_features.bin";
         {
             std::ofstream out{dir / trajectory_file, std::ios::binary};
             TM_CHECK(out) << "cannot open target trajectory output";
@@ -1492,6 +1499,12 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             out.write((const char*)host_activation.raw_data(), host_activation.byte_size());
             TM_CHECK(out) << "cannot write target MLP activation output";
         }
+        {
+            std::ofstream out{dir / feature_file, std::ios::binary};
+            TM_CHECK(out) << "cannot open target prompt-feature output";
+            out.write((const char*)host_target_features.raw_data(), host_target_features.byte_size());
+            TM_CHECK(out) << "cannot write target prompt-feature output";
+        }
         std::ofstream manifest{dir / "manifest.jsonl", std::ios::out | std::ios::trunc};
         TM_CHECK(manifest) << "cannot open target trajectory manifest";
         manifest << "{\"runtime\":\"lmdeploy\",\"ordinal\":0,\"stage\":\"target\","
@@ -1509,6 +1522,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                  << activation.shape(1) << "],\"byte_order\":\"little\",\"bytes\":"
                  << host_activation.byte_size() << ",\"file\":\"" << activation_file
                  << "\",\"tp_rank\":" << tp_rank_ << "}\n";
+        manifest << "{\"runtime\":\"lmdeploy\",\"ordinal\":3,\"stage\":\"target\","
+                 << "\"name\":\"target.prompt_features\",\"dtype\":\"f16\",\"shape\":["
+                 << weights_.dflash->target_layer_ids.size() << "," << weights_.hidden_units
+                 << "],\"byte_order\":\"little\",\"bytes\":" << host_target_features.byte_size()
+                 << ",\"file\":\"" << feature_file << "\",\"tp_rank\":" << tp_rank_ << "}\n";
         manifest.flush();
         TM_CHECK(manifest) << "cannot write target trajectory manifest";
         target_prompt_trajectory_written = true;
