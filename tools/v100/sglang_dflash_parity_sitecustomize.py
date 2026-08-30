@@ -587,6 +587,8 @@ if _TRACE_ROOT:
                     "SGLANG_DFLASH_TARGET_PROJECT_ALIGNMENT " + json.dumps(report, sort_keys=True),
                     flush=True,
                 )
+        if target_hidden.ndim == 2 and target_hidden.shape[0] == 1000:
+            _dump("target.full_context", target_hidden)
         _dump("target.post_layer_residual", target_hidden, last_row=True)
         return _orig_project(self, target_hidden)
 

@@ -645,7 +645,8 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
     const Tensor* context_input = &target_hidden;
     Tensor        replay;
     const char*   replay_path = std::getenv("TM_DFLASH_CONTEXT_REPLAY_FILE");
-    if (replay_path && replay_path[0] && target_hidden.shape(0) == 1 && !context_replay_consumed_) {
+    const bool parity_context_armed = parity_trace_ && parity_trace_->context_armed;
+    if (replay_path && replay_path[0] && parity_context_armed && !context_replay_consumed_) {
         TM_CHECK_EQ(dtype_, kHalf);
         const size_t expected_bytes = target_hidden.size() * sizeof(__half);
         std::ifstream stream(replay_path, std::ios::binary | std::ios::ate);
@@ -661,7 +662,8 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
         core::Context::stream().Sync();
         context_input = &replay;
         context_replay_consumed_ = true;
-        TM_LOG_INFO("[DFlash2] replaying first eligible target context from {} bytes={}",
+        TM_LOG_INFO("[DFlash2] replaying full parity target context rows={} from {} bytes={}",
+                    target_hidden.shape(0),
                     replay_path,
                     expected_bytes);
     }

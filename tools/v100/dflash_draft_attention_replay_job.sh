@@ -18,7 +18,8 @@ pip install --no-deps --force-reinstall "$WHEEL" 2>&1 | tail -1
 
 SG_ROOT=$(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace/sglang' | sort | tail -1)
 [ -n "$SG_ROOT" ]
-mapfile -t REPLAY_FILES < <(python3 - "$SG_ROOT" <<'PY'
+mapfile -t REPLAY_FILES < <(
+    python3 - "$SG_ROOT" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -65,10 +66,10 @@ run_arm() {
     local arm=$1 input_replay=$2 output_replay=$3
     mkdir -p "$RESULTS/$arm"
     TM_DFLASH_REDUCE_BEFORE_CONV=1 \
-    TM_DFLASH_CONTEXT_REPLAY_FILE="$CONTEXT" \
-    TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE="$input_replay" \
-    TM_DFLASH_DRAFT_ATTENTION_OUTPUT_REPLAY_FILE="$output_replay" \
-    TM_DFLASH_PARITY_DIR="$RESULTS/$arm" \
+        TM_DFLASH_CONTEXT_REPLAY_FILE="$CONTEXT" \
+        TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE="$input_replay" \
+        TM_DFLASH_DRAFT_ATTENTION_OUTPUT_REPLAY_FILE="$output_replay" \
+        TM_DFLASH_PARITY_DIR="$RESULTS/$arm" \
         python3 /job/bench_decode.py "${common[@]}" --json-out "$RESULTS/$arm.json" \
         2>&1 | tee "$RESULTS/$arm.log"
     python3 /job/compare_dflash_parity.py \
