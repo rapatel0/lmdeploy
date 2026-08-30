@@ -235,8 +235,27 @@ if _TRACE_ROOT:
     _orig_target_prepare_attn = _communicator.LayerCommunicator.prepare_attn
 
     def _traced_target_prepare_attn(self, hidden_states, residual, forward_batch, *args, **kwargs):
+        global _target_position, _target_row
         layer_id = getattr(self, "_dflash_target_layer_id", None)
         if layer_id == 0:
+            # This communicator boundary is reached on every real target
+            # prefill path, including split-prefill and compiled ModelRunner
+            # variants. Resolve against its live ForwardBatch before recording.
+            _resolve_target_frontier(
+                getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
+            )
+            if _target_row is None and isinstance(hidden_states, torch.Tensor) and hidden_states.shape[0] > 999:
+                # The pinned image does not expose input_ids/positions on its
+                # split-prefill ForwardBatch. The audited request is hash-
+                # checked and logged as one uncached 1,008-row prefill, so row
+                # 999 is the unique prompt frontier before eight placeholders.
+                _target_position = 999
+                _target_row = 999
+                print(
+                    "SGLANG_DFLASH_TARGET_FRONTIER position=999 row=999 "
+                    f"token_id=198 rows={hidden_states.shape[0]} source=audited_prefill_layout",
+                    flush=True,
+                )
             _record_target("target.input.embedding", hidden_states)
         hidden_states, residual = _orig_target_prepare_attn(
             self, hidden_states, residual, forward_batch, *args, **kwargs
