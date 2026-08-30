@@ -606,6 +606,27 @@ void DFlashPredictor::PrepareAttention(int phase, TensorMap& env)
     attention_.Run(BatchOp::kPrepare, attention_phase_base_ + phase, env);
 }
 
+void DFlashPredictor::ValidateDraftAttentionMetadata(int        phase,
+                                                     const int* committed_seq_lens,
+                                                     int        batch_size,
+                                                     bool       rebuild,
+                                                     bool       assert_exact) const
+{
+    TM_CHECK_GE(attention_phase_base_, 0);
+    attention_.ValidateDFlashDraftMetadata(attention_phase_base_ + phase,
+                                           committed_seq_lens,
+                                           batch_size,
+                                           weights_.block_size,
+                                           rebuild,
+                                           assert_exact);
+}
+
+void DFlashPredictor::AssertDraftAttentionKeySpans(int phase, int batch_size) const
+{
+    TM_CHECK_GE(attention_phase_base_, 0);
+    attention_.AssertDFlashDraftKeySpans(attention_phase_base_ + phase, batch_size);
+}
+
 Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden, int phase) const
 {
     TM_CHECK_EQ(target_hidden.ndim(), 2);
@@ -784,6 +805,13 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
 
     Buffer_<int> k_offsets = env.at("k_offsets").buffer().view<int>();
     AdvanceCuSeqLens(k_offsets.data(), batch_size, weights_.block_size, core::Context::stream().handle());
+    static const bool assert_draft_metadata = [] {
+        const char* value = std::getenv("TM_DFLASH_ASSERT_DRAFT_METADATA");
+        return value && value[0] == '1';
+    }();
+    if (assert_draft_metadata) {
+        AssertDraftAttentionKeySpans(phase, batch_size);
+    }
     hidden = RunDraftLayers(std::move(hidden), phase);
     AdvanceCuSeqLens(k_offsets.data(), batch_size, -weights_.block_size, core::Context::stream().handle());
     return hidden;

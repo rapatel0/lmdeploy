@@ -233,9 +233,11 @@ struct AttentionData {
     /// Row 0's draft count at Setup. Diagnostics only: a prompt's final chunk
     /// can be as short as a verification forward, so token counts alone do not
     /// identify the call.
-    int           num_drafts0{-1};
-    Buffer_<int>  k_offsets;
-    Buffer_<int>  readonly_block_num;  // per-request, batch order
+    int              num_drafts0{-1};
+    std::vector<int> draft_k_lens_host;
+    bool             assert_draft_metadata{};
+    Buffer_<int>     k_offsets;
+    Buffer_<int>     readonly_block_num;  // per-request, batch order
 
     // Global per-token validity mask, owned by LanguageModel and borrowed here; the
     // content is only built at Forward time. Consumed by the attention reduce.
@@ -598,6 +600,109 @@ void UnifiedAttentionLayer::Run(BatchOp op, int phase, TensorMap& env)
     }
 }
 
+void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
+                                                         const int* committed_seq_lens,
+                                                         int        batch_size,
+                                                         int        block_size,
+                                                         bool       rebuild,
+                                                         bool       assert_exact)
+{
+    TM_CHECK_GE(phase, 0);
+    TM_CHECK_LT(phase, (int)data_.size());
+    TM_CHECK_NOTNULL(committed_seq_lens);
+    TM_CHECK_GT(batch_size, 0);
+    TM_CHECK_GT(block_size, 0);
+
+    auto& d                  = *data_.at(phase);
+    d.assert_draft_metadata = assert_exact;
+    TM_CHECK(d.decode_shape) << "DFlash metadata validation requires a draft-shaped attention phase";
+    TM_CHECK_EQ(d.draft_block_size, block_size);
+
+    const auto old_prefill = d.prefill;
+    int        expected_k_sum{};
+    int        expected_k_max{};
+    for (int i = 0; i < batch_size; ++i) {
+        TM_CHECK_GE(committed_seq_lens[i], 0);
+        const int expected = committed_seq_lens[i] + block_size;
+        expected_k_sum += expected;
+        expected_k_max = std::max(expected_k_max, expected);
+        if (rebuild) {
+            if ((int)d.draft_k_lens_host.size() != batch_size) {
+                d.draft_k_lens_host.resize(batch_size);
+            }
+            d.draft_k_lens_host[i] = expected;
+        }
+    }
+
+    if (rebuild) {
+        d.decode  = {};
+        d.prefill = {batch_size,
+                     batch_size * block_size,
+                     block_size,
+                     expected_k_sum,
+                     expected_k_max};
+    }
+
+    if (assert_exact) {
+        TM_CHECK_EQ((int)d.draft_k_lens_host.size(), batch_size);
+        for (int i = 0; i < batch_size; ++i) {
+            TM_CHECK_EQ(d.draft_k_lens_host[i], committed_seq_lens[i] + block_size)
+                << "DFlash draft metadata row " << i << " does not match the post-rollback committed frontier";
+        }
+        TM_CHECK_EQ(d.decode.n, 0);
+        TM_CHECK_EQ(d.prefill.n, batch_size);
+        TM_CHECK_EQ(d.prefill.q_sum, batch_size * block_size);
+        TM_CHECK_EQ(d.prefill.q_max, block_size);
+        TM_CHECK_EQ(d.prefill.k_sum, expected_k_sum);
+        TM_CHECK_EQ(d.prefill.k_max, expected_k_max);
+    }
+
+    if (rebuild || assert_exact) {
+        int device = -1;
+        TM_CUDA_CHECK(cudaGetDevice(&device));
+        TM_LOG_INFO("DFLASH_METADATA_{}_ACTIVE device={} phase={} rows={} block={} old_q_sum={} old_k_sum={} "
+                    "new_q_sum={} new_k_sum={} assert={}",
+                    rebuild ? "REBUILD" : "ASSERT",
+                    device,
+                    phase,
+                    batch_size,
+                    block_size,
+                    old_prefill.q_sum,
+                    old_prefill.k_sum,
+                    d.prefill.q_sum,
+                    d.prefill.k_sum,
+                    (int)assert_exact);
+    }
+}
+
+void UnifiedAttentionLayer::AssertDFlashDraftKeySpans(int phase, int batch_size)
+{
+    TM_CHECK_GE(phase, 0);
+    TM_CHECK_LT(phase, (int)data_.size());
+    auto& d = *data_.at(phase);
+    if (!d.assert_draft_metadata) {
+        return;
+    }
+
+    TM_CHECK_EQ((int)d.draft_k_lens_host.size(), batch_size);
+    Buffer_<int> offsets_host{batch_size + 1, kCPU};
+    Copy(d.k_offsets.slice(0, batch_size + 1), offsets_host);
+    core::Context::stream().Sync();
+    for (int i = 0; i < batch_size; ++i) {
+        const int actual = offsets_host[i + 1] - offsets_host[i];
+        TM_CHECK_EQ(actual, d.draft_k_lens_host[i])
+            << "DFlash live key span for row " << i << " differs from rebuilt draft metadata";
+    }
+
+    int device = -1;
+    TM_CUDA_CHECK(cudaGetDevice(&device));
+    TM_LOG_INFO("DFLASH_METADATA_OFFSETS_ASSERT_ACTIVE device={} phase={} rows={} first_span={}",
+                device,
+                phase,
+                batch_size,
+                offsets_host[1] - offsets_host[0]);
+}
+
 void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
 {
     // const auto& rc  = env.at("batch").data<BatchData*>()[0]->rc;  // active requests
@@ -753,6 +858,17 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
                                     d.draft_block_size :
                                     0;
         const int k_len = c.history_len + c.inflight_input_len + c.input_len + draft_extra;
+        static const bool track_dflash_metadata = [] {
+            const char* rebuild = std::getenv("TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK");
+            const char* check   = std::getenv("TM_DFLASH_ASSERT_DRAFT_METADATA");
+            return (rebuild && rebuild[0] == '1') || (check && check[0] == '1');
+        }();
+        if (track_dflash_metadata) {
+            if ((int)d.draft_k_lens_host.size() != bsz) {
+                d.draft_k_lens_host.resize(bsz);
+            }
+            d.draft_k_lens_host[i] = k_len;
+        }
 
         auto& s = i < d.decode.n ? d.decode : d.prefill;
         s.q_sum += q_len;

@@ -43,6 +43,12 @@ public:
 
     void SetupAttention(int phase, TensorMap& env);
     void PrepareAttention(int phase, TensorMap& env);
+    void ValidateDraftAttentionMetadata(int        phase,
+                                        const int* committed_seq_lens,
+                                        int        batch_size,
+                                        bool       rebuild,
+                                        bool       assert_exact) const;
+    void AssertDraftAttentionKeySpans(int phase, int batch_size) const;
 
     /// Project [tokens, context_features * hidden] target residuals to the
     /// draft hidden width, then apply hidden_norm.

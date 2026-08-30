@@ -80,6 +80,20 @@ public:
                               int        row_count,
                               int        target_attention_count);
 
+    /// Validate the DFlash draft key span against a post-rollback committed
+    /// frontier. The optional rebuild refreshes only shape metadata; the
+    /// existing phase-owned pointers remain valid.
+    void ValidateDFlashDraftMetadata(int        phase,
+                                     const int* committed_seq_lens,
+                                     int        batch_size,
+                                     int        block_size,
+                                     bool       rebuild,
+                                     bool       assert_exact);
+
+    /// Check the live device cu_k_len spans after the proposal block advances
+    /// them and before draft attention reads them.
+    void AssertDFlashDraftKeySpans(int phase, int batch_size);
+
 private:
     void Setup(int phase, TensorMap& env);
 

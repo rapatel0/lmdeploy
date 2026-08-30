@@ -60,6 +60,7 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Classification: strongest unconfirmed lifecycle hypothesis.
   - Assert for every row that the draft key span equals the newly published committed length plus block size.
   - Control: rebuild DFlash Setup/Prepare metadata after Rollback and compare candidates and acceptance.
+  - A TurboMind-only one-build control is available behind `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=1`. `TM_DFLASH_ASSERT_DRAFT_METADATA=1` checks every row against `committed_frontier + block_size`; `tools/v100/dflash_metadata_rebuild_job.sh` compares candidate blocks, acceptance, normalized cycle time, four-rank route proof, and audited identity. GPU qualification remains pending.
   - Done when: metadata is refreshed correctly or the control falsifies this cause.
 
 - [x] **Add first-block tensor parity against SGLang.**

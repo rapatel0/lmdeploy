@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <memory>
 #include <numeric>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1687,6 +1688,22 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
             TM_LOG_WARNING("[DFlash2] missing host frontier; using legacy device readback");
         }
     }
+    static const bool rebuild_dflash_metadata = [] {
+        const char* value = std::getenv("TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK");
+        return value && value[0] == '1';
+    }();
+    static const bool assert_dflash_metadata = [] {
+        const char* value = std::getenv("TM_DFLASH_ASSERT_DRAFT_METADATA");
+        return value && value[0] == '1';
+    }();
+    const bool after_rollback = std::any_of(
+        d.num_drafts.begin(), d.num_drafts.end(), [](int num_drafts) { return num_drafts > 0; });
+    const bool rebuild_this_step = rebuild_dflash_metadata && after_rollback;
+    if (rebuild_this_step || assert_dflash_metadata) {
+        dflash_predictor_->ValidateDraftAttentionMetadata(
+            phase, tips->data(), bsz, rebuild_this_step, assert_dflash_metadata);
+    }
+
     for (int i = 0; i < bsz; ++i) {
         if (d.rows[i]->max_seq_len - (*tips)[i] - 1 < K) {
             for (auto* row : d.rows) {
@@ -1707,6 +1724,31 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     core::Copy(candidates, candidates.size(), host);
     if (!dflash_predictor_->FinishParityBlock()) {
         core::Context::stream().Sync();
+    }
+
+    static const bool trace_dflash_metadata = [] {
+        const char* value = std::getenv("TM_DFLASH_METADATA_TRACE");
+        return value && value[0] == '1';
+    }();
+    if (TM_UNLIKELY(trace_dflash_metadata)) {
+        int device = -1;
+        TM_CUDA_CHECK(cudaGetDevice(&device));
+        for (int i = 0; i < bsz; ++i) {
+            std::ostringstream ids;
+            for (int k = 0; k < K; ++k) {
+                if (k) {
+                    ids << ',';
+                }
+                ids << host[i * K + k];
+            }
+            TM_LOG_INFO("DFLASH_METADATA_CANDIDATES device={} phase={} uid={} frontier={} rebuild={} ids={}",
+                        device,
+                        phase,
+                        (long)d.uids[i],
+                        (*tips)[i],
+                        (int)rebuild_dflash_metadata,
+                        ids.str());
+        }
     }
 
     for (int i = 0; i < bsz; ++i) {
