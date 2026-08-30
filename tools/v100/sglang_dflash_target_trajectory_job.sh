@@ -8,10 +8,11 @@ LM_REF="$(find /results -maxdepth 3 -type d -path '*-dflash-target-trajectory-*/
 }
 export LM_DFLASH_PARITY_REF="${LM_REF}"
 export LM_DFLASH_TARGET_TRAJECTORY_REF="${LM_REF}"
-# TurboMind's retained trajectory starts at the first target-verification
-# block. Match SGLang's native bonus token at position 1000, not the earlier
-# prompt-prefill row or its speculative placeholder.
-export SGLANG_DFLASH_TARGET_POSITION=1000
+# TurboMind's retained trajectory starts at a target-verification row whose
+# input embedding is exactly checkpoint token 1596. Merged SGLang scheduler
+# batches can repeat/reorder logical positions, so resolve that unique token
+# first and persist the live resolved position in the trace log.
+export SGLANG_DFLASH_TARGET_POSITION=-1
 export SGLANG_DFLASH_TARGET_TOKEN_ID=1596
 # Target boundary hooks need the live eager prefill, not a compiled replay.
 # The generic parity job retains production CUDA graphs by default.

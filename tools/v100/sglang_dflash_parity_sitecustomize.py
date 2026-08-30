@@ -173,12 +173,20 @@ if _TRACE_ROOT:
             return
         host_positions = positions.detach().reshape(-1).cpu().tolist()
         try:
-            matches = [index for index, position in enumerate(host_positions) if int(position) == _target_position]
+            matches = (
+                list(range(len(host_positions)))
+                if _target_position < 0
+                else [index for index, position in enumerate(host_positions) if int(position) == _target_position]
+            )
         except (TypeError, ValueError) as error:
             raise RuntimeError("DFLASH target trace received invalid positions") from error
         if not matches:
             # Chunked prefill and earlier decode calls may not yet contain the
             # requested verification position. Remain armed for the live call.
+            return
+        # Token-only alignment is reserved for the small merged verification
+        # batch; never select a coincidental occurrence from the 1K prefill.
+        if _target_position < 0 and len(host_positions) > 64:
             return
         host_ids = None
         if isinstance(input_ids, torch.Tensor) and input_ids.numel():
@@ -209,8 +217,12 @@ if _TRACE_ROOT:
         except (TypeError, ValueError) as error:
             raise RuntimeError("DFLASH target trace received an invalid selected token") from error
         _target_row = candidate_row
+        try:
+            resolved_position = int(host_positions[candidate_row])
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("DFLASH target trace received an invalid selected position") from error
         print(
-            f"SGLANG_DFLASH_TARGET_FRONTIER position={_target_position} "
+            f"SGLANG_DFLASH_TARGET_FRONTIER position={resolved_position} "
             f"row={_target_row} token_id={token_id} rows={len(host_positions)}",
             flush=True,
         )

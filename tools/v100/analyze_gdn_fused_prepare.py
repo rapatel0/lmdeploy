@@ -64,9 +64,7 @@ def main() -> int:
     root = args.result_dir
     unprofiled = {arm: cycle(root, arm) for arm in ARMS}
     profiled = {arm: cycle(root, f"profile_{arm}") for arm in ARMS}
-    kernels = {
-        arm: kernel_counts(root / f"profile_{arm}_stats_cuda_gpu_kern_sum.csv") for arm in ARMS
-    }
+    kernels = {arm: kernel_counts(root / f"profile_{arm}_stats_cuda_gpu_kern_sum.csv") for arm in ARMS}
     try:
         legacy = float(unprofiled["legacy"]["normalized_cycle_ms"])
         full = float(unprofiled["full"]["normalized_cycle_ms"])

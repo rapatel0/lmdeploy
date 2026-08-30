@@ -26,7 +26,8 @@ common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
     --cache-max-entry-count 0.05)
 
 for arm_mode in legacy:0 beta:1 full:2; do
-    arm=${arm_mode%:*}; mode=${arm_mode#*:}
+    arm=${arm_mode%:*}
+    mode=${arm_mode#*:}
     echo "=== ${arm}: fused_prepare=${mode} ==="
     TM_GDN_SM70_FUSED_PREPARE="${mode}" \
         python3 /job/bench_decode.py "${common[@]}" --output-tokens 256 --trials 5 \
@@ -35,10 +36,14 @@ done
 
 NSYS="$(command -v nsys 2>/dev/null || true)"
 if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then NSYS=/opt/nsys/nsys; fi
-[ -n "${NSYS}" ] || { echo 'FAIL: nsys unavailable' >&2; exit 2; }
+[ -n "${NSYS}" ] || {
+    echo 'FAIL: nsys unavailable' >&2
+    exit 2
+}
 export FT_NVTX=ON
 for arm_mode in legacy:0 beta:1 full:2; do
-    arm=${arm_mode%:*}; mode=${arm_mode#*:}
+    arm=${arm_mode%:*}
+    mode=${arm_mode#*:}
     TM_GDN_SM70_FUSED_PREPARE="${mode}" \
         "${NSYS}" profile --force-overwrite=true --trace=cuda,nvtx,osrt --cuda-memory-usage=true \
         --capture-range=cudaProfilerApi --capture-range-end=stop --output="${RESULTS}/profile_${arm}" \
