@@ -20,20 +20,6 @@ namespace turbomind {
 // conv_state_ptrs: device array[batch_size] of per-request state pointers
 // q_offsets:       device int[batch_size+1] cumulative token offsets
 // k_offsets:       device int[batch_size+1] cumulative key (history+input) offsets
-struct FusedGdnPrepareParams {
-    Tensor beta;
-    Tensor g;
-    Tensor A_log;
-    Tensor dt_bias;
-    int    mode{};  // 1: beta/decay, 2: beta/decay plus exact Q/K L2 normalization
-    int    key_dim{};
-    int    value_heads{};
-    int    value_gate_offset{};
-    int    decay_gate_offset{};
-    int    gate_stride{};
-    float  epsilon{1e-6f};
-};
-
 void invokeFusedConv1dSiLU(Ref<Tensor>           out,
                            const Tensor&         in,
                            const Tensor&         weight,
@@ -49,8 +35,7 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out,
                            cudaStream_t          stream,
                            uint8_t*              state_snapshots = nullptr,
                            int64_t               snapshot_row_stride = 0,
-                           int64_t               snapshot_step_stride = 0,
-                           FusedGdnPrepareParams* prepare = nullptr);
+                           int64_t               snapshot_step_stride = 0);
 
 inline void invokeFusedConv1dSiLU(Ref<Tensor>           out,
                                   const Tensor&         in,

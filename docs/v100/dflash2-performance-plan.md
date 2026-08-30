@@ -237,6 +237,15 @@ Artifact: `/results/20260829_232344-dflash-tp-local-top2-4a3faf70212a`.
 
 Artifact: `/results/20260829_232739-dflash-fp16-flat-head-4a3faf70212a`.
 
+### A5.10. Fuse Q=8 GDN preparation into convolution — rejected
+
+- One build fused the exact beta/decay transform into the existing SM70 convolution kernel, then optionally fused Q/K L2 normalization while preserving the standalone kernel's FP16 boundary and warp reduction order.
+- The full arm passed exact audited 128-token identity. Matched profiling at commit length 2.311 improved normalized cycle time from 38.945 to 38.217 ms, **1.87%**, and reduced eligible beta/normalization helper launches by about 85%.
+- The initial five-trial unprofiled comparison improved only 0.89%, below the material-gain gate. A counter-ordered ten-trial confirmation instead regressed pooled normalization by 0.28%; legacy and full arms also followed different known near-tie acceptance trajectories.
+- The confirmation fails the plan's stop condition. The fused kernel, runtime modes, and qualification tools were removed rather than promoted on profiler-only evidence.
+
+Artifacts: `/results/20260830_150227-gdn-fused-prepare-4b6206fe47ec` and `/results/20260830_151758-gdn-fused-prepare-followup`.
+
 ### A6. Evaluate target FP8 KV separately
 
 - Add E5M2 target KV as an isolated policy.

@@ -410,6 +410,8 @@ The target workspace is default-on because it is a required contiguous-graph pre
 
 A rebuilt current-default profile after graph cleanup measures `targetVerify` at **11.46 ms**, rollback/outstanding target tail at **17.93 ms**, and draft-plus-selector at **5.10 ms**. FP8 M=8 GEMM remains the largest kernel class at **25.9%** of GPU kernel time, followed by flat target GDN FP16 projections at **10.6%**, NCCL at **7.7%**, grouped target attention at **6.5%**, and recurrent GDN at **6.2%**. This is the active cycle-cost attribution. Artifact: `/results/20260830_130225-nsys-dflash-be78c62b0da6`.
 
+A structural Q=8 GDN preparation fusion folded beta/decay generation and exact FP16 Q/K normalization into the existing SM70 convolution launch. Audited 128-token identity passed, eligible helper launches fell about 85%, and matched profiling improved normalized cycle time 1.87%. The first five-trial unprofiled gain was only 0.89%, however, and a counter-ordered ten-trial confirmation regressed pooled normalization by 0.28%. The profiler-only gain fails the material-gain rule; the kernel, runtime modes, and tools were removed. Artifacts: `/results/20260830_150227-gdn-fused-prepare-4b6206fe47ec` and `/results/20260830_151758-gdn-fused-prepare-followup`.
+
 ## Contiguous target CUDA graph
 
 With stable target addresses, a flagged prototype captured the entire 64-layer target decoder, including TP4 NCCL collectives, into one CUDA graph per rank. Capture and replay succeeded on all four ranks, and exact audited 128-token K=0/K=7 identity passed. This proved the broad graph capability that the rejected per-layer experiment could not amortize.

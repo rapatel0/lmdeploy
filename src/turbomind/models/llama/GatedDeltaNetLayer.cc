@@ -1,6 +1,5 @@
 #include "src/turbomind/models/llama/GatedDeltaNetLayer.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -632,16 +631,9 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
                           gate_layout,
                           Tensor::PreserveBufferCapacity{}};
 
-    static const int fused_prepare_mode = [] {
-        const char* value = std::getenv("TM_GDN_SM70_FUSED_PREPARE");
-        return value ? std::clamp(std::atoi(value), 0, 2) : 0;
-    }();
-    const int prepare_mode = use_target_workspace ? fused_prepare_mode : 0;
-    if (!prepare_mode) {
-        Tensor beta_projection  = all_proj.slice({0, value_gate_offset}, {-1, value_heads});
-        Tensor decay_projection = all_proj.slice({0, decay_gate_offset}, {-1, value_heads});
-        ComputeBetaG(beta, g, beta_projection, decay_projection, weights.A_log, weights.dt_bias, stream);
-    }
+    Tensor beta_projection  = all_proj.slice({0, value_gate_offset}, {-1, value_heads});
+    Tensor decay_projection = all_proj.slice({0, decay_gate_offset}, {-1, value_heads});
+    ComputeBetaG(beta, g, beta_projection, decay_projection, weights.A_log, weights.dt_bias, stream);
 
     Tensor attn_out = use_target_workspace ? phase_data.target_attn_out.slice(0, token_num) :
                                              Tensor{{token_num, value_dim}, dtype, device};
@@ -670,17 +662,6 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
                                             : 0;
     uint8_t* state_snapshots = capture_intermediate ? snapshot_.data() : nullptr;
 
-    FusedGdnPrepareParams fused_prepare{beta,
-                                               g,
-                                               weights.A_log,
-                                               weights.dt_bias,
-                                               prepare_mode,
-                                               key_dim,
-                                               value_heads,
-                                               value_gate_offset,
-                                               decay_gate_offset,
-                                               gate_stride_,
-                                               1e-6f};
     invokeFusedConv1dSiLU(conv_out,
                           all_proj,
                           weights.conv1d,
@@ -696,8 +677,7 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
                           stream,
                           state_snapshots,
                           snapshot_row_stride,
-                          snapshot_step_stride,
-                          prepare_mode ? &fused_prepare : nullptr);
+                          snapshot_step_stride);
 
     auto make_view = [](const Tensor& storage, core::ssize_t offset, core::Layout layout) {
         return Tensor{storage.buffer().slice(offset, storage.buffer().size() - offset),
@@ -713,9 +693,7 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
     Tensor             k = make_view(conv_out, key_dim, qk_layout);
     Tensor             v = make_view(conv_out, 2 * key_dim, v_layout);
     Tensor             out{attn_out.buffer(), out_layout};
-    if (prepare_mode < 2) {
-        invokeL2NormalizeQK(q, k, 1e-6f, stream);
-    }
+    invokeL2NormalizeQK(q, k, 1e-6f, stream);
 
     const int     layer              = layer_index_.at(param.weights);
     const int     layer_group        = layer / layers_per_block_;

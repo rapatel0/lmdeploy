@@ -123,9 +123,7 @@ def main() -> int:
                     differing = 1
                 else:
                     delta = lhs - rhs
-                    differing = int(
-                        np.count_nonzero(lm[index].view(np.uint16) != sg[index].view(np.uint16))
-                    )
+                    differing = int(np.count_nonzero(lm[index].view(np.uint16) != sg[index].view(np.uint16)))
                     row = {
                         "rank": rank,
                         "index": index,
