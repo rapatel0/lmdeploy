@@ -196,6 +196,17 @@ if _TRACE_ROOT:
 
     _model_runner.ModelRunner.forward = _traced_model_runner_forward
 
+    _orig_model_runner_split_prefill = _model_runner.ModelRunner.forward_split_prefill
+
+    def _traced_model_runner_split_prefill(self, forward_batch, *args, **kwargs):
+        if not bool(getattr(self, "is_draft_worker", False)):
+            _resolve_target_frontier(
+                getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
+            )
+        return _orig_model_runner_split_prefill(self, forward_batch, *args, **kwargs)
+
+    _model_runner.ModelRunner.forward_split_prefill = _traced_model_runner_split_prefill
+
     def _tag_target_layer(original_init):
         def wrapped(self, *args, **kwargs):
             original_init(self, *args, **kwargs)
