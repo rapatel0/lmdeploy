@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compare DFlash proposal and acceptance traces for rejected-KV poisoning."""
+
 from __future__ import annotations
 
 import json
@@ -8,9 +9,7 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-proposal_re = re.compile(
-    r"DFLASH_KV_PROPOSAL_TRACE poison=([01]) uid=\d+ tip=(\d+) ids=([0-9,-]+)"
-)
+proposal_re = re.compile(r"DFLASH_KV_PROPOSAL_TRACE poison=([01]) uid=\d+ tip=(\d+) ids=([0-9,-]+)")
 accept_re = re.compile(
     r"final commit length ([0-9.]+), raw ([0-9.]+) over (\d+) verification steps "
     r"\((\d+) committed, (\d+) raw committed, (\d+) accepted drafts, "
