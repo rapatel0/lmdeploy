@@ -47,7 +47,7 @@ def rank_dirs(root: Path) -> dict[int, Path]:
     return result
 
 
-def load(directory: Path) -> np.ndarray:
+def load(directory: Path) -> tuple[np.ndarray, np.ndarray | None]:
     try:
         records = [json.loads(line) for line in (directory / "manifest.jsonl").read_text().splitlines()]
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
@@ -61,7 +61,14 @@ def load(directory: Path) -> np.ndarray:
     value = np.fromfile(directory / record["file"], dtype="<f2").reshape(38, 5120)
     if not np.isfinite(value).all():
         raise RuntimeError(f"non-finite target trajectory in {directory}")
-    return value
+    dtype_matching = [record for record in records if record["name"] == "target.trajectory_dtypes"]
+    dtype_codes = None
+    if dtype_matching:
+        dtype_record = dtype_matching[0]
+        dtype_codes = np.fromfile(directory / dtype_record["file"], dtype="<i4")
+        if dtype_codes.shape != (38,):
+            raise RuntimeError(f"unexpected target dtype codes in {directory}: {dtype_codes.shape}")
+    return value, dtype_codes
 
 
 def main() -> int:
@@ -77,8 +84,8 @@ def main() -> int:
     rows: list[dict[str, object]] = []
     earliest = None
     for rank in range(4):
-        lm = load(lm_dirs[rank])
-        sg = load(sg_dirs[rank])
+        lm, _ = load(lm_dirs[rank])
+        sg, sg_dtype_codes = load(sg_dirs[rank])
         for index, name in enumerate(names):
             lhs = lm[index].astype(np.float32)
             rhs = sg[index].astype(np.float32)
@@ -93,6 +100,7 @@ def main() -> int:
                     "max_abs": float(np.max(np.abs(delta))),
                     "rms": float(np.sqrt(np.mean(delta * delta, dtype=np.float64))),
                     "first_coordinate": int(np.flatnonzero(delta)[0]) if differing else None,
+                    "sglang_source_dtype": int(sg_dtype_codes[index]) if sg_dtype_codes is not None else None,
                 }
                 if differing and (earliest is None or index < int(earliest["index"])):
                     earliest = row
