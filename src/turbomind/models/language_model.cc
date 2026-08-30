@@ -1340,6 +1340,19 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                        kDEVICE};
         Clear(capture);
         env.produce("dflash_target_hidden", std::move(capture));
+
+        static const bool capture_target_trajectory = [] {
+            const char* value = std::getenv("TM_DFLASH_TARGET_TRAJECTORY");
+            return value && value[0] == '1';
+        }();
+        if (capture_target_trajectory) {
+            // One input pair plus six ordered boundaries for each of target
+            // layers 0..5. Each row stores only the audited prefill's last
+            // token; the full prefix still executes and produces GDN state.
+            Tensor trajectory{{38, (ssize_t)weights_.hidden_units}, weights_.data_type, kDEVICE};
+            Clear(trajectory);
+            env.produce("dflash_target_trajectory", std::move(trajectory));
+        }
     }
 
     env.produce("output_norm_weight", weights_.norm->weight);
@@ -1366,7 +1379,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         if (d.rows.size() == 1 && engine_param_.num_draft_tokens == 7) {
             dflash_predictor_->ArmParityContext(d.uids[0]);
         }
-        Tensor context = dflash_predictor_->ProjectContext(env.at("dflash_target_hidden"), phase);
+        const Tensor target_trajectory = env.try_("dflash_target_trajectory") ?
+                                             env.at("dflash_target_trajectory") :
+                                             Tensor{};
+        Tensor context =
+            dflash_predictor_->ProjectContext(env.at("dflash_target_hidden"), phase, target_trajectory);
         dflash_predictor_->MaterializeContextKV(phase, context);
         env.produce("dflash_context_hidden", std::move(context));
     }

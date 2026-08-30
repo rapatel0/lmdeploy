@@ -52,7 +52,7 @@ public:
 
     /// Project [tokens, context_features * hidden] target residuals to the
     /// draft hidden width, then apply hidden_norm.
-    Tensor ProjectContext(const Tensor& target_hidden, int phase) const;
+    Tensor ProjectContext(const Tensor& target_hidden, int phase, const Tensor& target_trajectory = {}) const;
 
     struct ConvState {
         Tensor output;
@@ -134,7 +134,10 @@ private:
 
     Buffer_<int> SelectCandidatesImpl(const Tensor& block_hidden, const Buffer_<int>& anchors, int phase) const;
     void CaptureParityTensor(const char* name, const Tensor& value) const;
-    void PrepareParityContext(const Tensor& target_hidden, const Tensor& projected, const Tensor& normalized) const;
+    void PrepareParityContext(const Tensor& target_hidden,
+                              const Tensor& target_trajectory,
+                              const Tensor& projected,
+                              const Tensor& normalized) const;
 
     const DFlashWeight& weights_;
     int                 hidden_units_{};

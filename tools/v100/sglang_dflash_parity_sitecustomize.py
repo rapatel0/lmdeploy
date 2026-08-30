@@ -17,6 +17,7 @@ if _TRACE_ROOT:
 
     _seen: set[str] = set()
     _graph_refs: dict[str, torch.Tensor] = {}
+    _target_trace: dict[str, torch.Tensor] = {}
     _graph_flushed = False
     _ordinal = 0
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
@@ -111,6 +112,87 @@ if _TRACE_ROOT:
             stream.write(json.dumps(record, separators=(",", ":")) + "\n")
         _seen.add(name)
 
+    def _record_target(name: str, value) -> None:
+        """Retain one last-token target boundary from the audited prefill."""
+        if not _armed() or name in _target_trace:
+            return
+        tensor = _tensor(value)
+        if tensor is None or tensor.numel() == 0:
+            return
+        try:
+            if torch.cuda.is_current_stream_capturing():
+                return
+        except Exception:
+            pass
+        _target_trace[name] = tensor.detach().reshape(-1, tensor.shape[-1])[-1].clone()
+
+    # Trace the target Qwen3.5 trajectory before DFlash context projection.
+    # These are external in-memory hooks; the SGLang source remains read-only.
+    import sglang.srt.layers.communicator as _communicator
+    import sglang.srt.models.qwen3_5 as _q35
+
+    def _tag_target_layer(original_init):
+        def wrapped(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            layer_id = _safe_int(getattr(self, "layer_id", -1), -1)
+            if layer_id < 0:
+                return
+            self.layer_communicator._dflash_target_layer_id = layer_id
+            branch = getattr(self, "linear_attn", None)
+            if branch is not None:
+                branch.register_forward_hook(
+                    lambda _m, _a, out, i=layer_id: _record_target(f"target.layer{i}.branch", out)
+                )
+            else:
+                self.o_proj.register_forward_hook(
+                    lambda _m, _a, out, i=layer_id: _record_target(f"target.layer{i}.branch", out)
+                )
+            self.mlp.register_forward_hook(
+                lambda _m, _a, out, i=layer_id: _record_target(f"target.layer{i}.mlp_output", out)
+            )
+
+        return wrapped
+
+    _q35.Qwen3_5LinearDecoderLayer.__init__ = _tag_target_layer(
+        _q35.Qwen3_5LinearDecoderLayer.__init__
+    )
+    _q35.Qwen3_5AttentionDecoderLayer.__init__ = _tag_target_layer(
+        _q35.Qwen3_5AttentionDecoderLayer.__init__
+    )
+
+    _orig_target_prepare_attn = _communicator.LayerCommunicator.prepare_attn
+
+    def _traced_target_prepare_attn(self, hidden_states, residual, forward_batch, *args, **kwargs):
+        layer_id = getattr(self, "_dflash_target_layer_id", None)
+        if layer_id == 0:
+            _record_target("target.input.embedding", hidden_states)
+        hidden_states, residual = _orig_target_prepare_attn(
+            self, hidden_states, residual, forward_batch, *args, **kwargs
+        )
+        if layer_id == 0:
+            _record_target("target.layer0.attn_norm", hidden_states)
+        if layer_id is not None and 0 < layer_id <= 6:
+            previous = layer_id - 1
+            _record_target(f"target.layer{previous}.output_residual", residual)
+            _record_target(f"target.layer{previous}.next_attn_norm", hidden_states)
+        return hidden_states, residual
+
+    _communicator.LayerCommunicator.prepare_attn = _traced_target_prepare_attn
+
+    _orig_target_prepare_mlp = _communicator.LayerCommunicator.prepare_mlp
+
+    def _traced_target_prepare_mlp(self, hidden_states, residual, forward_batch, *args, **kwargs):
+        hidden_states, residual = _orig_target_prepare_mlp(
+            self, hidden_states, residual, forward_batch, *args, **kwargs
+        )
+        layer_id = getattr(self, "_dflash_target_layer_id", None)
+        if layer_id is not None and layer_id < 6:
+            _record_target(f"target.layer{layer_id}.post_attn_residual", residual)
+            _record_target(f"target.layer{layer_id}.mlp_norm", hidden_states)
+        return hidden_states, residual
+
+    _communicator.LayerCommunicator.prepare_mlp = _traced_target_prepare_mlp
+
     _orig_init = _df.DFlashDraftModel.__init__
 
     def _traced_init(self, *args, **kwargs):
@@ -158,6 +240,20 @@ if _TRACE_ROOT:
     _orig_project = _df.DFlashDraftModel.project_target_hidden
 
     def _traced_project(self, target_hidden):
+        order = ["target.input.embedding", "target.layer0.attn_norm"]
+        for layer_id in range(6):
+            order.extend(
+                [
+                    f"target.layer{layer_id}.branch",
+                    f"target.layer{layer_id}.post_attn_residual",
+                    f"target.layer{layer_id}.mlp_norm",
+                    f"target.layer{layer_id}.mlp_output",
+                    f"target.layer{layer_id}.output_residual",
+                    f"target.layer{layer_id}.next_attn_norm",
+                ]
+            )
+        if all(name in _target_trace for name in order):
+            _dump("target.trajectory", torch.stack([_target_trace[name] for name in order]))
         _dump("target.post_layer_residual", target_hidden, last_row=True)
         return _orig_project(self, target_hidden)
 

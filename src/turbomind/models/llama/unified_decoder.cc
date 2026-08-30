@@ -309,6 +309,26 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
 
     const auto stream = core::Context::stream().handle();
 
+    auto* target_trajectory = args.try_("dflash_target_trajectory");
+    auto capture_target_trajectory = [&](int slot, const Tensor& value) {
+        if (!target_trajectory || local_token_num == 0) {
+            return;
+        }
+        TM_CHECK_EQ(target_trajectory->dtype(), dtype);
+        TM_CHECK_EQ(target_trajectory->shape(0), 38);
+        TM_CHECK_EQ(target_trajectory->shape(1), (ssize_t)hidden_units_);
+        TM_CHECK_EQ(value.shape(1), (ssize_t)hidden_units_);
+        const auto row_bytes = byte_size(dtype, hidden_units_);
+        TM_CUDA_CHECK(cudaMemcpyAsync((char*)target_trajectory->raw_data()
+                                         + slot * byte_size(dtype, target_trajectory->stride(0)),
+                                     (const char*)value.raw_data()
+                                         + (value.shape(0) - 1) * byte_size(dtype, value.stride(0)),
+                                     row_bytes,
+                                     cudaMemcpyDeviceToDevice,
+                                     stream));
+    };
+    capture_target_trajectory(0, local_residual);
+
     const auto& first_norm = *weights.at(0)->attention_norm;
     invokeRMSNorm(local_hidden_states,
                   local_residual,
@@ -320,6 +340,7 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
     TM_CUDA_CHECK(cudaGetLastError());
 
     TM_DEBUG_TENSOR(local_hidden_states, Concat("norm0", 0), 2);
+    capture_target_trajectory(1, local_hidden_states);
 
     // auto stack_alloc{core::Context::device_alloc().adapt<core::StackAllocatorImpl>()};
     // core::ContextGuard ctx{Allocator{stack_alloc}};
@@ -351,6 +372,9 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
         }
 
         TM_DEBUG_TENSOR(local_hidden_states, Concat("attn_block", layer), 2);
+        if (layer < 6) {
+            capture_target_trajectory(2 + layer * 6, local_hidden_states);
+        }
 
         // For gated delta networks, we may need a different output.bias name or it doesn't have it.
         // We will just use `output.bias` from either layer.
@@ -375,6 +399,10 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
 
         TM_DEBUG_TENSOR(local_residual, Concat("residual0", layer), 2);
         TM_DEBUG_TENSOR(local_hidden_states, Concat("norm1", layer), 2);
+        if (layer < 6) {
+            capture_target_trajectory(3 + layer * 6, local_residual);
+            capture_target_trajectory(4 + layer * 6, local_hidden_states);
+        }
 
         ////////////////////////////////////////////
         /// feed-forward network
@@ -405,6 +433,9 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
         }
 
         TM_DEBUG_TENSOR(global_hidden_states, Concat("ffn_block", layer), 2);
+        if (layer < 6) {
+            capture_target_trajectory(5 + layer * 6, global_hidden_states);
+        }
 
         const bool last = layer == layer_num_ - 1;
 
@@ -426,6 +457,10 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
 
         TM_DEBUG_TENSOR(local_residual, Concat("residual1", layer), 2);
         TM_DEBUG_TENSOR(local_hidden_states, Concat("norm0", layer + 1), 2);
+        if (layer < 6) {
+            capture_target_trajectory(6 + layer * 6, local_residual);
+            capture_target_trajectory(7 + layer * 6, local_hidden_states);
+        }
 
         // DFlash2 checkpoint layer IDs name post-layer residuals. Preserve the
         // per-token feature order [token, feature, hidden], matching SGLang's

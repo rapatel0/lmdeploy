@@ -144,5 +144,12 @@ python3 /job/compare_dflash_parity.py \
     --sglang "${RESULTS}/trace/sglang" \
     --output "${RESULTS}/cross_runtime_parity.json"
 
+if [ -n "${LM_DFLASH_TARGET_TRAJECTORY_REF:-}" ]; then
+    python3 /job/compare_dflash_target_trajectory.py \
+        --lmdeploy "${LM_DFLASH_TARGET_TRAJECTORY_REF}" \
+        --sglang "${RESULTS}/trace/sglang" \
+        --output "${RESULTS}/target_trajectory.json"
+fi
+
 touch "${RESULTS}/completed"
 echo SGLANG_DFLASH_PARITY_COMPLETE

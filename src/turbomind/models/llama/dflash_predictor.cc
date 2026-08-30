@@ -275,6 +275,7 @@ struct DFlashPredictor::ParityTrace {
     void ClearPending()
     {
         pending_target = {};
+        pending_trajectory = {};
         pending_fc = {};
         pending_norm = {};
         context_pending = false;
@@ -297,6 +298,7 @@ struct DFlashPredictor::ParityTrace {
     uint64_t    armed_uid{};
     uint64_t    pending_uid{};
     Tensor      pending_target;
+    Tensor      pending_trajectory;
     Tensor      pending_fc;
     Tensor      pending_norm;
     std::vector<int> feature_ids;
@@ -527,6 +529,7 @@ void DFlashPredictor::ArmParityContext(uint64_t uid) const
 }
 
 void DFlashPredictor::PrepareParityContext(const Tensor& target_hidden,
+                                           const Tensor& target_trajectory,
                                            const Tensor& projected,
                                            const Tensor& normalized) const
 {
@@ -538,6 +541,7 @@ void DFlashPredictor::PrepareParityContext(const Tensor& target_hidden,
         return;
     }
     trace.pending_target = target_hidden;
+    trace.pending_trajectory = target_trajectory;
     trace.pending_fc = projected;
     trace.pending_norm = normalized;
     trace.pending_uid = trace.armed_uid;
@@ -564,6 +568,9 @@ void DFlashPredictor::BeginParityBlock(const Buffer_<int>& anchors,
     trace.input_len = input_len;
     TM_CUDA_CHECK(cudaGetDevice(&trace.device));
     trace.Capture("target.post_layer_residual", trace.pending_target);
+    if (trace.pending_trajectory) {
+        trace.Capture("target.trajectory", trace.pending_trajectory);
+    }
     trace.Capture("context.fc", trace.pending_fc);
     trace.Capture("context.norm", trace.pending_norm);
     trace.Capture("block.anchors", Tensor{anchors, {(ssize_t)anchors.size()}});
@@ -627,7 +634,9 @@ void DFlashPredictor::AssertDraftAttentionKeySpans(int phase, int batch_size) co
     attention_.AssertDFlashDraftKeySpans(attention_phase_base_ + phase, batch_size);
 }
 
-Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden, int phase) const
+Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
+                                       int           phase,
+                                       const Tensor& target_trajectory) const
 {
     TM_CHECK_EQ(target_hidden.ndim(), 2);
     TM_CHECK_EQ(target_hidden.shape(1), (ssize_t)num_context_features_ * hidden_units_);
@@ -685,7 +694,7 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden, int phase) c
         invokeDFlashRoundBFloat16(normalized, core::Context::stream().handle());
         TM_CUDA_CHECK(cudaGetLastError());
     }
-    PrepareParityContext(*context_input, projected, normalized);
+    PrepareParityContext(*context_input, target_trajectory, projected, normalized);
     return normalized;
 }
 
