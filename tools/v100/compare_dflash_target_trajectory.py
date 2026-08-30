@@ -59,8 +59,6 @@ def load(directory: Path) -> tuple[np.ndarray, np.ndarray | None]:
     if record["dtype"] != "f16" or record["shape"] != [38, 5120]:
         raise RuntimeError(f"unexpected trajectory contract in {directory}: {record}")
     value = np.fromfile(directory / record["file"], dtype="<f2").reshape(38, 5120)
-    if not np.isfinite(value).all():
-        raise RuntimeError(f"non-finite target trajectory in {directory}")
     dtype_matching = [record for record in records if record["name"] == "target.trajectory_dtypes"]
     dtype_codes = None
     if dtype_matching:
@@ -89,19 +87,36 @@ def main() -> int:
         for index, name in enumerate(names):
             lhs = lm[index].astype(np.float32)
             rhs = sg[index].astype(np.float32)
-            delta = lhs - rhs
             try:
-                differing = int(np.count_nonzero(lm[index].view(np.uint16) != sg[index].view(np.uint16)))
-                row = {
-                    "rank": rank,
-                    "index": index,
-                    "name": name,
-                    "differing": differing,
-                    "max_abs": float(np.max(np.abs(delta))),
-                    "rms": float(np.sqrt(np.mean(delta * delta, dtype=np.float64))),
-                    "first_coordinate": int(np.flatnonzero(delta)[0]) if differing else None,
-                    "sglang_source_dtype": int(sg_dtype_codes[index]) if sg_dtype_codes is not None else None,
-                }
+                lhs_finite = bool(np.isfinite(lhs).all())
+                rhs_finite = bool(np.isfinite(rhs).all())
+                if not lhs_finite or not rhs_finite:
+                    row = {
+                        "rank": rank,
+                        "index": index,
+                        "name": name,
+                        "status": "nonfinite",
+                        "lmdeploy_nonfinite": int((~np.isfinite(lhs)).sum()),
+                        "sglang_nonfinite": int((~np.isfinite(rhs)).sum()),
+                        "sglang_source_dtype": int(sg_dtype_codes[index]) if sg_dtype_codes is not None else None,
+                    }
+                    differing = 1
+                else:
+                    delta = lhs - rhs
+                    differing = int(
+                        np.count_nonzero(lm[index].view(np.uint16) != sg[index].view(np.uint16))
+                    )
+                    row = {
+                        "rank": rank,
+                        "index": index,
+                        "name": name,
+                        "status": "mismatch" if differing else "match",
+                        "differing": differing,
+                        "max_abs": float(np.max(np.abs(delta))),
+                        "rms": float(np.sqrt(np.mean(delta * delta, dtype=np.float64))),
+                        "first_coordinate": int(np.flatnonzero(delta)[0]) if differing else None,
+                        "sglang_source_dtype": int(sg_dtype_codes[index]) if sg_dtype_codes is not None else None,
+                    }
                 if differing and (earliest is None or index < int(earliest["index"])):
                     earliest = row
             except (ValueError, TypeError, IndexError, KeyError) as error:
