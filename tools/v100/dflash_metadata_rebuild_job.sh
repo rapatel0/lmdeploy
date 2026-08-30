@@ -7,11 +7,15 @@ mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
 trap 'rc=$?; echo "$rc" >"${RESULTS}/exit_code"; echo "artifacts in ${RESULTS} (exit ${rc})"' EXIT
 cat /src/SOURCE_STAMP
-bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || {
-    grep -aE 'error:|Error [0-9]+' "${RESULTS}/build.log" | head -80
-    exit 2
-}
+if [ "${REUSE_WHEEL:-0}" != 1 ]; then
+    rm -f /wheels/lmdeploy-*.whl
+    bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || {
+        grep -aE 'error:|Error [0-9]+' "${RESULTS}/build.log" | head -80
+        exit 2
+    }
+fi
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
+[ -n "${WHEEL}" ]
 sha256sum "${WHEEL}" | tee "${RESULTS}/wheel.sha256"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 export TM_LOG_LEVEL=INFO

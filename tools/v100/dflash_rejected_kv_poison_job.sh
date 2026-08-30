@@ -6,11 +6,15 @@ RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-rejected-kv-poison-${SRC_COMMIT:-
 mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
 trap 'rc=$?; echo "$rc" >"${RESULTS}/exit_code"; echo "artifacts in ${RESULTS} (exit ${rc})"' EXIT
-rm -f /wheels/lmdeploy-*.whl
-started=$(date +%s)
-bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || { tail -100 "${RESULTS}/build.log"; exit 2; }
+started=0
+if [ "${REUSE_WHEEL:-0}" != 1 ]; then
+  rm -f /wheels/lmdeploy-*.whl
+  started=$(date +%s)
+  bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || { tail -100 "${RESULTS}/build.log"; exit 2; }
+fi
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-[ "$(stat -c %Y "${WHEEL}")" -ge "${started}" ]
+[ -n "${WHEEL}" ]
+if [ "${REUSE_WHEEL:-0}" != 1 ]; then [ "$(stat -c %Y "${WHEEL}")" -ge "${started}" ]; fi
 sha256sum "${WHEEL}" | tee "${RESULTS}/wheel.sha256"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" --num-draft-tokens 7
