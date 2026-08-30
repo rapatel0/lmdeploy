@@ -59,8 +59,11 @@ public:
         float             output_input_scale{1.f};
         bool              kv_only{false};
         bool              use_dflash_workspace{false};
+        Tensor            q_replay{};
+        Tensor            k_replay{};
         const void*       trace_context{};
         TraceFn           trace_fn{};
+        const char*       trace_qkv_projection{};
         const char*       trace_qkv_pre{};
         const char*       trace_qkv_post{};
         const char*       trace_attention{};

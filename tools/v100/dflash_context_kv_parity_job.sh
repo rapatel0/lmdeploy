@@ -15,7 +15,7 @@ WHEEL=$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sor
 [ -n "$WHEEL" ]
 pip install --no-deps --force-reinstall "$WHEEL" 2>&1 | tail -1
 
-SG=/results/20260830_221910-sglang-dflash-parity-ceb6bdbe0123/trace/sglang
+SG=/results/20260830_223929-sglang-dflash-parity-1a86d3c5a8b6/trace/sglang
 mapfile -t REPLAY < <(
     python3 - "$SG" <<'PY'
 import glob, hashlib, json, os, sys
@@ -41,11 +41,32 @@ PY
 [ "${#REPLAY[@]}" -eq 2 ]
 FULL_CONTEXT=${REPLAY[0]}
 FULL_NORM=${REPLAY[1]}
-printf 'full_context=%s\nfull_norm=%s\n' "$FULL_CONTEXT" "$FULL_NORM"
+Q_REPLAY=$RESULTS/q_normalized_tp4.bin
+K_REPLAY=$RESULTS/k_normalized_tp4.bin
+python3 - "$SG" "$Q_REPLAY" "$K_REPLAY" <<'PY'
+import glob, json, pathlib, sys
+roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
+assert len(roots) == 4
+for name, output, expected in (
+    ('layer0.attention.q_normalized', sys.argv[2], 8 * 1024 * 2),
+    ('layer0.attention.k_normalized', sys.argv[3], 8 * 256 * 2),
+):
+    with open(output, 'wb') as stream:
+        for root in roots:
+            records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+            row = records[name]
+            payload = pathlib.Path(root, row['file']).read_bytes()
+            assert len(payload) == expected, (name, root, len(payload))
+            stream.write(payload)
+PY
+printf 'full_context=%s\nfull_norm=%s\nq_replay=%s\nk_replay=%s\n' \
+    "$FULL_CONTEXT" "$FULL_NORM" "$Q_REPLAY" "$K_REPLAY"
 
 mkdir -p "$RESULTS/parity"
 TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" \
     TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM" \
+    TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY" \
+    TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY" \
     TM_DFLASH_REDUCE_BEFORE_CONV=1 \
     TM_DFLASH_PARITY_DIR="$RESULTS/parity" \
     python3 /job/bench_decode.py \
@@ -80,25 +101,29 @@ def stats(a, b):
 for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
     lm, sg = records(lm_root), records(sg_root)
     required_lm = {
-        'context.prompt.layer0.qkv_pre_process', 'context.prompt.layer0.qkv_post_process',
-        'layer0.attention.qkv_pre_process', 'layer0.attention.qkv_post_process',
+        'context.prompt.layer0.qkv_projection',
+        'context.prompt.layer0.qkv_pre_process',
+        'context.prompt.layer0.qkv_post_process',
+        'layer0.attention.qkv_projection',
+        'layer0.attention.qkv_pre_process',
+        'layer0.attention.qkv_post_process',
         'layer0.attention.core_output',
     }
     assert required_lm <= lm.keys(), (rank, sorted(required_lm - lm.keys()))
-    prompt = load(lm_root, lm, 'context.prompt.layer0.qkv_post_process').reshape(1000, -1)
+    prompt = load(lm_root, lm, 'context.prompt.layer0.qkv_projection').reshape(1000, -1)
     assert prompt.shape[1] == 1536, prompt.shape
-    lm_cache_k = prompt[:, 1024:1280].reshape(1000, 2, 128)
-    lm_cache_v = prompt[:, 1280:1536].reshape(1000, 2, 128)
-    sg_cache_k = load(sg_root, sg, 'context.prompt.layer0.cache_k')
-    sg_cache_v = load(sg_root, sg, 'context.prompt.layer0.cache_v')
-    draft = load(lm_root, lm, 'layer0.attention.qkv_post_process').reshape(8, -1)
-    assert draft.shape[1] == 1536, draft.shape
+    draft_projection = load(lm_root, lm, 'layer0.attention.qkv_projection').reshape(8, -1)
+    draft_normalized = load(lm_root, lm, 'layer0.attention.qkv_pre_process').reshape(8, -1)
+    assert draft_projection.shape[1] == draft_normalized.shape[1] == 1536
+    sg_projection = load(sg_root, sg, 'layer0.attention.qkv_projection')
     pairs = {
-        'context.cache_k': (lm_cache_k, sg_cache_k),
-        'context.cache_v': (lm_cache_v, sg_cache_v),
-        'draft.q_rotated': (draft[:, :1024], load(sg_root, sg, 'layer0.attention.q_rotated')),
-        'draft.k_rotated': (draft[:, 1024:1280], load(sg_root, sg, 'layer0.attention.k_rotated')),
-        'draft.v': (draft[:, 1280:1536], load(sg_root, sg, 'layer0.attention.qkv_projection')[:, 1280:1536]),
+        'context.k_projection': (prompt[:, 1024:1280], load(sg_root, sg, 'context.prompt.layer0.k_projection')),
+        'context.v_projection': (prompt[:, 1280:1536], load(sg_root, sg, 'context.prompt.layer0.v_projection')),
+        'draft.q_projection': (draft_projection[:, :1024], sg_projection[:, :1024]),
+        'draft.k_projection': (draft_projection[:, 1024:1280], sg_projection[:, 1024:1280]),
+        'draft.v_projection': (draft_projection[:, 1280:1536], sg_projection[:, 1280:1536]),
+        'draft.q_normalized': (draft_normalized[:, :1024], load(sg_root, sg, 'layer0.attention.q_normalized')),
+        'draft.k_normalized': (draft_normalized[:, 1024:1280], load(sg_root, sg, 'layer0.attention.k_normalized')),
         'draft.core_output': (
             load(lm_root, lm, 'layer0.attention.core_output'),
             load(sg_root, sg, 'layer0.attention.core_output'),

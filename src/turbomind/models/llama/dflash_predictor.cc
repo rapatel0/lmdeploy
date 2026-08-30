@@ -782,15 +782,17 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
         const std::string trace_prefix = context.shape(0) == 1000 ?
                                              "context.prompt.layer" + std::to_string(i) :
                                              "context.frontier.layer" + std::to_string(i);
-        const std::string qkv_pre_name  = trace_prefix + ".qkv_pre_process";
-        const std::string qkv_post_name = trace_prefix + ".qkv_post_process";
+        const std::string qkv_projection_name = trace_prefix + ".qkv_projection";
+        const std::string qkv_pre_name        = trace_prefix + ".qkv_pre_process";
+        const std::string qkv_post_name       = trace_prefix + ".qkv_post_process";
         if (parity_trace_) {
             params.trace_context = this;
             params.trace_fn = [](const void* object, const char* name, const Tensor& value) {
                 static_cast<const DFlashPredictor*>(object)->CapturePendingParityTensor(name, value);
             };
-            params.trace_qkv_pre  = qkv_pre_name.c_str();
-            params.trace_qkv_post = qkv_post_name.c_str();
+            params.trace_qkv_projection = qkv_projection_name.c_str();
+            params.trace_qkv_pre        = qkv_pre_name.c_str();
+            params.trace_qkv_post       = qkv_post_name.c_str();
         }
         attention_.Forward(std::move(params));
         TM_CUDA_CHECK(cudaGetLastError());
@@ -1273,8 +1275,12 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         const size_t expected_bytes = value.byte_size();
         std::ifstream input(path, std::ios::binary | std::ios::ate);
         TM_CHECK(input.is_open()) << "failed to open DFlash parity replay file: " << path;
-        TM_CHECK_EQ(static_cast<std::streamoff>(input.tellg()), static_cast<std::streamoff>(expected_bytes));
-        input.seekg(0, std::ios::beg);
+        const size_t file_bytes = static_cast<size_t>(input.tellg());
+        const int tp_rank = ctx_.comm.h_tp_group ? ctx_.comm.h_tp_group->rank() : 0;
+        const int tp_size = ctx_.comm.h_tp_group ? ctx_.comm.h_tp_group->n_ranks() : 1;
+        TM_CHECK(file_bytes == expected_bytes || file_bytes == expected_bytes * tp_size)
+            << "DFlash parity replay must contain one tensor or one tensor per TP rank";
+        input.seekg(file_bytes == expected_bytes ? 0 : tp_rank * expected_bytes, std::ios::beg);
         Tensor host{value.shape(), value.dtype(), kCPU};
         input.read(static_cast<char*>(host.raw_data()), expected_bytes);
         TM_CHECK(input.good()) << "failed to read DFlash parity replay file: " << path;
@@ -1385,12 +1391,27 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                                                    false,
                                                    true};
         if (i == 0 && ParityActive()) {
+            const int q_width = layer->attention->head_num / layer->attention->tp_size * layer->attention->head_dim;
+            const int k_width =
+                layer->attention->kv_head_num / layer->attention->tp_size * layer->attention->head_dim;
+            Tensor q_replay{{token_num, q_width}, dtype_, kDEVICE};
+            Tensor k_replay{{token_num, k_width}, dtype_, kDEVICE};
+            const bool replay_q = replay_parity_tensor(
+                "TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE", q_replay, draft_attention_q_replay_consumed_);
+            const bool replay_k = replay_parity_tensor(
+                "TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE", k_replay, draft_attention_k_replay_consumed_);
+            TM_CHECK_EQ(replay_q, replay_k);
+            if (replay_q) {
+                params.q_replay = std::move(q_replay);
+                params.k_replay = std::move(k_replay);
+            }
             params.trace_context = this;
             params.trace_fn = [](const void* object, const char* name, const Tensor& value) {
                 static_cast<const DFlashPredictor*>(object)->CaptureParityTensor(name, value);
             };
-            params.trace_qkv_pre  = "layer0.attention.qkv_pre_process";
-            params.trace_qkv_post = "layer0.attention.qkv_post_process";
+            params.trace_qkv_projection = "layer0.attention.qkv_projection";
+            params.trace_qkv_pre        = "layer0.attention.qkv_pre_process";
+            params.trace_qkv_post       = "layer0.attention.qkv_post_process";
             params.trace_attention = "layer0.attention.core_output";
         }
         attention_.Forward(std::move(params));

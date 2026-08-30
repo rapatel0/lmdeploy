@@ -164,6 +164,8 @@ private:
     mutable bool                         context_norm_replay_consumed_{};
     mutable bool                         context_norm_row_replay_consumed_{};
     mutable bool                         draft_attention_input_replay_consumed_{};
+    mutable bool                         draft_attention_q_replay_consumed_{};
+    mutable bool                         draft_attention_k_replay_consumed_{};
     mutable bool                         draft_attention_output_replay_consumed_{};
 };
 
