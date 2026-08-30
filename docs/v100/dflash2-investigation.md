@@ -408,6 +408,8 @@ The corrected five-trial arms followed identical acceptance at commit/raw length
 
 The target workspace is default-on because it is a required contiguous-graph prerequisite despite the sub-1% standalone cycle gain. `TM_DFLASH_TARGET_WORKSPACE=0` retains the dynamic-allocation control. Artifact: `/results/20260830_121836-dflash-target-workspace-d622aac771d3`.
 
+A rebuilt current-default profile after graph cleanup measures `targetVerify` at **11.46 ms**, rollback/outstanding target tail at **17.93 ms**, and draft-plus-selector at **5.10 ms**. FP8 M=8 GEMM remains the largest kernel class at **25.9%** of GPU kernel time, followed by flat target GDN FP16 projections at **10.6%**, NCCL at **7.7%**, grouped target attention at **6.5%**, and recurrent GDN at **6.2%**. This is the active cycle-cost attribution. Artifact: `/results/20260830_130225-nsys-dflash-be78c62b0da6`.
+
 ## Contiguous target CUDA graph
 
 With stable target addresses, a flagged prototype captured the entire 64-layer target decoder, including TP4 NCCL collectives, into one CUDA graph per rank. Capture and replay succeeded on all four ranks, and exact audited 128-token K=0/K=7 identity passed. This proved the broad graph capability that the rejected per-layer experiment could not amortize.

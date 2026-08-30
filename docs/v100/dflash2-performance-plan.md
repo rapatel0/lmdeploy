@@ -78,6 +78,8 @@ A correlation-ID join from each NVTX range through CUDA runtime launches to GPU 
 
 Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 
+A rebuilt current-default profile after target workspace qualification and graph removal now measures `targetVerify` at **11.46 ms**, rollback/outstanding target tail at **17.93 ms**, and draft-plus-selector at **5.10 ms**. Allocator/free calls remain at **18,224** each. GPU kernel time is led by target FP8 M=8 GEMM at **25.9%**, flat target GDN FP16 projection at **10.6%**, NCCL at **7.7%**, grouped target attention at **6.5%**, and recurrent GDN at **6.2%**. This supersedes the old attribution for selecting new kernel work; it does not change the historical A0 baseline. Artifact: `/results/20260830_130225-nsys-dflash-be78c62b0da6`.
+
 ### A1. Remove host barriers
 
 - Treat the rollback barrier merge as closed.
