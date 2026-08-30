@@ -524,9 +524,7 @@ if _TRACE_ROOT:
 
     def _traced_init(self, *args, **kwargs):
         _orig_init(self, *args, **kwargs)
-        self.fc.register_forward_hook(
-            lambda _m, _a, out: _trace_context_boundary("context.fc", "context.full_fc", out)
-        )
+        self.fc.register_forward_hook(lambda _m, _a, out: _trace_context_boundary("context.fc", "context.full_fc", out))
         self.hidden_norm.register_forward_hook(
             lambda _m, _a, out: _trace_context_boundary("context.norm", "context.full_norm", out)
         )
