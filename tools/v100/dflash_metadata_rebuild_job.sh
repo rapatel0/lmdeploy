@@ -45,7 +45,7 @@ TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=1 \
     python3 /job/verify_dflash_audited.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
-    --corpus /sglang-corpus --tp "${TP:-4}" --input-tokens 1000 --output-tokens 128 \
+    --corpus /sglang-corpus --tp "${TP:-4}" --input-tokens 1000 --output-tokens 256 \
     --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
     2>&1 | tee "${RESULTS}/identity.log"
 grep -q '^DFLASH_AUDITED_IDENTITY_PASS$' "${RESULTS}/identity.log"

@@ -55,13 +55,12 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - All four ranks proved the intervention. The poison arm exactly reproduced one complete repeated control: all 2,332 TP proposal records and the full acceptance summary matched at commit/raw length 2.631/2.652 over 577 steps. The 128-token audited identity gate passed.
   - Repeated fresh-process controls can follow different known near-tie trajectories, so matching one complete control is the valid null criterion. Rejected suffix visibility is falsified as an acceptance cause. Artifact: `/results/20260830_002516-dflash-rejected-kv-poison-f0d92882a2c3`.
 
-- [ ] **Validate draft attention metadata after partial acceptance.**
-  - Classification: strongest unconfirmed lifecycle hypothesis.
-  - Assert for every row that the live draft key span equals the published committed sequence length plus block size.
-  - Control: rebuild DFlash Setup/Prepare metadata after Rollback and compare candidates and acceptance.
-  - A TurboMind-only one-build control is available behind `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=1`. The assertion must arm only after Rollback because initial Setup and the rollback-published frontier are different lifecycle boundaries.
-  - A `length + 1 + block_size` probe appeared to raise commit length from 2.631 to 2.716, but the live `cu_k_len` assertion proved it one token too long (1014 expected versus 1013 live). That gain is invalid. Correct `length + block_size` qualification is pending.
-  - Done when: metadata is refreshed correctly or the control falsifies this cause.
+- [x] **Validate draft attention metadata after partial acceptance.**
+  - The live post-rollback key span is `committed_sequence_length + block_size`; assertions passed on all four TP ranks and across request reuse.
+  - Rebuilding Setup/Prepare metadata after Rollback changes stale aggregate key spans and proposal blocks: 2,188 corrected records, 91.41% exact candidate-block overlap, with the first candidate difference at frontier 1165.
+  - Five-trial decode improved from 80.59 to 82.95 tok/s (+2.93%) as commit length rose from 2.631 to 2.716 (+3.23%); normalized cycle cost changed only from 32.65 to 32.74 ms (+0.29%). Audited 128-token identity passed.
+  - The rebuild is now default-on; `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=0` retains the stale-metadata control. Final default-on audited 256-token confirmation is pending.
+  - Artifact: `/results/20260830_004745-dflash-metadata-rebuild-ebf7927919a5`.
 
 - [x] **Add first-block tensor parity against SGLang.**
   - Commit `b753831d` produced four complete 102-boundary SGLang manifests for the exact forced block `[1144, 248070 x 7]` at positions `1000..1007`; TurboMind block IDs and embeddings match exactly.

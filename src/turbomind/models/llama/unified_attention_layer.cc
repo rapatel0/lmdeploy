@@ -863,7 +863,7 @@ void UnifiedAttentionLayer::Setup(int phase, TensorMap& env)
         static const bool track_dflash_metadata = [] {
             const char* rebuild = std::getenv("TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK");
             const char* check   = std::getenv("TM_DFLASH_ASSERT_DRAFT_METADATA");
-            return (rebuild && rebuild[0] == '1') || (check && check[0] == '1');
+            return (!rebuild || rebuild[0] != '0') || (check && check[0] == '1');
         }();
         if (track_dflash_metadata) {
             if ((int)d.draft_k_lens_host.size() != bsz) {

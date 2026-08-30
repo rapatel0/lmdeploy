@@ -1690,7 +1690,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     }
     static const bool rebuild_dflash_metadata = [] {
         const char* value = std::getenv("TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     static const bool assert_dflash_metadata = [] {
         const char* value = std::getenv("TM_DFLASH_ASSERT_DRAFT_METADATA");

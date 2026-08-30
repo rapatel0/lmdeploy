@@ -267,15 +267,14 @@ Done when one earliest mismatch has an exact tensor, layer, and operation bounda
 
 Done when the first mismatch matches the agreed tolerance.
 
-### B2. Prove cache and metadata lifecycle correctness
+### B2. Prove cache and metadata lifecycle correctness — complete
 
-- Poison rejected verifier KV suffixes after every partial acceptance.
-- Verify that the next draft block remains unchanged.
-- Assert the draft key span after every rollback.
-- Rebuild attention metadata after rollback as a control arm.
-- Compare candidate blocks and acceptance against the normal path.
+- Rejected verifier K/V poisoning exactly matched a complete control, falsifying suffix visibility.
+- Live key-span assertions established the post-rollback contract as committed sequence length plus block size.
+- Rebuilding stale aggregate attention metadata changed 8.59% of matched proposal blocks and raised commit length from 2.631 to 2.716 with only 0.29% cycle overhead.
+- The corrected metadata rebuild is default-on; the stale path remains available as `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=0`.
 
-Done when rejected state cannot influence the next draft.
+Artifacts: `/results/20260830_002516-dflash-rejected-kv-poison-f0d92882a2c3` and `/results/20260830_004745-dflash-metadata-rebuild-ebf7927919a5`.
 
 ### B3. Close remaining layer-level parity gaps
 
