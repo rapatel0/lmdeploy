@@ -5,7 +5,10 @@ SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/nul
 RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-target-mlp-replay-${SRC_COMMIT:-unknown}
 BASE_REF="$(find /results -maxdepth 3 -type d -path '*-dflash-target-trajectory-*/parity/lmdeploy' -print | sort | tail -1)"
 SG_REF="$(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace/sglang' -print | sort | tail -1)"
-[ -n "${BASE_REF}" ] && [ -n "${SG_REF}" ] || { echo 'FAIL: missing same-input target traces' >&2; exit 4; }
+[ -n "${BASE_REF}" ] && [ -n "${SG_REF}" ] || {
+    echo 'FAIL: missing same-input target traces' >&2
+    exit 4
+}
 mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
 trap 'rc=$?; echo "$rc" >"${RESULTS}/exit_code"; echo "artifacts in ${RESULTS} (exit ${rc})"' EXIT
@@ -30,8 +33,8 @@ common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
     --cache-max-entry-count 0.05)
 
 TM_DFLASH_TARGET_TRAJECTORY=1 \
-TM_DFLASH_TARGET_PARITY_DIR="${RESULTS}/parity" \
-TM_DFLASH_TARGET_MLP_REPLAY_DIR="${RESULTS}/replay" \
+    TM_DFLASH_TARGET_PARITY_DIR="${RESULTS}/parity" \
+    TM_DFLASH_TARGET_MLP_REPLAY_DIR="${RESULTS}/replay" \
     python3 /job/bench_decode.py "${common[@]}" --output-tokens 64 --trials 1 \
     --json-out "${RESULTS}/trace.json" 2>&1 | tee "${RESULTS}/trace.log"
 grep -q 'target layer-0 MLP input replay active' "${RESULTS}/trace.log"
@@ -48,8 +51,8 @@ done
 
 python3 /job/analyze_dflash_target_mlp_replay.py \
     --baseline-trace "${BASE_REF}" --replay-trace "${RESULTS}/parity/lmdeploy" \
-    --sglang "${SG_REF}" --benchmark-root "${RESULTS}" --output "${RESULTS}/analysis.json" \
-    | tee "${RESULTS}/analysis.log"
+    --sglang "${SG_REF}" --benchmark-root "${RESULTS}" --output "${RESULTS}/analysis.json" |
+    tee "${RESULTS}/analysis.log"
 
 env -u TM_DFLASH_TARGET_MLP_REPLAY_DIR \
     python3 /job/verify_dflash_audited.py \
