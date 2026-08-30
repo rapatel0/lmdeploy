@@ -21,10 +21,22 @@ command -v sglang >/dev/null
 mkdir -p /tmp/dflash-parity-site
 cp /job/sglang_dflash_parity_sitecustomize.py /tmp/dflash-parity-site/sitecustomize.py
 
-if [ "${SGLANG_PARITY_DISABLE_CUDA_GRAPH:-0}" = 1 ]; then
+if [ "${SGLANG_PARITY_PRODUCTION_CONFIG:-0}" = 1 ]; then
+    graph_args=(--cuda-graph-max-bs 8 --cuda-graph-bs 1 2 4 8)
+    runtime_args=(
+        --kv-cache-dtype auto
+        --context-length 262144
+        --max-total-tokens 600000
+        --max-running-requests 8
+        --max-mamba-cache-size 40
+        --enable-nccl-nvls
+    )
+elif [ "${SGLANG_PARITY_DISABLE_CUDA_GRAPH:-0}" = 1 ]; then
     graph_args=(--disable-cuda-graph)
+    runtime_args=(--kv-cache-dtype fp8_e5m2 --context-length 16384 --max-total-tokens 16384 --max-running-requests 1)
 else
     graph_args=(--cuda-graph-max-bs 1 --cuda-graph-bs 1)
+    runtime_args=(--kv-cache-dtype fp8_e5m2 --context-length 16384 --max-total-tokens 16384 --max-running-requests 1)
 fi
 
 wait_for_server() {
@@ -62,15 +74,14 @@ setsid env \
     --skip-server-warmup \
     --model-path "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --dtype float16 \
-    --kv-cache-dtype fp8_e5m2 \
     --attention-backend "${SGLANG_PARITY_ATTENTION_BACKEND:-flash_attn_v100}" \
     --linear-attn-prefill-backend triton \
     --linear-attn-decode-backend triton \
     --tensor-parallel-size "${TP:-4}" \
     --host 0.0.0.0 --port 8082 \
     --mem-fraction-static 0.75 \
-    --context-length 16384 --max-total-tokens 16384 --max-running-requests 1 \
     --disable-overlap-schedule \
+    "${runtime_args[@]}" \
     "${graph_args[@]}" \
     --chunked-prefill-size 8192 \
     --mamba-full-memory-ratio 0.1 --mamba-scheduler-strategy extra_buffer \
