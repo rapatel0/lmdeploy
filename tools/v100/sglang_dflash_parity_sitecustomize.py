@@ -18,6 +18,7 @@ if _TRACE_ROOT:
     _seen: set[str] = set()
     _graph_refs: dict[str, torch.Tensor] = {}
     _target_trace: dict[str, torch.Tensor] = {}
+    _target_trace_dtypes: dict[str, int] = {}
     _graph_flushed = False
     _ordinal = 0
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
@@ -124,7 +125,9 @@ if _TRACE_ROOT:
                 return
         except Exception:
             pass
-        _target_trace[name] = tensor.detach().reshape(-1, tensor.shape[-1])[-1].clone()
+        row = tensor.detach().reshape(-1, tensor.shape[-1])[-1]
+        _target_trace_dtypes[name] = 32 if row.dtype == torch.float32 else 16
+        _target_trace[name] = row.to(torch.float16).clone()
 
     # Trace the target Qwen3.5 trajectory before DFlash context projection.
     # These are external in-memory hooks; the SGLang source remains read-only.
@@ -254,6 +257,9 @@ if _TRACE_ROOT:
             )
         if all(name in _target_trace for name in order):
             _dump("target.trajectory", torch.stack([_target_trace[name] for name in order]))
+            dtype_codes = [_target_trace_dtypes[name] for name in order]
+            dtype_tensor = torch.tensor(dtype_codes, dtype=torch.int32, device=target_hidden.device)
+            _dump("target.trajectory_dtypes", dtype_tensor)
         _dump("target.post_layer_residual", target_hidden, last_row=True)
         return _orig_project(self, target_hidden)
 
