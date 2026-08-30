@@ -39,7 +39,7 @@ for arm in ('legacy', 'frozen'):
     data = json.loads((root / f'{arm}.json').read_text())
     print(f'{arm.upper()}_JSON', json.dumps(data, sort_keys=True))
     text = (root / f'{arm}.log').read_text(errors='replace')
-    matches = re.findall(r'DFlash acceptance: committed=([0-9.]+) tokens/step, raw=([0-9.]+).*?over (\d+) verification steps', text)
+    matches = re.findall(r'\[spec\] final commit length ([0-9.]+), raw ([0-9.]+) over (\d+) verification steps', text)
     if not matches:
         raise SystemExit(f'FAIL: no DFlash acceptance summary in {arm}.log')
     committed, raw, steps = matches[-1]

@@ -87,21 +87,25 @@ def main() -> None:
                 (f"{prefix}.attention.conv_delta", f"{prefix}.attention.conv_delta", "right_half"),
                 (f"{prefix}.attention.conv_side0", f"{prefix}.attention.conv_side0", "numeric"),
                 (f"{prefix}.attention.conv_side1", f"{prefix}.attention.conv_side1", "numeric"),
-                (f"{prefix}.attention.norm_output", f"{prefix}.attention.norm_output", "numeric"),
+                # SGLang applies the post-attention residual norm inside this
+                # layer; TurboMind reports the same boundary as attention.norm.
+                (f"{prefix}.attention.norm_output", f"{prefix}.mlp.norm_output", "numeric"),
                 (f"{prefix}.mlp.conv_delta", f"{prefix}.mlp.conv_delta", "right_half"),
                 (f"{prefix}.mlp.conv_side0", f"{prefix}.mlp.conv_side0", "numeric"),
                 (f"{prefix}.mlp.conv_side1", f"{prefix}.mlp.conv_side1", "numeric"),
-                (f"{prefix}.mlp.norm_output", f"{prefix}.mlp.norm_output", "numeric"),
+                # TurboMind eagerly applies the next residual norm at the end
+                # of this layer. SGLang defers it to the next layer entrance.
+                (
+                    f"{prefix}.mlp.norm_output",
+                    f"layer{layer + 1}.attention.norm_output" if layer < 4 else "block.final_norm",
+                    "numeric",
+                ),
             ]
         )
-        if layer < 4:
-            next_input = f"layer{layer + 1}.input.residual"
-            ordered.append((next_input, next_input, "numeric"))
     ordered.extend(
         [
             ("selector.candidate_ids", "selector.candidate_ids", "ids"),
             ("selector.unary_scores", "selector.unary_scores", "numeric"),
-            ("selector.hidden", "selector.hidden", "numeric"),
             ("selector.selected_ids", "selector.selected_ids", "ids"),
         ]
     )
