@@ -69,8 +69,8 @@ run_perf() {
 run_perf control "" 0
 run_perf full_context "$FULL_CONTEXT" 0
 run_perf full_context_reduce_first "$FULL_CONTEXT" 1
-[ "$(grep -c 'replaying full parity target context rows=1000' "$RESULTS/full_context.log")" -eq 4 ]
-[ "$(grep -c 'replaying full parity target context rows=1000' "$RESULTS/full_context_reduce_first.log")" -eq 4 ]
+[ "$(grep -c 'replaying parity target context rows=1000' "$RESULTS/full_context.log")" -eq 4 ]
+[ "$(grep -c 'replaying parity target context rows=1000' "$RESULTS/full_context_reduce_first.log")" -eq 4 ]
 
 mkdir -p "$RESULTS/parity"
 TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" TM_DFLASH_REDUCE_BEFORE_CONV=1 \
@@ -80,6 +80,8 @@ TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" TM_DFLASH_REDUCE_BEFORE_CONV=1 \
 python3 /job/compare_dflash_parity.py \
     --lmdeploy "$RESULTS/parity/lmdeploy" --sglang "$SG_ROOT" \
     --output "$RESULTS/compare.json" >"$RESULTS/compare.log"
+[ "$(grep -c 'replaying parity target context rows=1000' "$RESULTS/parity.log")" -eq 4 ]
+[ "$(grep -c 'replaying parity target context rows=1' "$RESULTS/parity.log")" -eq 4 ]
 
 python3 - "$RESULTS" <<'PY'
 import json

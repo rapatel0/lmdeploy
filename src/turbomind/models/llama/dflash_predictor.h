@@ -159,6 +159,7 @@ private:
     mutable std::vector<std::unique_ptr<DraftGraph>> draft_graphs_;
     mutable std::unique_ptr<ParityTrace> parity_trace_;
     mutable bool                         context_replay_consumed_{};
+    mutable bool                         context_row_replay_consumed_{};
     mutable bool                         draft_attention_input_replay_consumed_{};
     mutable bool                         draft_attention_output_replay_consumed_{};
 };

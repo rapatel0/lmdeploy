@@ -646,15 +646,24 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
     Tensor        replay;
     const char*   replay_path = std::getenv("TM_DFLASH_CONTEXT_REPLAY_FILE");
     const bool parity_context_armed = parity_trace_ && parity_trace_->context_armed;
-    const bool full_prompt_replay   = target_hidden.shape(0) == 1000;
-    if (replay_path && replay_path[0] && (parity_context_armed || full_prompt_replay) && !context_replay_consumed_) {
+    const bool replay_full_prompt = target_hidden.shape(0) == 1000 && !context_replay_consumed_;
+    const bool replay_frontier = parity_context_armed && target_hidden.shape(0) == 1 && !context_row_replay_consumed_;
+    if (replay_path && replay_path[0] && (replay_full_prompt || replay_frontier)) {
         TM_CHECK_EQ(dtype_, kHalf);
         const size_t expected_bytes = target_hidden.size() * sizeof(__half);
+        const size_t full_bytes     = 1000 * target_hidden.shape(1) * sizeof(__half);
         std::ifstream stream(replay_path, std::ios::binary | std::ios::ate);
         TM_CHECK(stream.is_open()) << "failed to open DFlash context replay file: " << replay_path;
-        const auto file_bytes = static_cast<std::streamoff>(stream.tellg());
-        TM_CHECK_EQ(file_bytes, static_cast<std::streamoff>(expected_bytes));
-        stream.seekg(0, std::ios::beg);
+        const auto file_bytes = static_cast<size_t>(stream.tellg());
+        if (replay_full_prompt) {
+            TM_CHECK_EQ(file_bytes, expected_bytes);
+            stream.seekg(0, std::ios::beg);
+        }
+        else {
+            TM_CHECK(file_bytes == expected_bytes || file_bytes == full_bytes)
+                << "DFlash frontier replay requires either one row or the full 1000-row context";
+            stream.seekg(file_bytes == full_bytes ? full_bytes - expected_bytes : 0, std::ios::beg);
+        }
         Tensor host{target_hidden.shape(), dtype_, kCPU};
         stream.read(static_cast<char*>(host.raw_data()), expected_bytes);
         TM_CHECK(stream.good()) << "failed to read DFlash context replay file: " << replay_path;
@@ -662,8 +671,9 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
         Copy(host, replay);
         core::Context::stream().Sync();
         context_input = &replay;
-        context_replay_consumed_ = true;
-        TM_LOG_INFO("[DFlash2] replaying full parity target context rows={} from {} bytes={}",
+        context_replay_consumed_ |= replay_full_prompt;
+        context_row_replay_consumed_ |= replay_frontier;
+        TM_LOG_INFO("[DFlash2] replaying parity target context rows={} from {} bytes={}",
                     target_hidden.shape(0),
                     replay_path,
                     expected_bytes);
