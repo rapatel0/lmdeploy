@@ -131,3 +131,11 @@ echo "PASS: single architecture, compute_70"
 
 echo "=== verify SM70 machine code ==="
 bash "$(dirname "$0")/verify_sm70.sh" "${WHEEL_DIR}"
+
+# Reuse jobs must prove that the installed wheel came from the staged source.
+# Publish this only after the architecture and machine-code gates pass.
+if [ -f /src/SOURCE_STAMP ]; then
+    cp /src/SOURCE_STAMP "${WHEEL_DIR}/SOURCE_STAMP"
+else
+    git rev-parse HEAD | sed 's/^/commit=/' >"${WHEEL_DIR}/SOURCE_STAMP"
+fi

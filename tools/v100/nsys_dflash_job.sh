@@ -31,6 +31,14 @@ if [ "${REUSE_WHEEL:-0}" != 1 ]; then
         grep -aE 'error:|Error [0-9]+' "${RESULTS}/build.log" | head -40
         exit 2
     fi
+else
+    [ -f /wheels/SOURCE_STAMP ] || { echo "FAIL: reused wheel has no source stamp" >&2; exit 2; }
+    source_commit="$(sed -n 's/^commit=\(.*\)$/\1/p' /src/SOURCE_STAMP | head -1)"
+    wheel_commit="$(sed -n 's/^commit=\(.*\)$/\1/p' /wheels/SOURCE_STAMP | head -1)"
+    [ -n "${source_commit}" ] && [ "${source_commit}" = "${wheel_commit}" ] || {
+        echo "FAIL: reused wheel commit ${wheel_commit:-missing} != source ${source_commit:-missing}" >&2
+        exit 2
+    }
 fi
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
