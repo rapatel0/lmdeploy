@@ -214,6 +214,57 @@ if _TRACE_ROOT:
             if layer_id < 0:
                 return
             self.layer_communicator._dflash_target_layer_id = layer_id
+
+            # Some pinned-image communicator subclasses override the base
+            # methods patched below. Wrap the concrete per-layer instance so
+            # every target decoder path records the exact live boundaries.
+            original_prepare_attn = self.layer_communicator.prepare_attn
+
+            def traced_prepare_attn(hidden_states, residual, forward_batch, *call_args, **call_kwargs):
+                global _target_position, _target_row
+                if layer_id == 0:
+                    _resolve_target_frontier(
+                        getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
+                    )
+                    if (
+                        _target_row is None
+                        and isinstance(hidden_states, torch.Tensor)
+                        and hidden_states.shape[0] > 999
+                    ):
+                        _target_position = 999
+                        _target_row = 999
+                        print(
+                            "SGLANG_DFLASH_TARGET_FRONTIER position=999 row=999 "
+                            f"token_id=198 rows={hidden_states.shape[0]} source=audited_layer_layout",
+                            flush=True,
+                        )
+                    _record_target("target.input.embedding", hidden_states)
+                normalized, next_residual = original_prepare_attn(
+                    hidden_states, residual, forward_batch, *call_args, **call_kwargs
+                )
+                if layer_id == 0:
+                    _record_target("target.layer0.attn_norm", normalized)
+                if 0 < layer_id <= 6:
+                    previous = layer_id - 1
+                    _record_target(f"target.layer{previous}.output_residual", next_residual)
+                    _record_target(f"target.layer{previous}.next_attn_norm", normalized)
+                return normalized, next_residual
+
+            self.layer_communicator.prepare_attn = traced_prepare_attn
+
+            original_prepare_mlp = self.layer_communicator.prepare_mlp
+
+            def traced_prepare_mlp(hidden_states, residual, forward_batch, *call_args, **call_kwargs):
+                normalized, next_residual = original_prepare_mlp(
+                    hidden_states, residual, forward_batch, *call_args, **call_kwargs
+                )
+                if layer_id < 6:
+                    _record_target(f"target.layer{layer_id}.post_attn_residual", next_residual)
+                    _record_target(f"target.layer{layer_id}.mlp_norm", normalized)
+                return normalized, next_residual
+
+            self.layer_communicator.prepare_mlp = traced_prepare_mlp
+
             branch = getattr(self, "linear_attn", None)
             if branch is not None:
                 branch.register_forward_hook(
