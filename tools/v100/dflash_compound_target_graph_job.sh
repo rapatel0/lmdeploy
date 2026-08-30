@@ -8,7 +8,10 @@ exec > >(tee -a "${RESULTS}/console.log") 2>&1
 trap 'rc=$?; echo "$rc" >"${RESULTS}/exit_code"; echo "artifacts in ${RESULTS} (exit ${rc})"' EXIT
 cat /src/SOURCE_STAMP
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${WHEEL}" ] || { echo 'FAIL: graph wheel missing' >&2; exit 2; }
+[ -n "${WHEEL}" ] || {
+    echo 'FAIL: graph wheel missing' >&2
+    exit 2
+}
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 export TM_LOG_LEVEL=INFO
 common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
@@ -20,16 +23,17 @@ common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
     --cache-max-entry-count 0.05)
 mode_for() {
     case "$1" in
-        baseline) echo '0 0' ;;
-        target_graph) echo '1 0' ;;
-        compound) echo '1 1' ;;
-        *) return 2 ;;
+    baseline) echo '0 0' ;;
+    target_graph) echo '1 0' ;;
+    compound) echo '1 1' ;;
+    *) return 2 ;;
     esac
 }
 for arm in baseline target_graph compound; do
     read -r target draft < <(mode_for "${arm}")
     echo "=== ${arm}: target_graph=${target} draft_graph=${draft} ==="
-    TM_DFLASH_CONTIGUOUS_TARGET_GRAPH="${target}" TM_DFLASH_DRAFT_GRAPH="${draft}" TM_DFLASH_GRAPH_TRACE=1 \
+    TM_DFLASH_PAGED_Q8=1 TM_DFLASH_CONTIGUOUS_TARGET_GRAPH="${target}" \
+        TM_DFLASH_DRAFT_GRAPH="${draft}" TM_DFLASH_GRAPH_TRACE=1 \
         python3 /job/bench_decode.py "${common[@]}" --output-tokens 256 --trials 5 \
         --json-out "${RESULTS}/${arm}.json" 2>&1 | tee "${RESULTS}/${arm}.log"
 done
@@ -38,11 +42,15 @@ done
 
 NSYS="$(command -v nsys 2>/dev/null || true)"
 if [ -z "${NSYS}" ] && [ -x /opt/nsys/nsys ]; then NSYS=/opt/nsys/nsys; fi
-[ -n "${NSYS}" ] || { echo 'FAIL: nsys unavailable' >&2; exit 2; }
+[ -n "${NSYS}" ] || {
+    echo 'FAIL: nsys unavailable' >&2
+    exit 2
+}
 export FT_NVTX=ON
 for arm in baseline target_graph compound; do
     read -r target draft < <(mode_for "${arm}")
-    TM_DFLASH_CONTIGUOUS_TARGET_GRAPH="${target}" TM_DFLASH_DRAFT_GRAPH="${draft}" \
+    TM_DFLASH_PAGED_Q8=1 TM_DFLASH_CONTIGUOUS_TARGET_GRAPH="${target}" \
+        TM_DFLASH_DRAFT_GRAPH="${draft}" \
         "${NSYS}" profile --force-overwrite=true --trace=cuda,nvtx,osrt --cuda-memory-usage=true \
         --capture-range=cudaProfilerApi --capture-range-end=stop --output="${RESULTS}/profile_${arm}" \
         python3 /job/bench_decode.py "${common[@]}" --output-tokens 128 --trials 1 --cuda-profiler-range \
@@ -52,7 +60,7 @@ for arm in baseline target_graph compound; do
         >"${RESULTS}/profile_${arm}_stats.log" 2>&1
 done
 python3 /job/analyze_dflash_compound_target_graph.py "${RESULTS}" | tee "${RESULTS}/analysis.log"
-TM_DFLASH_CONTIGUOUS_TARGET_GRAPH=1 TM_DFLASH_DRAFT_GRAPH=1 \
+TM_DFLASH_PAGED_Q8=1 TM_DFLASH_CONTIGUOUS_TARGET_GRAPH=1 TM_DFLASH_DRAFT_GRAPH=1 \
     python3 /job/verify_dflash_audited.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
