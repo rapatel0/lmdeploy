@@ -22,7 +22,11 @@ mkdir -p /tmp/dflash-parity-site
 cp /job/sglang_dflash_parity_sitecustomize.py /tmp/dflash-parity-site/sitecustomize.py
 
 if [ "${SGLANG_PARITY_PRODUCTION_CONFIG:-0}" = 1 ]; then
-    graph_args=(--cuda-graph-max-bs 8 --cuda-graph-bs 1 2 4 8)
+    if [ "${SGLANG_PARITY_DISABLE_CUDA_GRAPH:-0}" = 1 ]; then
+        graph_args=(--disable-cuda-graph)
+    else
+        graph_args=(--cuda-graph-max-bs 8 --cuda-graph-bs 1 2 4 8)
+    fi
     runtime_args=(
         --kv-cache-dtype auto
         --context-length 262144

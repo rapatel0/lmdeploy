@@ -136,6 +136,16 @@ if _TRACE_ROOT:
             stream.write(json.dumps(record, separators=(",", ":")) + "\n")
         _seen.add(name)
 
+    _orig_apply_qk_norm = _df.apply_qk_norm
+
+    def _traced_apply_qk_norm(q, k, q_norm, k_norm, head_dim):
+        q, k = _orig_apply_qk_norm(q, k, q_norm, k_norm, head_dim)
+        _dump("layer0.attention.q_normalized", q)
+        _dump("layer0.attention.k_normalized", k)
+        return q, k
+
+    _df.apply_qk_norm = _traced_apply_qk_norm
+
     try:
         import sglang.srt.speculative.triton_ops.fused_kv_materialize as _fused_kv
 
@@ -150,7 +160,13 @@ if _TRACE_ROOT:
                 _dump(f"context.{scope}.layer{layer_idx}.cache_v", cache_v)
                 write_layer_kv(layer_idx, cache_k, cache_v)
 
-            return _orig_fused_materialize(self, ctx_hidden, positions, _traced_write)
+            result = _orig_fused_materialize(self, ctx_hidden, positions, _traced_write)
+            if self._proj_workspace is not None:
+                projected = self._proj_workspace[:rows].view(rows, self.n_layers, self.layer_out_dim)
+                for layer_idx in range(self.n_layers):
+                    _dump(f"context.{scope}.layer{layer_idx}.k_projection", projected[:, layer_idx, : self.kv_size])
+                    _dump(f"context.{scope}.layer{layer_idx}.v_projection", projected[:, layer_idx, self.kv_size :])
+            return result
 
         _fused_kv.FusedKVMaterializeHelper.materialize = _traced_fused_materialize
     except (AttributeError, ImportError):
