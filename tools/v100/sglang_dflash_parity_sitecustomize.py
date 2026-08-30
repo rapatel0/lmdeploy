@@ -176,6 +176,10 @@ if _TRACE_ROOT:
             matches = [index for index, position in enumerate(host_positions) if int(position) == _target_position]
         except (TypeError, ValueError) as error:
             raise RuntimeError("DFLASH target trace received invalid positions") from error
+        if not matches:
+            # Chunked prefill and earlier decode calls may not yet contain the
+            # requested verification position. Remain armed for the live call.
+            return
         if len(matches) != 1:
             raise RuntimeError(f"DFLASH target trace expected one position {_target_position}, got {len(matches)}")
         candidate_row = matches[0]
