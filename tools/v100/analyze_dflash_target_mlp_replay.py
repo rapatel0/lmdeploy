@@ -49,7 +49,28 @@ def trajectory(directory: Path) -> np.ndarray:
     return np.fromfile(directory / filename, dtype="<f2").reshape(38, 5120)
 
 
+def named_tensor(directory: Path, name: str) -> np.ndarray:
+    records = load_manifest(directory / "manifest.jsonl")
+    matching = [record for record in records if record["name"] == name]
+    if len(matching) != 1:
+        raise RuntimeError(f"missing {name} in {directory}")
+    try:
+        filename = str(matching[0]["file"])
+        shape_value = matching[0]["shape"]
+        if not isinstance(shape_value, list):
+            raise TypeError("shape is not a list")
+        shape = tuple(int(value) for value in shape_value)
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeError(f"invalid {name} metadata in {directory}") from error
+    try:
+        return np.fromfile(directory / filename, dtype="<f2").reshape(shape)
+    except (OSError, TypeError, ValueError) as error:
+        raise RuntimeError(f"cannot read {name} in {directory}: {error}") from error
+
+
 def stats(got: np.ndarray, ref: np.ndarray) -> dict[str, float | int]:
+    if got.shape != ref.shape:
+        raise RuntimeError(f"tensor shape mismatch: {got.shape} != {ref.shape}")
     try:
         delta = got.astype(np.float32) - ref.astype(np.float32)
         differing = int(np.count_nonzero(got.view(np.uint16) != ref.view(np.uint16)))
@@ -106,6 +127,10 @@ def main() -> int:
                 "rank": rank,
                 "baseline_mlp_input": stats(baseline[4], sglang[4]),
                 "replay_mlp_input": input_stats,
+                "replay_mlp_activation": stats(
+                    named_tensor(replay_dirs[rank], "target.layer0.mlp_activation"),
+                    named_tensor(sg_dirs[rank], "target.layer0.mlp_activation"),
+                ),
                 "baseline_mlp_output": stats(baseline[5], sglang[5]),
                 "replay_mlp_output": stats(replay[5], sglang[5]),
             }

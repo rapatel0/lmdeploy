@@ -39,6 +39,7 @@ public:
         int              layer_id;
         int              phase{-1};
         bool             use_target_workspace{false};
+        Tensor*          trace_activation{};
     };
 
     void forward(ForwardParam param);

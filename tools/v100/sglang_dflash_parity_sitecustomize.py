@@ -181,6 +181,28 @@ if _TRACE_ROOT:
             dtype_codes = [_target_trace_dtypes[boundary] for boundary in order]
             _dump("target.trajectory_dtypes", torch.tensor(dtype_codes, dtype=torch.int32, device=row.device))
 
+    def _record_target_detail(name: str, value) -> None:
+        """Persist a varying-width target row outside the stacked trajectory."""
+        if not _armed() or name in _seen:
+            return
+        tensor = _tensor(value)
+        if tensor is None or tensor.numel() == 0:
+            return
+        try:
+            if torch.cuda.is_current_stream_capturing():
+                return
+        except Exception:
+            pass
+        matrix = tensor.detach().reshape(-1, tensor.shape[-1])
+        if _target_row < 0 or matrix.shape[0] <= _target_row:
+            return
+        row = matrix[_target_row].to(torch.float16).clone().reshape(1, -1)
+        _dump(name, row)
+        print(
+            f"SGLANG_DFLASH_TARGET_DETAIL name={name} row={_target_row} width={row.shape[-1]}",
+            flush=True,
+        )
+
     # Trace the target Qwen3.5 trajectory before DFlash context projection.
     # These are external in-memory hooks; the SGLang source remains read-only.
     import sglang.srt.layers.communicator as _communicator
@@ -359,6 +381,22 @@ if _TRACE_ROOT:
             self.mlp.register_forward_hook(
                 lambda _m, _a, out, i=layer_id: _record_target(f"target.layer{i}.mlp_output", out)
             )
+            if layer_id == 0:
+                gate_up = getattr(self.mlp, "gate_up_proj", None)
+                original_fused = getattr(gate_up, "forward_fused_silu_and_mul", None)
+                if gate_up is not None and original_fused is not None:
+                    def traced_fused_activation(input_):
+                        output = original_fused(input_)
+                        if output is not None:
+                            _record_target_detail("target.layer0.mlp_activation", output)
+                        return output
+
+                    gate_up.forward_fused_silu_and_mul = traced_fused_activation
+                activation = getattr(self.mlp, "act_fn", None)
+                if activation is not None:
+                    activation.register_forward_hook(
+                        lambda _m, _a, out: _record_target_detail("target.layer0.mlp_activation", out)
+                    )
 
         return wrapped
 

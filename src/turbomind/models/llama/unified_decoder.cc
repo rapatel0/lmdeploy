@@ -456,7 +456,8 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
                                      weights.at(layer)->feed_forward.get(),
                                      (int)layer,
                                      phase,
-                                     use_dflash_target_workspace});
+                                     use_dflash_target_workspace,
+                                     layer == 0 ? args.try_("dflash_target_mlp_activation") : nullptr});
             }
         }
 

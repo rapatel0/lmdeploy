@@ -113,6 +113,19 @@ void LlamaFfnLayer::forward(ForwardParam param)
         TM_DEBUG_TENSOR(gating, Concat("act", layer_id), 3);
     }
 
+    if (param.trace_activation) {
+        TM_CHECK_EQ(layer_id, 0);
+        TM_CHECK_EQ(param.trace_activation->dtype(), gating.dtype());
+        TM_CHECK_EQ(param.trace_activation->shape(0), 1);
+        TM_CHECK_EQ(param.trace_activation->shape(1), gating.shape(1));
+        TM_CUDA_CHECK(cudaMemcpyAsync(param.trace_activation->raw_data(),
+                                      (const char*)gating.raw_data()
+                                          + (gating.shape(0) - 1) * byte_size(gating.dtype(), gating.stride(0)),
+                                      byte_size(gating.dtype(), gating.shape(1)),
+                                      cudaMemcpyDeviceToDevice,
+                                      stream));
+    }
+
     static const bool trace_workspace = [] {
         const char* value = std::getenv("TM_DFLASH_WORKSPACE_TRACE");
         return value && value[0] == '1';

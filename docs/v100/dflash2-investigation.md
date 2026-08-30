@@ -23,16 +23,16 @@ LMDeploy must also preserve exact target-only output identity.
 
 Latest rebuilt stacked-default LMDeploy result:
 
-- DFlash2 decode: 76.14 tok/s
-- Average committed length: 2.518
-- Verification cycle time: 33.07 ms
+- DFlash2 decode: 84.55 tok/s
+- Average committed length: 2.756
+- Verification cycle time: 32.60 ms
 - Exact audited K=0/K=7 identity: pass
 - Original audited DFlash2 result: 36.13 tok/s
-- Cumulative runtime improvement: about 111%
+- Cumulative runtime improvement: about 134%
 
-The rebuilt wheel proved all four ranks used the default native flat GDN projection, transposed FP16 vocabulary head, and exact TP-local verification top-2 together. Artifact: `/results/20260829_235226-dflash-qualified-defaults-4cab08e6cfe6`.
+The corrected post-rollback metadata rebuild is default-on and the rebuilt wheel confirmed the current result. Artifact: `/results/20260830_005648-dflash-metadata-rebuild-5faa9810904e`.
 
-This remains unqualified. SGLang commits 3.765 tokens per step and completes each cycle in approximately 27.6 ms. The current cycle gap is now about 1.20x; acceptance is the larger remaining gap at about 1.50x.
+This remains unqualified. SGLang commits 3.765 tokens per step and completes each cycle in approximately 27.6 ms. The current cycle gap is about 1.18x; acceptance remains the larger gap at about 1.37x.
 
 ## Confirmed runtime findings
 
@@ -427,13 +427,17 @@ Current audited comparison:
 | Runtime | Commit length |
 | --- | ---: |
 | SGLang DFlash2 | 3.765 |
-| LMDeploy DFlash2 | 2.664 |
+| LMDeploy DFlash2 | 2.756 |
 
 A corrected same-input TP4 parity capture at commit `b753831d` forced the exact block `[1144, 248070 x 7]` at positions `1000..1007`. All four ranks emitted 102 complete boundaries, and block embeddings were bit-identical. The earliest mismatch is the target residual trajectory, not block construction or feature ordering. RMS error grows across checkpoint target layers `[5, 19, 33, 47, 61]` as `0.1075`, `0.3547`, `0.6800`, `1.3486`, and `4.6666`; the final feature's maximum absolute error is `114.18`. SGLang's native target also chooses token `1596` where TurboMind chooses `1144`, independently confirming materially different target numerics.
 
 Commit `4fe99716` completed a four-rank TurboMind-only context replay isolation. Replaying SGLang's exact FP16 `[1, 25600]` target residual made the captured input bit-identical. The context FC difference collapsed from RMS `44.2053` to `0.05926`; after RMSNorm, output parity passed with maximum absolute error `0.00390625` and RMS `0.000277`. Native context norm RMS was `0.39279`. Thus the context projector is functionally aligned after normalization, while upstream target-model numerical drift is the dominant context mismatch. The first independent draft-side mismatch is now `block.initial_norm` at maximum absolute `0.015625` and RMS `0.000728`.
 
-Artifacts: `/results/20260829_032508-sglang-dflash-parity-b753831db680` and `/results/20260829_035037-dflash-context-replay-4fe9971622bc`.
+The full target trajectory then localized the first material amplification to target layer 0's dense FFN. Its MLP-normalized input differs only by maximum absolute `0.0004883` and RMS `7.62e-5`, but its output differs by maximum absolute `0.5195` to `0.6641` and RMS `0.01114` to `0.01309` across TP4. Replaying SGLang's exact MLP input bit-for-bit did not improve output parity: replay RMS remained `0.01114` to `0.01309`. Replay also reduced commit length from `2.716` to `2.564` and regressed normalized cycle time from `32.35` to `33.23` ms, so input replay is diagnostic only.
+
+A follow-up changed TurboMind's merged target gate/up projection from its fused SwiGLU epilogue to a separate FP16 activation, matching SGLang's visible operation boundary. This worsened MLP-output RMS to `0.01531` to `0.01591` and maximum error to `0.7616` to `0.8066`; the first request accepted zero drafts and collapsed to commit length `1.0`. The separate-activation arm was rejected and removed. The remaining discrepancy is inside target dense-FFN projection/quantization arithmetic or weight layout, not the layer-0 normalization input or merely the fused activation boundary.
+
+Artifacts: `/results/20260829_032508-sglang-dflash-parity-b753831db680`, `/results/20260829_035037-dflash-context-replay-4fe9971622bc`, `/results/20260830_191814-dflash-target-mlp-replay-510d5bd14843`, and `/results/20260830_192839-dflash-target-mlp-replay-991657d1f0dc`.
 
 A follow-up `TM_DFLASH_FULL_PRODUCT_RMSNORM` arm exactly reproduced SGLang's SM70 `block.initial_norm` and brought the next grouped-convolution projection and side-0 output within FP16 parity tolerance. It did not improve acceptance: both five-trial arms had commit length `2.669`. Acceptance-normalized cycle cost changed from `41.76` to `41.98` ms, about 0.5% slower. Audited identity hit the runtime's known unstable position-220 split. The first subsequent material mismatch is now the attention branch before output convolution; under reduce-first parity, layer-0 `attention.conv_side1` differs at max abs `21.06`, RMS `0.2188`. Because the exact norm match produced no acceptance or speed gain, the kernel and flag were removed. Artifacts: `/results/20260829_040158-dflash-full-product-rmsnorm-1dced68ec22b` and `/results/20260829_041033-dflash-reduce-first-parity`.
 

@@ -1385,6 +1385,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             Tensor trajectory{{38, (ssize_t)weights_.hidden_units}, weights_.data_type, kDEVICE};
             Clear(trajectory);
             env.produce("dflash_target_trajectory", std::move(trajectory));
+            const auto* layer0_ffn = weights_.layer(0)->feed_forward.get();
+            TM_CHECK(layer0_ffn);
+            Tensor activation{{1, (ssize_t)layer0_ffn->inter_size}, weights_.data_type, kDEVICE};
+            Clear(activation);
+            env.produce("dflash_target_mlp_activation", std::move(activation));
         }
 
         const char* replay_root = std::getenv("TM_DFLASH_TARGET_MLP_REPLAY_DIR");
@@ -1432,11 +1437,14 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         && env.try_("dflash_target_trajectory") && d.rows.size() == 1
         && env.at("input_ids").buffer().size() == 1000 && !unified_decoder_->is_warm_up()) {
         const Tensor& trajectory = env.at("dflash_target_trajectory");
+        const Tensor& activation = env.at("dflash_target_mlp_activation");
         TM_CHECK_EQ(trajectory.dtype(), kHalf);
         TM_CHECK_EQ(trajectory.shape(0), 38);
         TM_CHECK_EQ(trajectory.shape(1), weights_.hidden_units);
         Tensor host_trajectory{trajectory.layout(), trajectory.dtype(), kCPU};
+        Tensor host_activation{activation.layout(), activation.dtype(), kCPU};
         Copy(trajectory, host_trajectory);
+        Copy(activation, host_activation);
         Buffer_<int> host_ids{env.at("input_ids").buffer().size(), kCPU};
         Copy(env.at("input_ids").buffer(), host_ids.size(), host_ids);
         core::Context::stream().Sync();
@@ -1449,6 +1457,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         std::filesystem::create_directories(dir);
         const std::string trajectory_file = "000000-target.trajectory.bin";
         const std::string ids_file        = "000001-target.input_ids.bin";
+        const std::string activation_file = "000002-target.layer0.mlp_activation.bin";
         {
             std::ofstream out{dir / trajectory_file, std::ios::binary};
             TM_CHECK(out) << "cannot open target trajectory output";
@@ -1460,6 +1469,12 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             TM_CHECK(out) << "cannot open target input-id output";
             out.write((const char*)host_ids.data(), host_ids.size() * sizeof(int));
             TM_CHECK(out) << "cannot write target input-id output";
+        }
+        {
+            std::ofstream out{dir / activation_file, std::ios::binary};
+            TM_CHECK(out) << "cannot open target MLP activation output";
+            out.write((const char*)host_activation.raw_data(), host_activation.byte_size());
+            TM_CHECK(out) << "cannot write target MLP activation output";
         }
         std::ofstream manifest{dir / "manifest.jsonl", std::ios::out | std::ios::trunc};
         TM_CHECK(manifest) << "cannot open target trajectory manifest";
@@ -1473,6 +1488,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                  << "\"name\":\"target.input_ids\",\"dtype\":\"i32\",\"shape\":[1000],"
                  << "\"byte_order\":\"little\",\"bytes\":" << host_ids.size() * sizeof(int)
                  << ",\"file\":\"" << ids_file << "\",\"tp_rank\":" << tp_rank_ << "}\n";
+        manifest << "{\"runtime\":\"lmdeploy\",\"ordinal\":2,\"stage\":\"target\","
+                 << "\"name\":\"target.layer0.mlp_activation\",\"dtype\":\"f16\",\"shape\":[1,"
+                 << activation.shape(1) << "],\"byte_order\":\"little\",\"bytes\":"
+                 << host_activation.byte_size() << ",\"file\":\"" << activation_file
+                 << "\",\"tp_rank\":" << tp_rank_ << "}\n";
         manifest.flush();
         TM_CHECK(manifest) << "cannot write target trajectory manifest";
         target_prompt_trajectory_written = true;
