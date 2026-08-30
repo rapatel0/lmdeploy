@@ -121,10 +121,10 @@ void LlamaFfnLayer::forward(ForwardParam param)
         target_workspace->traced = true;
         TM_LOG_INFO("[DFlash2] target FFN workspace phase={} mix={} gating={} inter={} scales={}",
                     param.phase,
-                    (uintptr_t)target_workspace->mix.raw_data(),
-                    (uintptr_t)target_workspace->gating.raw_data(),
-                    (uintptr_t)target_workspace->inter.raw_data(),
-                    (uintptr_t)target_workspace->inter_scales.raw_data());
+                    (uintptr_t)target_workspace->mix.data_or((void*)nullptr),
+                    (uintptr_t)target_workspace->gating.data_or((void*)nullptr),
+                    (uintptr_t)target_workspace->inter.data_or((void*)nullptr),
+                    (uintptr_t)target_workspace->inter_scales.data_or((void*)nullptr));
     }
 
     {  // w2(x)
