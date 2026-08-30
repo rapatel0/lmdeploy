@@ -209,10 +209,11 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 ## Current measured state
 
-- LMDeploy DFlash2 audited grouped decode: 71.73 tok/s
-- LMDeploy committed length in the grouped five-trial arm: 2.756
-- SGLang committed length: 3.765
-- Exact short-workload identity: pass
-- Cumulative audited gain from the original 36.13 tok/s: about 99%
+- LMDeploy DFlash2 default decode: 84.55 tok/s on the audited 1K prompt.
+- LMDeploy committed length: 2.756.
+- LMDeploy normalized speculative cycle: 32.60 ms.
+- SGLang decode and committed length: 136.6 tok/s and 3.765.
+- Corrected metadata produced one exact 256-token pass in three fresh processes; every other corrected and stale control split only at established near-tie position 145.
+- Cumulative gain from the original 36.13 tok/s: about 134%.
 
-Run two tracks in parallel. Build grouped direct-paged target attention and then attack measured target GEMM/GDN costs on Track A. Continue same-input first-block parity on Track B. Device publication is a graph prerequisite, not a standalone speed target.
+Run two tracks in parallel. Localize the upstream target numerical trajectory drift on Track B. On Track A, remove remaining target-verification allocations and capture one broader contiguous region only if matched profiling proves a material gain.
