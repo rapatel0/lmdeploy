@@ -71,6 +71,15 @@ public:
 
     void Forward(ForwardParam p);
 
+    /// Overwrite logically dead target-cache entries from a rejected DFlash
+    /// verifier suffix. This diagnostic never touches committed positions or
+    /// the five dedicated DFlash draft slots.
+    void PoisonVerifierSuffix(int phase,
+                              const int* begin_positions,
+                              const int* end_positions,
+                              int        row_count,
+                              int        target_attention_count);
+
 private:
     void Setup(int phase, TensorMap& env);
 
@@ -102,6 +111,7 @@ private:
     std::unordered_map<const WeightType*, RopeKernelParam>  rope_params_;
 
     std::vector<std::shared_ptr<AttentionData>> data_;
+    std::vector<AttentionWeight*>               weights_;
 
     size_t prefix_cache_offset_{};
 

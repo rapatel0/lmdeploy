@@ -66,6 +66,14 @@ public:
         return linear_attn_layer_ && linear_attn_layer_->has_snapshot();
     }
 
+    void PoisonVerifierSuffix(int phase, const int* begin_positions, const int* end_positions, int row_count)
+    {
+        if (attn_layer_) {
+            attn_layer_->PoisonVerifierSuffix(
+                phase, begin_positions, end_positions, row_count, target_attention_count_);
+        }
+    }
+
     bool is_warm_up() const noexcept
     {
         return is_warm_up_ != 0;
@@ -135,6 +143,7 @@ private:
     /// its own `cache_block_offset` and therefore its own KV space.
     /// MTPPredictor needs this index to address that slot.
     int              mtp_attn_index_{-1};
+    int              target_attention_count_{};
     std::vector<int> dflash_attn_indices_;
 
     // Post-layer residual boundaries consumed by the DFlash2 context

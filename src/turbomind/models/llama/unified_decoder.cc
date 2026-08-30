@@ -77,6 +77,7 @@ UnifiedDecoder::UnifiedDecoder(CacheRegistry&     registry,
             ffn_weights.push_back(layer->feed_forward.get());
         }
     }
+    target_attention_count_ = static_cast<int>(attn_weights.size());
 
     // Give the Multi-Token Prediction layer its own KV slot.
     //

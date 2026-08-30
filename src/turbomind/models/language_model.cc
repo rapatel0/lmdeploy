@@ -51,6 +51,28 @@ using std::vector;
 using std::unique_ptr;
 using std::shared_ptr;
 
+namespace {
+
+bool RejectedKvPoisonEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_POISON_REJECTED_KV");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
+bool KvProposalTraceEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_KV_PROPOSAL_TRACE");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
+}  // namespace
+
 struct LanguageModel::Impl {
     const Communicators& comm_;
     const ModelWeight&   weights_;
@@ -1689,6 +1711,19 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
 
     for (int i = 0; i < bsz; ++i) {
         auto& row = *d.rows[i];
+        if (KvProposalTraceEnabled() && K == 7) {
+            TM_LOG_INFO("DFLASH_KV_PROPOSAL_TRACE poison={} uid={} tip={} ids={},{},{},{},{},{},{}",
+                        RejectedKvPoisonEnabled() ? 1 : 0,
+                        (long)d.uids[i],
+                        (*tips)[i],
+                        host[i * K + 0],
+                        host[i * K + 1],
+                        host[i * K + 2],
+                        host[i * K + 3],
+                        host[i * K + 4],
+                        host[i * K + 5],
+                        host[i * K + 6]);
+        }
         if (i < (int)d.skip_draft.size() && d.skip_draft[i]) {
             row.pending_num_drafts = 0;
             continue;
@@ -2169,6 +2204,8 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     Buffer_<int> seq_lens{bsz, kCPU};
     Buffer_<int> out_ids{bsz, kCPU};
     Buffer_<int> tip_ids{bsz, kCPU};
+    std::vector<int> poison_begin(bsz, 0);
+    std::vector<int> poison_end(bsz, 0);
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
     // Unprep, and Unprep is what copies the live buffer into d.sequence_length,
     // so reading d here would give the PREVIOUS step's lengths.
@@ -2322,6 +2359,14 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         for (int k = 1; k < n; ++k) {
             c.token_ids[base + k] = c.draft_tokens[k];
         }
+
+        // Verification materialized K draft-token KV entries at positions
+        // [base, base + K). Accepted drafts occupy [base, base + n); the
+        // verifier bonus was predicted, not submitted, so it has no KV entry.
+        // Everything from base + n onward is a logically dead suffix. Replay
+        // commits nothing, so its dead suffix starts at base instead.
+        poison_begin[i] = no_commit_[i] ? base : base + n;
+        poison_end[i]   = base + d.num_drafts[i];
 
         // A no-commit row emits nothing: no bonus token, no length change.
         // Its next step decodes normally and produces one token there.
@@ -2588,6 +2633,15 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     // instead owns the conditioning tip for kDraft / the next decode, so keep
     // it on the final committed token.
     Copy(tip_ids, autoreg_ids_.slice(0, bsz));
+
+    // Queue the poison after the accepted length and tip publication. The next
+    // DFlash proposal runs later on this stream. It must be bit-insensitive to
+    // every rejected target-cache slot because it owns five separate draft KV
+    // regions and uses only the committed frontier.
+    if (RejectedKvPoisonEnabled()) {
+        TM_CHECK_NOTNULL(dflash_predictor_.get());
+        unified_decoder_->PoisonVerifierSuffix(phase, poison_begin.data(), poison_end.data(), bsz);
+    }
 
     // Tokens committed per verification forward -- the quantity that decides
     // whether speculation pays for itself.

@@ -21,6 +21,7 @@
 
 #include "src/turbomind/engine/block.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -270,6 +271,78 @@ UnifiedAttentionLayer::~UnifiedAttentionLayer()
     aux_stream_             = {};
 }
 
+void UnifiedAttentionLayer::PoisonVerifierSuffix(int        phase,
+                                                 const int* begin_positions,
+                                                 const int* end_positions,
+                                                 int        row_count,
+                                                 int        target_attention_count)
+{
+    TM_CHECK(phase >= 0 && phase < (int)data_.size());
+    TM_CHECK(row_count >= 0);
+    TM_CHECK(target_attention_count >= 0 && target_attention_count <= (int)weights_.size());
+    auto& d = *data_.at(phase);
+    TM_CHECK(row_count + 1 <= d.block_ptrs_offsets_host.size());
+
+    const int dtype_bits = byte_size(engine_param_.data_type, 8);
+    TM_CHECK_EQ(quant_policy_, 0) << "DFlash KV poison supports only the audited unquantized cache";
+    const auto stream = core::Context::stream().handle();
+    size_t     poisoned_positions{};
+    size_t     poisoned_bytes{};
+
+    for (int row = 0; row < row_count; ++row) {
+        TM_CHECK_GE(begin_positions[row], 0);
+        TM_CHECK_GE(end_positions[row], begin_positions[row]);
+        for (int pos = begin_positions[row]; pos < end_positions[row]; ++pos) {
+            const int block_index = pos / engine_param_.cache_block_seq_len;
+            const int block_token = pos % engine_param_.cache_block_seq_len;
+            const int pointer_index = d.block_ptrs_offsets_host[row] + block_index;
+            TM_CHECK_LT(pointer_index, d.block_ptrs_offsets_host[row + 1]);
+            auto* block_ptr = static_cast<char*>(d.block_ptrs_host[pointer_index]);
+            TM_CHECK_NOTNULL(block_ptr);
+
+            for (int layer = 0; layer < target_attention_count; ++layer) {
+                const auto& weight = *weights_.at(layer);
+                BlockConfig config{weight.head_dim,
+                                   weight.kv_head_num / weight.tp_size,
+                                   engine_param_.cache_block_seq_len,
+                                   0,
+                                   dtype_bits,
+                                   weight.head_dim == 576};
+                block::Layout layout{config};
+                TM_CHECK(!layout.is_share_kv());
+                const size_t token_bytes = layout.token_data_size();
+                for (int head = 0; head < config.head_num(); ++head) {
+                    char* layer_ptr = block_ptr + weight.cache_block_offset;
+                    TM_CUDA_CHECK(cudaMemsetAsync(layer_ptr + layout.k_data(head, block_token),
+                                                 0xA5,
+                                                 token_bytes,
+                                                 stream));
+                    TM_CUDA_CHECK(cudaMemsetAsync(layer_ptr + layout.v_data(head, block_token),
+                                                 0x5A,
+                                                 token_bytes,
+                                                 stream));
+                    poisoned_bytes += 2 * token_bytes;
+                }
+            }
+            ++poisoned_positions;
+        }
+    }
+    TM_CUDA_CHECK(cudaGetLastError());
+
+    int device = -1;
+    TM_CUDA_CHECK(cudaGetDevice(&device));
+    static std::atomic<bool> logged[16]{};
+    if (poisoned_positions && device >= 0 && device < 16
+        && !logged[device].exchange(true, std::memory_order_relaxed)) {
+        TM_LOG_INFO("DFLASH_REJECTED_KV_POISON_ACTIVE device={} rows={} positions={} bytes={} target_attention_layers={}",
+                    device,
+                    row_count,
+                    poisoned_positions,
+                    poisoned_bytes,
+                    target_attention_count);
+    }
+}
+
 UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weights,
                                              CacheRegistry&                registry,
                                              const EngineParam&            engine,
@@ -282,7 +355,8 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
     is_warm_up_{*context.is_warm_up},
     context_{context},
     linear_(*context.linear),
-    arch_{getSMVersion()}
+    arch_{getSMVersion()},
+    weights_{weights}
 {
     TM_CHECK_GE(weights.size(), 1);
 

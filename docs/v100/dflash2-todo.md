@@ -53,6 +53,7 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Classification: lifecycle hypothesis.
   - SGLang uses `commit_lens` and prefix-valid cache writes. LMDeploy writes all verifier positions before acceptance and relies on logical lengths plus later overwrite.
   - Experiment: poison rejected context-KV suffixes and verify that the next draft is unchanged.
+  - A default-off `TM_DFLASH_POISON_REJECTED_KV` diagnostic now overwrites only target-attention slots `[base + accepted, base + K)` after acceptance publication. Dedicated DFlash draft slots remain untouched. The one-build job compares the complete proposal multiset and final acceptance against two repeated controls, requires four-rank poison proof, and runs exact audited identity. GPU qualification remains pending.
   - Done when: committed-prefix writes are implemented or the poison test proves the suffix cannot affect drafting/cache reuse.
 
 - [ ] **Validate draft attention metadata after partial acceptance.**
