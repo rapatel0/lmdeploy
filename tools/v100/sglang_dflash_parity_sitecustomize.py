@@ -145,39 +145,38 @@ if _TRACE_ROOT:
     import sglang.srt.layers.communicator as _communicator
     import sglang.srt.models.qwen3_5 as _q35
 
+    def _resolve_target_frontier(input_ids, positions) -> None:
+        global _target_row
+        if not _armed() or _target_row >= 0 or not isinstance(positions, torch.Tensor) or not positions.numel():
+            return
+        host_positions = positions.detach().reshape(-1).cpu().tolist()
+        try:
+            matches = [
+                index for index, position in enumerate(host_positions) if int(position) == _target_position
+            ]
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("DFLASH target trace received invalid positions") from error
+        if len(matches) != 1:
+            raise RuntimeError(f"DFLASH target trace expected one position {_target_position}, got {len(matches)}")
+        _target_row = matches[0]
+        token_id = -1
+        if isinstance(input_ids, torch.Tensor) and input_ids.numel() > _target_row:
+            try:
+                token_id = int(input_ids.detach().reshape(-1)[_target_row].cpu().item())
+            except (TypeError, ValueError, RuntimeError) as error:
+                raise RuntimeError("DFLASH target trace could not read the frontier token") from error
+        print(
+            f"SGLANG_DFLASH_TARGET_FRONTIER position={_target_position} "
+            f"row={_target_row} token_id={token_id} rows={len(host_positions)}",
+            flush=True,
+        )
+
     _orig_target_model_forward = _q35.Qwen3_5Model.forward
 
     def _traced_target_model_forward(self, *args, **kwargs):
-        global _target_row
-        if _armed() and _target_row < 0:
-            input_ids = kwargs.get("input_ids", args[0] if args else None)
-            positions = kwargs.get("positions", args[1] if len(args) > 1 else None)
-            if isinstance(positions, torch.Tensor) and positions.numel():
-                host_positions = positions.detach().reshape(-1).cpu().tolist()
-                try:
-                    matches = [
-                        index
-                        for index, position in enumerate(host_positions)
-                        if int(position) == _target_position
-                    ]
-                except (TypeError, ValueError) as error:
-                    raise RuntimeError("DFLASH target trace received invalid positions") from error
-                if len(matches) != 1:
-                    raise RuntimeError(
-                        f"DFLASH target trace expected one position {_target_position}, got {len(matches)}"
-                    )
-                _target_row = matches[0]
-                token_id = -1
-                if isinstance(input_ids, torch.Tensor) and input_ids.numel() > _target_row:
-                    try:
-                        token_id = int(input_ids.detach().reshape(-1)[_target_row].cpu().item())
-                    except (TypeError, ValueError, RuntimeError) as error:
-                        raise RuntimeError("DFLASH target trace could not read the frontier token") from error
-                print(
-                    f"SGLANG_DFLASH_TARGET_FRONTIER position={_target_position} "
-                    f"row={_target_row} token_id={token_id} rows={len(host_positions)}",
-                    flush=True,
-                )
+        input_ids = kwargs.get("input_ids", args[0] if args else None)
+        positions = kwargs.get("positions", args[1] if len(args) > 1 else None)
+        _resolve_target_frontier(input_ids, positions)
         return _orig_target_model_forward(self, *args, **kwargs)
 
     _q35.Qwen3_5Model.forward = _traced_target_model_forward
@@ -406,6 +405,19 @@ if _TRACE_ROOT:
         # draft model and CUDA graph receive the audited request tensors.
         self._use_triton_prepare_block = False
         self._use_triton_accept_bonus = False
+
+        # The target ModelRunner may replay a compiled model path that bypasses
+        # the Python Qwen model wrapper above. Resolve the audited prompt row
+        # from the live ForwardBatch before entering that compiled path.
+        original_target_forward = self.target_worker.model_runner.forward
+
+        def _traced_target_runner_forward(forward_batch, *forward_args, **forward_kwargs):
+            _resolve_target_frontier(
+                getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
+            )
+            return original_target_forward(forward_batch, *forward_args, **forward_kwargs)
+
+        self.target_worker.model_runner.forward = _traced_target_runner_forward
         original_forward = self.draft_model_runner.forward
 
         def _traced_draft_forward(forward_batch, *forward_args, **forward_kwargs):
