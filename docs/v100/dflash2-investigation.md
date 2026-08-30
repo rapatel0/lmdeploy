@@ -408,6 +408,14 @@ The corrected five-trial arms followed identical acceptance at commit/raw length
 
 The target workspace is default-on because it is a required contiguous-graph prerequisite despite the sub-1% standalone cycle gain. `TM_DFLASH_TARGET_WORKSPACE=0` retains the dynamic-allocation control. Artifact: `/results/20260830_121836-dflash-target-workspace-d622aac771d3`.
 
+## Contiguous target CUDA graph
+
+With stable target addresses, a flagged prototype captured the entire 64-layer target decoder, including TP4 NCCL collectives, into one CUDA graph per rank. Capture and replay succeeded on all four ranks, and exact audited 128-token K=0/K=7 identity passed. This proved the broad graph capability that the rejected per-layer experiment could not amortize.
+
+It did not produce a robust speed gain. The first matrix changed normalized cycle time by **+0.38% unprofiled** and **-1.17% profiled**. A counter-ordered matrix with graph-safe direct-paged draft attention changed target-only normalization by **+0.42% unprofiled** and **+0.94% profiled**. Combining the contiguous target graph with the existing draft-plus-selector graph changed normalization by **+1.10% unprofiled** and **-1.47% profiled**. All five-trial arms remained around 32.5 to 32.9 ms, above the 30 ms gate.
+
+The conflicting signs fail the material-gain rule. The contiguous graph runtime, flag, and qualification tools were removed. Stable target workspaces remain because they independently remove 79.1% of allocator calls and are useful infrastructure; further cycle work must reduce kernel cost rather than only launch overhead. Artifacts: `/results/20260830_123518-dflash-contiguous-target-graph-3757ee43380f` and `/results/20260830_125231-dflash-compound-target-graph-3757ee43380f`.
+
 ## Acceptance gap
 
 Current audited comparison:

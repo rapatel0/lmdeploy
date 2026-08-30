@@ -120,8 +120,11 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - A counter-ordered retest with every qualified kernel default plus the graph's required direct-paged draft attention produced a pooled 1.44% unprofiled cycle improvement, but the matched Nsight cycle regressed 0.77%. Acceptance varied materially between fresh-process arms. This compound stack therefore remains rejected as a production default.
   - Keep it off by default as infrastructure for broader capture. Artifact: `/results/20260830_002130-dflash-compound-graph`.
   - A per-layer target-attention graph captured/replayed all 64 rank/layer instances and reduced `targetVerify` from 14.235 to 13.904 ms, but sixteen graph launches per verification caused whole profiled request time to regress by 0.8%.
-  - The per-layer target graph was removed. Future target capture must span a larger contiguous region and amortize graph-launch overhead.
-  - Done when: broader graph replay passes identity and reduces matched whole-cycle wall time by more than run variance.
+  - After target addresses were stabilized, one contiguous graph successfully captured the complete 64-layer decoder plus TP4 NCCL on all ranks and passed exact audited identity.
+  - Standalone contiguous capture improved one matched profile 1.17% but regressed five-trial normalization 0.38%. A counter-ordered graph-safe matrix then regressed target-only normalization 0.42% unprofiled and 0.94% profiled.
+  - Combining contiguous target capture with the retained draft-plus-selector graph regressed five-trial normalization 1.10% despite a 1.47% profiled improvement. The contradictory signs fail the material-gain rule and remain far above 30 ms.
+  - Both target graph prototypes and compound tooling were removed. Graph capture is closed unless a new kernel-level change materially reduces captured work. Artifacts: `/results/20260830_123518-dflash-contiguous-target-graph-3757ee43380f`, `/results/20260830_125231-dflash-compound-target-graph-3757ee43380f`.
+  - Done when: a future broader graph replay passes identity and reduces matched whole-cycle wall time by more than run variance.
 
 - [x] **Qualify grouped direct-paged Q=8 attention.**
   - The SM70 CTA_Q=8/CTA_H=4 kernel covers local 6Q:1KV as 4+2 heads and shares paged K/V across both query positions and grouped heads.

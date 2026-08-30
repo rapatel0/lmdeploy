@@ -116,18 +116,17 @@ Done: graph capability and NCCL capture are proven. The standalone speed target 
 
 Next target: include enough target verification work to reduce whole-cycle time beyond run variance.
 
-### A4. Capture target verification — per-layer slice rejected
+### A4. Capture target verification — contiguous capture rejected
 
-- A per-layer target-attention prototype captured and replayed all 64 TP-rank/layer graphs with stable QKV, paged-attention, gate, and Wo buffers.
-- With matched commit length 2.311, `targetVerify` improved from 14.235 to 13.904 ms and kernel launches fell from 166,932 to 144,084.
-- Sixteen added graph launches per verification erased that gain: whole profiled request time regressed from 2.8897 to 2.9129 seconds.
-- The per-layer branch was removed. Do not revisit this granularity.
-- Stabilize the remaining target transformer and recurrent-state addresses, then capture a materially larger contiguous region that amortizes launch overhead.
-- Keep commit decisions outside the graph until device publication is complete and preserve fallback for mixed batches and variable verification depths.
+- A per-layer target-attention prototype captured and replayed all 64 TP-rank/layer graphs with stable QKV, paged-attention, gate, and Wo buffers. With matched commit length 2.311, `targetVerify` improved from 14.235 to 13.904 ms, but sixteen graph launches per verification erased the gain. That branch was removed.
+- After A2 stabilized the complete target boundary, a second prototype captured the entire 64-layer target decoder, including TP4 NCCL collectives, in one graph per rank. All four ranks captured and replayed, and exact audited 128-token identity passed.
+- The first matched profile improved normalized cycle time 1.17%, but five-trial normalization regressed 0.38%.
+- A counter-ordered matrix with graph-safe direct-paged draft attention confirmed the conflict. Target-only graphing regressed five-trial normalization 0.42% and profiled normalization 0.94%. Combining the full target graph with the already qualified draft-plus-selector graph regressed five-trial normalization 1.10% while improving the matched profile 1.47%.
+- No graph arm produced a consistent whole-cycle gain or approached the 30 ms gate. The contiguous target graph, compound tooling, and runtime flag were removed. Do not revisit graph capture without a new kernel-level change that materially reduces captured work rather than only launch overhead.
 
-Done when broader target verification replays without host intervention and improves matched whole-cycle time.
+Closed as rejected. The final cycle target remains open on kernel performance, not graph capability.
 
-Target: reduce cycle time to at most 30 ms.
+Artifacts: `/results/20260830_123518-dflash-contiguous-target-graph-3757ee43380f` and `/results/20260830_125231-dflash-compound-target-graph-3757ee43380f`.
 
 ### A5. Add direct paged verification attention — grouped kernel qualified
 
