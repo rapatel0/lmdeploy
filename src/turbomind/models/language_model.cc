@@ -1388,7 +1388,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         }
 
         const char* replay_root = std::getenv("TM_DFLASH_TARGET_MLP_REPLAY_DIR");
-        if (replay_root && replay_root[0] && input_ids.size() == 1000) {
+        if (replay_root && replay_root[0] && token_num == 1000) {
             const auto path = std::filesystem::path(replay_root) / ("rank-" + std::to_string(tp_rank_) + ".bin");
             Tensor host{{1, (ssize_t)weights_.hidden_units}, weights_.data_type, kCPU};
             std::ifstream input{path, std::ios::binary};
