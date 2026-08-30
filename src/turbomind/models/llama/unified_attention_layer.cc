@@ -623,7 +623,10 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
     int        expected_k_max{};
     for (int i = 0; i < batch_size; ++i) {
         TM_CHECK_GE(committed_seq_lens[i], 0);
-        const int expected = committed_seq_lens[i] + block_size;
+        // `committed_seq_lens` carries the zero-based tip position, whereas
+        // cu_k_len is a token count. Include the committed tip itself before
+        // adding the parallel proposal block.
+        const int expected = committed_seq_lens[i] + 1 + block_size;
         expected_k_sum += expected;
         expected_k_max = std::max(expected_k_max, expected);
         if (rebuild) {
@@ -646,7 +649,7 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
     if (assert_exact) {
         TM_CHECK_EQ((int)d.draft_k_lens_host.size(), batch_size);
         for (int i = 0; i < batch_size; ++i) {
-            TM_CHECK_EQ(d.draft_k_lens_host[i], committed_seq_lens[i] + block_size)
+            TM_CHECK_EQ(d.draft_k_lens_host[i], committed_seq_lens[i] + 1 + block_size)
                 << "DFlash draft metadata row " << i << " does not match the post-rollback committed frontier";
         }
         TM_CHECK_EQ(d.decode.n, 0);
