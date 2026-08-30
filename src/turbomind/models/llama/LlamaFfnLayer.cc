@@ -113,6 +113,20 @@ void LlamaFfnLayer::forward(ForwardParam param)
         TM_DEBUG_TENSOR(gating, Concat("act", layer_id), 3);
     }
 
+    if (param.replay_activation) {
+        TM_CHECK_EQ(layer_id, 0);
+        TM_CHECK_EQ(param.replay_activation->dtype(), gating.dtype());
+        TM_CHECK_EQ(param.replay_activation->shape(0), 1);
+        TM_CHECK_EQ(param.replay_activation->shape(1), gating.shape(1));
+        TM_CUDA_CHECK(cudaMemcpyAsync((char*)gating.raw_data()
+                                          + (gating.shape(0) - 1)
+                                                * byte_size(gating.dtype(), gating.stride(0)),
+                                      param.replay_activation->raw_data(),
+                                      byte_size(gating.dtype(), gating.shape(1)),
+                                      cudaMemcpyDeviceToDevice,
+                                      stream));
+    }
+
     if (param.trace_activation) {
         TM_CHECK_EQ(layer_id, 0);
         TM_CHECK_EQ(param.trace_activation->dtype(), gating.dtype());

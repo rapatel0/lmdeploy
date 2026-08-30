@@ -57,6 +57,18 @@ def main() -> int:
         row = trajectory[4].copy()  # target.layer0.mlp_norm
         path = args.output / f"rank-{rank}.bin"
         row.tofile(path)
+        activation_records = [record for record in records if record["name"] == "target.layer0.mlp_activation"]
+        if len(activation_records) != 1:
+            raise RuntimeError(f"rank {rank} missing target MLP activation")
+        try:
+            activation_file = str(activation_records[0]["file"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError(f"rank {rank} has invalid target MLP activation metadata") from error
+        activation = np.fromfile(directory / activation_file, dtype="<f2")
+        if activation.size != 4352:
+            raise RuntimeError(f"rank {rank} target MLP activation has {activation.size} values")
+        activation_path = args.output / f"rank-{rank}-activation.bin"
+        activation.tofile(activation_path)
         provenance.append(
             {
                 "rank": rank,
@@ -65,6 +77,7 @@ def main() -> int:
                 "token_id": record["token_id"],
                 "input_ids_sha256": record.get("input_ids_sha256"),
                 "bytes": path.stat().st_size,
+                "activation_bytes": activation_path.stat().st_size,
             }
         )
     (args.output / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")

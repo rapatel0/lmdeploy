@@ -40,6 +40,7 @@ public:
         int              phase{-1};
         bool             use_target_workspace{false};
         Tensor*          trace_activation{};
+        const Tensor*    replay_activation{};
     };
 
     void forward(ForwardParam param);

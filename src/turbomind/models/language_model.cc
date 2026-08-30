@@ -1406,6 +1406,20 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             Tensor replay{host.layout(), host.dtype(), kDEVICE};
             Copy(host, replay);
             env.produce("dflash_target_mlp_replay", std::move(replay));
+
+            const auto* layer0_ffn = weights_.layer(0)->feed_forward.get();
+            TM_CHECK(layer0_ffn);
+            const auto activation_path = std::filesystem::path(replay_root)
+                                         / ("rank-" + std::to_string(tp_rank_) + "-activation.bin");
+            Tensor host_activation{{1, (ssize_t)layer0_ffn->inter_size}, weights_.data_type, kCPU};
+            std::ifstream activation_input{activation_path, std::ios::binary};
+            TM_CHECK(activation_input) << "cannot open target MLP activation replay row " << activation_path.string();
+            activation_input.read((char*)host_activation.raw_data(), host_activation.byte_size());
+            TM_CHECK(activation_input && activation_input.peek() == std::ifstream::traits_type::eof())
+                << "invalid target MLP activation replay row " << activation_path.string();
+            Tensor activation_replay{host_activation.layout(), host_activation.dtype(), kDEVICE};
+            Copy(host_activation, activation_replay);
+            env.produce("dflash_target_mlp_activation_replay", std::move(activation_replay));
         }
     }
 
