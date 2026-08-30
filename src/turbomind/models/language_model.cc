@@ -6,12 +6,15 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <numeric>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <unistd.h>
 
 #include "src/turbomind/comm/device_comm.h"
 #include "src/turbomind/core/allocator.h"
@@ -1402,6 +1405,67 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     {
         NvtxScope scope(HasDraftsToVerify(phase) ? "targetVerify" : "targetDecode");
         unified_decoder_->Forward(phase, env, weights_.layers_list());
+    }
+
+    // Independent prompt-trajectory capture. The ordinary DFlash parity trace
+    // is armed at proposal time and therefore records a verifier row whose
+    // token path already differs across runtimes. For target arithmetic parity
+    // we instead persist the audited prompt's final row (position 999) before
+    // proposal generation, after the full prefix has reconstructed GDN state.
+    static bool target_prompt_trajectory_written = false;
+    const char* target_parity_root = std::getenv("TM_DFLASH_TARGET_PARITY_DIR");
+    if (!target_prompt_trajectory_written && target_parity_root && target_parity_root[0]
+        && env.try_("dflash_target_trajectory") && d.rows.size() == 1 && d.input_lens[0] == 1000
+        && !unified_decoder_->is_warm_up()) {
+        const Tensor& trajectory = env.at("dflash_target_trajectory");
+        TM_CHECK_EQ(trajectory.dtype(), kHalf);
+        TM_CHECK_EQ(trajectory.shape(0), 38);
+        TM_CHECK_EQ(trajectory.shape(1), weights_.hidden_units);
+        Tensor host_trajectory{trajectory.layout(), trajectory.dtype(), kCPU};
+        Copy(trajectory, host_trajectory);
+        Buffer_<int> host_ids{env.at("input_ids").buffer().size(), kCPU};
+        Copy(env.at("input_ids").buffer(), host_ids.size(), host_ids);
+        core::Context::stream().Sync();
+        TM_CHECK_EQ(host_ids.size(), 1000);
+
+        const auto dir = std::filesystem::path(target_parity_root) / "lmdeploy"
+                         / ("rank-" + std::to_string(tp_rank_) + "-pid-"
+                            + std::to_string((long long)getpid()));
+        TM_CHECK(!std::filesystem::exists(dir)) << "target trajectory directory already exists: " << dir.string();
+        std::filesystem::create_directories(dir);
+        const std::string trajectory_file = "000000-target.trajectory.bin";
+        const std::string ids_file        = "000001-target.input_ids.bin";
+        {
+            std::ofstream out{dir / trajectory_file, std::ios::binary};
+            TM_CHECK(out) << "cannot open target trajectory output";
+            out.write((const char*)host_trajectory.raw_data(), host_trajectory.byte_size());
+            TM_CHECK(out) << "cannot write target trajectory output";
+        }
+        {
+            std::ofstream out{dir / ids_file, std::ios::binary};
+            TM_CHECK(out) << "cannot open target input-id output";
+            out.write((const char*)host_ids.data(), host_ids.size() * sizeof(int));
+            TM_CHECK(out) << "cannot write target input-id output";
+        }
+        std::ofstream manifest{dir / "manifest.jsonl", std::ios::out | std::ios::trunc};
+        TM_CHECK(manifest) << "cannot open target trajectory manifest";
+        manifest << "{\"runtime\":\"lmdeploy\",\"ordinal\":0,\"stage\":\"target\","
+                 << "\"name\":\"target.trajectory\",\"dtype\":\"f16\",\"shape\":[38,"
+                 << weights_.hidden_units << "],\"byte_order\":\"little\",\"bytes\":"
+                 << host_trajectory.byte_size() << ",\"file\":\"" << trajectory_file
+                 << "\",\"tp_rank\":" << tp_rank_ << ",\"position\":999,\"token_id\":"
+                 << host_ids.data()[999] << ",\"input_length\":1000}\n";
+        manifest << "{\"runtime\":\"lmdeploy\",\"ordinal\":1,\"stage\":\"target\","
+                 << "\"name\":\"target.input_ids\",\"dtype\":\"i32\",\"shape\":[1000],"
+                 << "\"byte_order\":\"little\",\"bytes\":" << host_ids.size() * sizeof(int)
+                 << ",\"file\":\"" << ids_file << "\",\"tp_rank\":" << tp_rank_ << "}\n";
+        manifest.flush();
+        TM_CHECK(manifest) << "cannot write target trajectory manifest";
+        target_prompt_trajectory_written = true;
+        TM_LOG_INFO("[DFlash2] target prompt trajectory wrote rank={} position=999 token={} to {}",
+                    tp_rank_,
+                    host_ids.data()[999],
+                    dir.string());
     }
     if (env.try_("dflash_target_workspace")) {
         env.consume("dflash_target_workspace");

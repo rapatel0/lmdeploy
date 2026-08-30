@@ -26,7 +26,7 @@ common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
     --cache-max-entry-count 0.05)
 
 TM_DFLASH_TARGET_TRAJECTORY=1 \
-    TM_DFLASH_PARITY_DIR="${RESULTS}/parity" \
+    TM_DFLASH_TARGET_PARITY_DIR="${RESULTS}/parity" \
     python3 /job/bench_decode.py "${common[@]}" --output-tokens 64 --trials 1 \
     --json-out "${RESULTS}/trace.json" 2>&1 | tee "${RESULTS}/trace.log"
 
@@ -45,7 +45,13 @@ for directory in dirs:
     record = matching[0]
     assert record["dtype"] == "f16", record
     assert record["shape"] == [38, 5120], record
+    assert record["position"] == 999, record
+    assert record["token_id"] == 198, record
+    assert record["input_length"] == 1000, record
     assert (directory / record["file"]).stat().st_size == 38 * 5120 * 2
+    ids = [item for item in records if item["name"] == "target.input_ids"]
+    assert len(ids) == 1 and ids[0]["shape"] == [1000], (directory, ids)
+    assert (directory / ids[0]["file"]).stat().st_size == 1000 * 4
 print(f"DFLASH_TARGET_TRAJECTORY_TRACE_PASS ranks={len(dirs)}")
 PY
 

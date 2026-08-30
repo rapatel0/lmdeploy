@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -47,7 +48,7 @@ def rank_dirs(root: Path) -> dict[int, Path]:
     return result
 
 
-def load(directory: Path) -> tuple[np.ndarray, np.ndarray | None]:
+def load(directory: Path) -> tuple[np.ndarray, np.ndarray | None, dict[str, object]]:
     try:
         records = [json.loads(line) for line in (directory / "manifest.jsonl").read_text().splitlines()]
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
@@ -66,7 +67,17 @@ def load(directory: Path) -> tuple[np.ndarray, np.ndarray | None]:
         dtype_codes = np.fromfile(directory / dtype_record["file"], dtype="<i4")
         if dtype_codes.shape != (38,):
             raise RuntimeError(f"unexpected target dtype codes in {directory}: {dtype_codes.shape}")
-    return value, dtype_codes
+    metadata = dict(record)
+    ids_matching = [item for item in records if item["name"] == "target.input_ids"]
+    if ids_matching:
+        ids_record = ids_matching[0]
+        ids = np.fromfile(directory / ids_record["file"], dtype="<i4")
+        metadata["input_ids_sha256"] = hashlib.sha256(ids[:1000].tobytes(order="C")).hexdigest()
+        try:
+            metadata["input_rows"] = int(ids.size)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(f"invalid target input row count in {directory}") from error
+    return value, dtype_codes, metadata
 
 
 def main() -> int:
@@ -82,8 +93,17 @@ def main() -> int:
     rows: list[dict[str, object]] = []
     earliest = None
     for rank in range(4):
-        lm, _ = load(lm_dirs[rank])
-        sg, sg_dtype_codes = load(sg_dirs[rank])
+        lm, _, lm_metadata = load(lm_dirs[rank])
+        sg, sg_dtype_codes, sg_metadata = load(sg_dirs[rank])
+        expected = {"position": 999, "token_id": 198}
+        for key, value in expected.items():
+            if lm_metadata.get(key) != value or sg_metadata.get(key) != value:
+                raise RuntimeError(
+                    f"rank {rank} target alignment mismatch for {key}: "
+                    f"lm={lm_metadata.get(key)} sg={sg_metadata.get(key)} expected={value}"
+                )
+        if lm_metadata.get("input_ids_sha256") != sg_metadata.get("input_ids_sha256"):
+            raise RuntimeError(f"rank {rank} target prompt input hash mismatch")
         for index, name in enumerate(names):
             lhs = lm[index].astype(np.float32)
             rhs = sg[index].astype(np.float32)

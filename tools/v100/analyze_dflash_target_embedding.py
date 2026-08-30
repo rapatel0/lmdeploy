@@ -101,9 +101,11 @@ def main() -> int:
     if len(lm_dirs) != 4 or len(sg_dirs) != 4:
         raise RuntimeError(f"expected TP4 traces, found lm={len(lm_dirs)} sg={len(sg_dirs)}")
     first_lm = traced_embedding(lm_dirs[0])
+    first_sg = traced_embedding(sg_dirs[0])
     result = {
         "checkpoint_key": key,
         "lmdeploy_nearest_checkpoint_rows": nearest_checkpoint_rows(shard, key, first_lm),
+        "sglang_nearest_checkpoint_rows": nearest_checkpoint_rows(shard, key, first_sg),
         "token_id": args.token_id,
         "checkpoint": summary(checkpoint),
         "ranks": [],

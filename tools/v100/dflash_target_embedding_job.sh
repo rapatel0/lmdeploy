@@ -13,4 +13,4 @@ SG_REF="$(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trac
 }
 python3 /job/analyze_dflash_target_embedding.py \
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
-    --lmdeploy "${LM_REF}" --sglang "${SG_REF}" --token-id 198
+    --lmdeploy "${LM_REF}" --sglang "${SG_REF}" --token-id "${TOKEN_ID:-1596}"

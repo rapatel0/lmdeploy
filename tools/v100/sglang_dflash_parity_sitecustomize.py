@@ -6,6 +6,7 @@ changes or ships SGLang source. Set SGLANG_DFLASH_PARITY_DIR to enable it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,9 @@ if _TRACE_ROOT:
         _target_position = 999
         _target_token_id = -1
     _target_row = -1
+    _target_resolved_position = -1
+    _target_input_hash = ""
+    _target_input_rows = 0
 
     def _armed() -> bool:
         # SGLang executes synthetic DFlash blocks while warming kernels during
@@ -116,6 +120,17 @@ if _TRACE_ROOT:
             "tp_rank": rank,
             "tp_size": _safe_int(os.environ.get("WORLD_SIZE"), 4),
         }
+        if name in {"target.trajectory", "target.trajectory_dtypes"}:
+            record.update(
+                {
+                    "position": _target_resolved_position,
+                    "token_id": _target_token_id,
+                    "resolved_row": _target_row,
+                    "input_rows": _target_input_rows,
+                    "input_ids_sha256": _target_input_hash,
+                    "forward_mode": "target_prefill" if _target_input_rows >= 1000 else "target_verify",
+                }
+            )
         with (out / "manifest.jsonl").open("a") as stream:
             stream.write(json.dumps(record, separators=(",", ":")) + "\n")
         _seen.add(name)
@@ -172,7 +187,7 @@ if _TRACE_ROOT:
     import sglang.srt.models.qwen3_5 as _q35
 
     def _resolve_target_frontier(input_ids, positions) -> None:
-        global _target_row
+        global _target_input_hash, _target_input_rows, _target_resolved_position, _target_row
         if not _armed() or _target_row >= 0 or not isinstance(positions, torch.Tensor) or not positions.numel():
             return
         host_positions = positions.detach().reshape(-1).cpu().tolist()
@@ -224,6 +239,11 @@ if _TRACE_ROOT:
             resolved_position = int(host_positions[candidate_row])
         except (TypeError, ValueError) as error:
             raise RuntimeError("DFLASH target trace received an invalid selected position") from error
+        _target_resolved_position = resolved_position
+        _target_input_rows = len(host_positions)
+        if host_ids is not None:
+            prefix = torch.tensor(host_ids[: min(1000, len(host_ids))], dtype=torch.int32)
+            _target_input_hash = hashlib.sha256(prefix.numpy().tobytes(order="C")).hexdigest()
         print(
             f"SGLANG_DFLASH_TARGET_FRONTIER position={resolved_position} "
             f"row={_target_row} token_id={token_id} rows={len(host_positions)}",
