@@ -66,6 +66,7 @@ public:
         const char*       trace_qkv_projection{};
         const char*       trace_qkv_pre{};
         const char*       trace_qkv_post{};
+        const char*       trace_flattened_kv{};
         const char*       trace_attention{};
     };
 

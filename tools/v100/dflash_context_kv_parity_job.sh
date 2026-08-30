@@ -65,8 +65,6 @@ printf 'full_context=%s\nfull_norm=%s\nq_replay=%s\nk_replay=%s\n' \
 mkdir -p "$RESULTS/parity"
 TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" \
     TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM" \
-    TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY" \
-    TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY" \
     TM_DFLASH_REDUCE_BEFORE_CONV=1 \
     TM_DFLASH_PARITY_DIR="$RESULTS/parity" \
     python3 /job/bench_decode.py \
@@ -98,6 +96,10 @@ def stats(a, b):
     assert a.shape == b.shape, (a.shape, b.shape)
     delta = a - b
     return int(np.count_nonzero(a != b)), float(np.max(np.abs(delta))), float(np.sqrt(np.mean(delta * delta, dtype=np.float64)))
+def reorder_rope(value):
+    shape = value.shape
+    assert shape[-1] % 128 == 0
+    return value.reshape(-1, shape[-1] // 128, 2, 64).transpose(0, 1, 3, 2).reshape(shape)
 for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
     lm, sg = records(lm_root), records(sg_root)
     required_lm = {
@@ -107,6 +109,7 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
         'layer0.attention.qkv_projection',
         'layer0.attention.qkv_pre_process',
         'layer0.attention.qkv_post_process',
+        'layer0.attention.flattened_kv',
         'layer0.attention.core_output',
     }
     assert required_lm <= lm.keys(), (rank, sorted(required_lm - lm.keys()))
@@ -116,14 +119,24 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
     draft_normalized = load(lm_root, lm, 'layer0.attention.qkv_pre_process').reshape(8, -1)
     assert draft_projection.shape[1] == draft_normalized.shape[1] == 1536
     sg_projection = load(sg_root, sg, 'layer0.attention.qkv_projection')
+    flattened = load(lm_root, lm, 'layer0.attention.flattened_kv')
+    sg_prompt_k = load(sg_root, sg, 'context.prompt.layer0.cache_k')
+    sg_prompt_v = load(sg_root, sg, 'context.prompt.layer0.cache_v')
+    sg_block_k = load(sg_root, sg, 'layer0.attention.k_rotated').reshape(8, 2, 128)
+    sg_block_v = sg_projection[:, 1280:1536].reshape(8, 2, 128)
+    sg_flat_k = np.concatenate([sg_prompt_k, sg_block_k], axis=0).transpose(1, 0, 2)
+    sg_flat_v = np.concatenate([sg_prompt_v, sg_block_v], axis=0).transpose(1, 0, 2)
+    key_count = sg_flat_k.shape[1]
     pairs = {
-        'context.k_projection': (prompt[:, 1024:1280], load(sg_root, sg, 'context.prompt.layer0.k_projection')),
+        'context.k_projection': (prompt[:, 1024:1280], reorder_rope(load(sg_root, sg, 'context.prompt.layer0.k_projection'))),
         'context.v_projection': (prompt[:, 1280:1536], load(sg_root, sg, 'context.prompt.layer0.v_projection')),
-        'draft.q_projection': (draft_projection[:, :1024], sg_projection[:, :1024]),
-        'draft.k_projection': (draft_projection[:, 1024:1280], sg_projection[:, 1024:1280]),
+        'draft.q_projection': (draft_projection[:, :1024], reorder_rope(sg_projection[:, :1024])),
+        'draft.k_projection': (draft_projection[:, 1024:1280], reorder_rope(sg_projection[:, 1024:1280])),
         'draft.v_projection': (draft_projection[:, 1280:1536], sg_projection[:, 1280:1536]),
-        'draft.q_normalized': (draft_normalized[:, :1024], load(sg_root, sg, 'layer0.attention.q_normalized')),
-        'draft.k_normalized': (draft_normalized[:, 1024:1280], load(sg_root, sg, 'layer0.attention.k_normalized')),
+        'draft.q_normalized': (draft_normalized[:, :1024], reorder_rope(load(sg_root, sg, 'layer0.attention.q_normalized'))),
+        'draft.k_normalized': (draft_normalized[:, 1024:1280], reorder_rope(load(sg_root, sg, 'layer0.attention.k_normalized'))),
+        'draft.cache_k': (flattened[:, 0, :key_count, :], reorder_rope(sg_flat_k)),
+        'draft.cache_v': (flattened[:, 1, :key_count, :], sg_flat_v),
         'draft.core_output': (
             load(lm_root, lm, 'layer0.attention.core_output'),
             load(sg_root, sg, 'layer0.attention.core_output'),

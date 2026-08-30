@@ -1412,7 +1412,8 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
             params.trace_qkv_projection = "layer0.attention.qkv_projection";
             params.trace_qkv_pre        = "layer0.attention.qkv_pre_process";
             params.trace_qkv_post       = "layer0.attention.qkv_post_process";
-            params.trace_attention = "layer0.attention.core_output";
+            params.trace_flattened_kv   = "layer0.attention.flattened_kv";
+            params.trace_attention      = "layer0.attention.core_output";
         }
         attention_.Forward(std::move(params));
         report_layer(i, ".attention.wo_local", attn_output);

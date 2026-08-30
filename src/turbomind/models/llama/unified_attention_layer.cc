@@ -1432,6 +1432,9 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                 else {
                     invokeFlattenKV_v2_(params, d.prefill.k_sum);
                     TM_CUDA_CHECK(cudaGetLastError());
+                    if (p.trace_fn && p.trace_flattened_kv) {
+                        p.trace_fn(p.trace_context, p.trace_flattened_kv, tmp_kv);
+                    }
                     dispatchAttention(params);
                 }
                 TM_CUDA_CHECK(cudaGetLastError());
