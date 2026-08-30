@@ -248,7 +248,19 @@ __global__ void __launch_bounds__(BLOCK_DIM) fused_conv1d_batched_kernel_v2(T*  
                                                                             int          num_ch_tiles,
                                                                             uint8_t*     state_snapshots,
                                                                             int64_t      snapshot_row_stride,
-                                                                            int64_t      snapshot_step_stride)
+                                                                            int64_t      snapshot_step_stride,
+                                                                            float*       prepare_beta,
+                                                                            float*       prepare_g,
+                                                                            const T*     prepare_A_log,
+                                                                            const T*     prepare_dt_bias,
+                                                                            int          prepare_mode,
+                                                                            int          prepare_token_num,
+                                                                            int          prepare_key_dim,
+                                                                            int          prepare_value_heads,
+                                                                            int          prepare_value_gate_offset,
+                                                                            int          prepare_decay_gate_offset,
+                                                                            int          prepare_gate_stride,
+                                                                            float        prepare_epsilon)
 {
     static_assert(BLOCK_DIM * CHANNELS_PER_THREAD > 0);
 
@@ -260,7 +272,9 @@ __global__ void __launch_bounds__(BLOCK_DIM) fused_conv1d_batched_kernel_v2(T*  
 
     __shared__ int  s_work_id;
     __shared__ int4 s_batch_info;
-    int             b_start = 0;
+    extern __shared__ char dynamic_shared[];
+    T*                    norm_shared = reinterpret_cast<T*>(dynamic_shared);
+    int                   b_start     = 0;
 
     while (true) {
         if (threadIdx.x == 0)
@@ -385,6 +399,41 @@ __global__ void __launch_bounds__(BLOCK_DIM) fused_conv1d_batched_kernel_v2(T*  
                         out_vals[ch] = static_cast<T>(acc[ch] / (1.0f + expf(-acc[ch])));
                     }
 
+                    if (prepare_mode >= 2 && ch_tile * BLOCK_DIM * CHANNELS_PER_THREAD < 2 * prepare_key_dim) {
+                        // Preserve the standalone kernel's FP16 boundary and
+                        // exact lane-wise reduction order. Each 1024-channel
+                        // tile contains eight aligned 128-wide Q or K heads.
+                        T* tile = norm_shared + tok * BLOCK_DIM * CHANNELS_PER_THREAD;
+                        Store(tile + threadIdx.x * CHANNELS_PER_THREAD, out_vals);
+                        __syncthreads();
+                        const int lane = threadIdx.x % WARP_SIZE;
+                        const int warp = threadIdx.x / WARP_SIZE;
+                        PRAGMA_UNROLL
+                        for (int group = 0; group < 2; ++group) {
+                            const int head = warp + group * (BLOCK_DIM / WARP_SIZE);
+                            T*        ptr  = tile + head * 128;
+                            float     values[4];
+                            float     sum = 0.f;
+                            PRAGMA_UNROLL
+                            for (int i = 0; i < 4; ++i) {
+                                const int d = lane + i * WARP_SIZE;
+                                values[i]   = static_cast<float>(ptr[d]);
+                                sum += values[i] * values[i];
+                            }
+                            PRAGMA_UNROLL
+                            for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+                                sum += __shfl_xor_sync(0xffffffff, sum, mask);
+                            }
+                            const float inv = rsqrtf(sum + prepare_epsilon);
+                            PRAGMA_UNROLL
+                            for (int i = 0; i < 4; ++i) {
+                                const int d = lane + i * WARP_SIZE;
+                                ptr[d]     = T(values[i] * inv);
+                            }
+                        }
+                        __syncthreads();
+                        Load(out_vals, tile + threadIdx.x * CHANNELS_PER_THREAD);
+                    }
                     Store(out + (seq_off + t_local_start + tok) * conv_dim + c_base, out_vals);
 
                     // Verification needs the recurrent frontier at every
@@ -418,6 +467,29 @@ __global__ void __launch_bounds__(BLOCK_DIM) fused_conv1d_batched_kernel_v2(T*  
                 }
             }
         }
+
+        if (prepare_mode >= 1 && ch_tile == 0 && t_tile == 0) {
+            const int index = threadIdx.x;
+            const int total = prepare_token_num * prepare_gate_stride;
+            if (index < total) {
+                const int token = index / prepare_gate_stride;
+                const int head  = index % prepare_gate_stride;
+                if (head < prepare_value_heads) {
+                    const float b_value = static_cast<float>(
+                        in[token * in_stride + prepare_value_gate_offset + head]);
+                    const float a_value = static_cast<float>(
+                        in[token * in_stride + prepare_decay_gate_offset + head]);
+                    prepare_beta[index] = 1.f / (1.f + expf(-b_value));
+                    const float x = a_value + static_cast<float>(prepare_dt_bias[head]);
+                    const float softplus = x > 20.f ? x : log1pf(expf(x));
+                    prepare_g[index] = -expf(static_cast<float>(prepare_A_log[head])) * softplus;
+                }
+                else {
+                    prepare_beta[index] = 0.f;
+                    prepare_g[index]    = 0.f;
+                }
+            }
+        }
     }
 }
 
@@ -436,7 +508,8 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out_,
                            cudaStream_t          stream,
                            uint8_t*              state_snapshots,
                            int64_t               snapshot_row_stride,
-                           int64_t               snapshot_step_stride)
+                           int64_t               snapshot_step_stride,
+                           const FusedGdnPrepareParams* prepare)
 {
     auto& out = out_.get();
 
@@ -460,14 +533,23 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out_,
                 constexpr int kNumTok         = decltype(num_tok_tag)::value;
                 const int     num_token_tiles = (kNumTok == 1) ? total_tokens : total_tokens / kNumTok + batch_size;
                 const int     total_work      = num_token_tiles * num_ch_tiles;
+                const int     prepare_mode    = prepare ? prepare->mode : 0;
+                TM_CHECK(prepare_mode >= 0 && prepare_mode <= 2);
+                if (prepare_mode) {
+                    TM_CHECK(batch_size == 1 && total_tokens == 8 && std::is_same_v<T, half>);
+                    TM_CHECK(conv_dim % ch_per_blk == 0);
+                    TM_CHECK(prepare->key_dim % ch_per_blk == 0);
+                    TM_CHECK(total_tokens * prepare->gate_stride <= threads);
+                }
 
-                auto kernel        = fused_conv1d_batched_kernel_v2<kDConv, kChPerT, threads, kNumTok, T>;
-                int  blocks_per_sm = 1;
-                cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, kernel, threads, 0);
+                auto   kernel       = fused_conv1d_batched_kernel_v2<kDConv, kChPerT, threads, kNumTok, T>;
+                size_t shared_bytes = prepare_mode >= 2 ? size_t(kNumTok) * ch_per_blk * sizeof(T) : 0;
+                int    blocks_per_sm = 1;
+                cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, kernel, threads, shared_bytes);
                 int grid = min(total_work, blocks_per_sm * sm_count);
 
                 cudaMemsetAsync(work_counter, 0, sizeof(int), stream);
-                kernel<<<grid, threads, 0, stream>>>(out.data<T>(),
+                kernel<<<grid, threads, shared_bytes, stream>>>(out.data<T>(),
                                                      in.data<T>(),
                                                      weight.data<T>(),
                                                      bias ? bias.data<T>() : (T*)nullptr,
@@ -485,7 +567,19 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out_,
                                                      num_ch_tiles,
                                                      state_snapshots,
                                                      snapshot_row_stride,
-                                                     snapshot_step_stride);
+                                                     snapshot_step_stride,
+                                                     prepare_mode ? prepare->beta.data<float>() : nullptr,
+                                                     prepare_mode ? prepare->g.data<float>() : nullptr,
+                                                     prepare_mode ? prepare->A_log.data<T>() : nullptr,
+                                                     prepare_mode ? prepare->dt_bias.data<T>() : nullptr,
+                                                     prepare_mode,
+                                                     total_tokens,
+                                                     prepare_mode ? prepare->key_dim : 0,
+                                                     prepare_mode ? prepare->value_heads : 0,
+                                                     prepare_mode ? prepare->value_gate_offset : 0,
+                                                     prepare_mode ? prepare->decay_gate_offset : 0,
+                                                     prepare_mode ? prepare->gate_stride : 0,
+                                                     prepare_mode ? prepare->epsilon : 0.f);
             };
 
             int avg_seq = total_tokens / batch_size;
