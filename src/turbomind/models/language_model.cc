@@ -1386,6 +1386,20 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             Clear(trajectory);
             env.produce("dflash_target_trajectory", std::move(trajectory));
         }
+
+        const char* replay_root = std::getenv("TM_DFLASH_TARGET_MLP_REPLAY_DIR");
+        if (replay_root && replay_root[0] && input_ids.size() == 1000) {
+            const auto path = std::filesystem::path(replay_root) / ("rank-" + std::to_string(tp_rank_) + ".bin");
+            Tensor host{{1, (ssize_t)weights_.hidden_units}, weights_.data_type, kCPU};
+            std::ifstream input{path, std::ios::binary};
+            TM_CHECK(input) << "cannot open target MLP replay row " << path.string();
+            input.read((char*)host.raw_data(), host.byte_size());
+            TM_CHECK(input && input.peek() == std::ifstream::traits_type::eof())
+                << "invalid target MLP replay row " << path.string();
+            Tensor replay{host.layout(), host.dtype(), kDEVICE};
+            Copy(host, replay);
+            env.produce("dflash_target_mlp_replay", std::move(replay));
+        }
     }
 
     env.produce("output_norm_weight", weights_.norm->weight);

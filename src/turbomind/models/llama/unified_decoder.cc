@@ -406,6 +406,32 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
             capture_target_trajectory(4 + layer * 6, local_hidden_states);
         }
 
+        // Diagnostic only: replay SGLang's exact last-row layer-0 MLP input
+        // after native attention/residual execution. FFN execution is
+        // token-independent at inference, so this isolates target-FFN
+        // arithmetic without invalid last-row-only replay of recurrent GDN.
+        if (layer == 0) {
+            if (const auto* replay = args.try_("dflash_target_mlp_replay")) {
+                TM_CHECK_EQ(replay->dtype(), dtype);
+                TM_CHECK_EQ(replay->shape(0), 1);
+                TM_CHECK_EQ(replay->shape(1), (ssize_t)hidden_units_);
+                TM_CHECK_GT(local_token_num, 0);
+                TM_CUDA_CHECK(cudaMemcpyAsync((char*)local_hidden_states.raw_data()
+                                                  + (local_hidden_states.shape(0) - 1)
+                                                        * byte_size(dtype, local_hidden_states.stride(0)),
+                                              replay->raw_data(),
+                                              byte_size(dtype, hidden_units_),
+                                              cudaMemcpyDeviceToDevice,
+                                              stream));
+                capture_target_trajectory(4, local_hidden_states);
+                static bool replay_logged = false;
+                if (!replay_logged) {
+                    replay_logged = true;
+                    TM_LOG_INFO("[DFlash2] target layer-0 MLP input replay active");
+                }
+            }
+        }
+
         ////////////////////////////////////////////
         /// feed-forward network
 
