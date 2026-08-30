@@ -57,9 +57,10 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
 
 - [ ] **Validate draft attention metadata after partial acceptance.**
   - Classification: strongest unconfirmed lifecycle hypothesis.
-  - Assert for every row that the live draft key span equals zero-based committed tip plus one committed token plus block size.
+  - Assert for every row that the live draft key span equals the published committed sequence length plus block size.
   - Control: rebuild DFlash Setup/Prepare metadata after Rollback and compare candidates and acceptance.
-  - A TurboMind-only one-build control is available behind `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=1`. The first GPU assertion exposed an off-by-one in the experiment itself: the published frontier is a zero-based tip while key span is a token count. Commit `7f4ab2cc` corrected the contract to `committed_tip + 1 + block_size`; corrected GPU qualification is pending.
+  - A TurboMind-only one-build control is available behind `TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK=1`. The assertion must arm only after Rollback because initial Setup and the rollback-published frontier are different lifecycle boundaries.
+  - A `length + 1 + block_size` probe appeared to raise commit length from 2.631 to 2.716, but the live `cu_k_len` assertion proved it one token too long (1014 expected versus 1013 live). That gain is invalid. Correct `length + block_size` qualification is pending.
   - Done when: metadata is refreshed correctly or the control falsifies this cause.
 
 - [x] **Add first-block tensor parity against SGLang.**
