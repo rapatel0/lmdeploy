@@ -10,7 +10,10 @@ started=0
 if [ "${REUSE_WHEEL:-0}" != 1 ]; then
   rm -f /wheels/lmdeploy-*.whl
   started=$(date +%s)
-  bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || { tail -100 "${RESULTS}/build.log"; exit 2; }
+  bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || {
+    tail -100 "${RESULTS}/build.log"
+    exit 2
+  }
 fi
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 [ -n "${WHEEL}" ]
