@@ -1462,7 +1462,7 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         Tensor host_activation{activation.layout(), activation.dtype(), kCPU};
         TM_CHECK_EQ(target_hidden.shape(0), 1000);
         TM_CHECK_EQ(target_hidden.shape(1), (ssize_t)weights_.dflash->target_layer_ids.size() * weights_.hidden_units);
-        Tensor target_feature_row = target_hidden.slice({999, 0}, {1000, -1});
+        Tensor target_feature_row = target_hidden.slice({999, 0}, {1, -1});
         Tensor host_target_features{target_feature_row.layout(), target_feature_row.dtype(), kCPU};
         Copy(trajectory, host_trajectory);
         Copy(activation, host_activation);
