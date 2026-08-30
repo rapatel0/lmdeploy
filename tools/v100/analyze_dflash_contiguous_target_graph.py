@@ -6,25 +6,30 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from pathlib import Path
+
+COMMIT_RE = re.compile(r"final commit length (?P<commit>[0-9.]+), raw (?P<raw>[0-9.]+) over (?P<steps>\d+)")
 
 
 def cycle(root: Path, name: str) -> dict[str, float]:
     try:
         data = json.loads((root / f"{name}.json").read_text())
-        status = data["mtp_status"]
-        steps = int(status["verification_steps"])
-        committed = int(status["committed_tokens"])
-        elapsed = sum(float(trial["elapsed_s"]) for trial in data["trials"])
-        trials = len(data["trials"])
         decode = float(data["mean_decode_tok_s"])
+        matches = list(COMMIT_RE.finditer((root / f"{name}.log").read_text(errors="replace")))
+        if not matches:
+            raise ValueError("missing acceptance summary")
+        commit = float(matches[-1].group("commit"))
+        raw = float(matches[-1].group("raw"))
+        steps = int(matches[-1].group("steps"))
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         raise RuntimeError(f"cannot parse {name} benchmark") from error
     return {
         "decode_tok_s": decode,
-        "commit_length": committed / steps,
+        "commit_length": commit,
+        "raw_length": raw,
         "verification_steps": steps,
-        "normalized_cycle_ms": elapsed * 1000.0 * trials / steps,
+        "normalized_cycle_ms": commit / decode * 1000.0,
     }
 
 
