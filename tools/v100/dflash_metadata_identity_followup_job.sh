@@ -19,7 +19,13 @@ common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
     --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01)
 
 for arm in legacy rebuild; do
-    if [ "${arm}" = rebuild ]; then rebuild=1; assert=1; else rebuild=0; assert=0; fi
+    if [ "${arm}" = rebuild ]; then
+        rebuild=1
+        assert=1
+    else
+        rebuild=0
+        assert=0
+    fi
     for trial in 1 2 3; do
         log="${RESULTS}/${arm}-${trial}.log"
         echo "=== ${arm} identity trial ${trial} ==="
