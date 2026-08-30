@@ -302,6 +302,14 @@ Five-trial 1K cycle normalization improved from 42.69 ms flattened and 41.63 ms 
 
 At 8K, equal commit length 2.750 produced 69.17 versus 44.67 ms normalized cycles. At 25K, equal commit length 3.812 produced 131.27 versus 52.31 ms. This is the first structural attention change to produce a large, context-scaling gain. The grouped path is now default-on, with `TM_DFLASH_GROUPED_PAGED_Q8=0` retaining controls. Artifacts: `/results/20260829_044633-dflash-grouped-paged-q8-82bcb2ed29a4`.
 
+## Compound full-draft CUDA graph retest
+
+The retained full draft-plus-selector graph was retested after stacking every qualified kernel default. Its eligibility contract also requires direct-paged Q=8 draft attention, so both graph-off and graph-on arms enabled `TM_DFLASH_PAGED_Q8=1`; this isolates graph replay rather than attributing its prerequisite to the graph.
+
+All four TP ranks captured and replayed the graph, and the 128-token audited K=0/K=7 identity gate passed. Counter-ordered five-trial normalized cycles were 33.50 and 33.35 ms for controls versus 33.39 and 32.50 ms for graph arms, a pooled 1.44% apparent improvement. The graph arms did not follow a common acceptance trajectory: commit lengths were 2.564 and 2.756. The matched Nsight comparison normalized those trajectories independently and regressed from 37.17 to 37.45 ms, or 0.77%.
+
+The graph therefore does not unlock a hidden compound bottleneck in the current stack. It remains off by default: the unprofiled result is small and inconsistent with the profiled whole-cycle result, while fresh-process acceptance variance accounts for the large raw-throughput spread. Artifact: `/results/20260830_002130-dflash-compound-graph`.
+
 ## SM70 block-FP8 M=8 tile sweep
 
 A one-build experiment registered seven additional V100 `Config_E4M3` kernels around the existing 8x128x64 tile. Exhaustive per-device tuning covered CTA-N 64/128/256 and CTA-K 32/64/128. The three block-FP8 M=8 problems actually dispatched during target verification are gate/up `8x8704x5120`, down `8x5120x4352`, and output projection `8x5120x1536`; QKV and lm_head use other kernel families. The tuner selected 8x128x32 for gate/up, 8x128x128 for down, and 8x64x128 or 8x128x128 for output projection. Occupancy evidence showed zero local-memory spill, 79-152 registers, and two to twelve active CTAs.

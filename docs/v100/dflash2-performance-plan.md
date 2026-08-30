@@ -344,7 +344,7 @@ A6 remains optional until the graph and attention work reaches its measured limi
 ## Immediate execution queue
 
 1. Finish direct paged Q=8 exactness and first-block parity controls.
-2. Run the full draft-plus-selector graph on TP4.
+2. ~~Run the full draft-plus-selector graph on TP4.~~ Completed: all ranks captured and identity passed, but the qualified-default compound retest improved pooled unprofiled cycles only 1.44% and regressed matched Nsight cycles 0.77%; keep it off by default.
 3. Run the read-only SGLang parity harness.
 4. Fix the earliest cross-runtime acceptance mismatch.
 5. Move proposal eligibility, rollback, and publication to device control.
