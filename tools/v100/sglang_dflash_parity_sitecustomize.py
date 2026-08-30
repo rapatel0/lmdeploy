@@ -24,8 +24,10 @@ if _TRACE_ROOT:
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
     try:
         _target_position = int(os.environ.get("SGLANG_DFLASH_TARGET_POSITION", "999"))
+        _target_token_id = int(os.environ.get("SGLANG_DFLASH_TARGET_TOKEN_ID", "-1"))
     except (TypeError, ValueError):
         _target_position = 999
+        _target_token_id = -1
     _target_row = -1
 
     def _armed() -> bool:
@@ -118,8 +120,23 @@ if _TRACE_ROOT:
             stream.write(json.dumps(record, separators=(",", ":")) + "\n")
         _seen.add(name)
 
+    def _target_order() -> list[str]:
+        order = ["target.input.embedding", "target.layer0.attn_norm"]
+        for layer_id in range(6):
+            order.extend(
+                [
+                    f"target.layer{layer_id}.branch",
+                    f"target.layer{layer_id}.post_attn_residual",
+                    f"target.layer{layer_id}.mlp_norm",
+                    f"target.layer{layer_id}.mlp_output",
+                    f"target.layer{layer_id}.output_residual",
+                    f"target.layer{layer_id}.next_attn_norm",
+                ]
+            )
+        return order
+
     def _record_target(name: str, value) -> None:
-        """Retain one last-token target boundary from the audited prefill."""
+        """Retain one target boundary from the requested live position/token."""
         if not _armed() or name in _target_trace:
             return
         tensor = _tensor(value)
@@ -139,6 +156,11 @@ if _TRACE_ROOT:
         row = matrix[_target_row]
         _target_trace_dtypes[name] = 32 if row.dtype == torch.float32 else 16
         _target_trace[name] = row.to(torch.float16).clone()
+        order = _target_order()
+        if all(boundary in _target_trace for boundary in order):
+            _dump("target.trajectory", torch.stack([_target_trace[boundary] for boundary in order]))
+            dtype_codes = [_target_trace_dtypes[boundary] for boundary in order]
+            _dump("target.trajectory_dtypes", torch.tensor(dtype_codes, dtype=torch.int32, device=row.device))
 
     # Trace the target Qwen3.5 trajectory before DFlash context projection.
     # These are external in-memory hooks; the SGLang source remains read-only.
@@ -156,13 +178,16 @@ if _TRACE_ROOT:
             raise RuntimeError("DFLASH target trace received invalid positions") from error
         if len(matches) != 1:
             raise RuntimeError(f"DFLASH target trace expected one position {_target_position}, got {len(matches)}")
-        _target_row = matches[0]
+        candidate_row = matches[0]
         token_id = -1
-        if isinstance(input_ids, torch.Tensor) and input_ids.numel() > _target_row:
+        if isinstance(input_ids, torch.Tensor) and input_ids.numel() > candidate_row:
             try:
-                token_id = int(input_ids.detach().reshape(-1)[_target_row].cpu().item())
+                token_id = int(input_ids.detach().reshape(-1)[candidate_row].cpu().item())
             except (TypeError, ValueError, RuntimeError) as error:
                 raise RuntimeError("DFLASH target trace could not read the frontier token") from error
+        if _target_token_id >= 0 and token_id != _target_token_id:
+            return
+        _target_row = candidate_row
         print(
             f"SGLANG_DFLASH_TARGET_FRONTIER position={_target_position} "
             f"row={_target_row} token_id={token_id} rows={len(host_positions)}",
@@ -226,7 +251,12 @@ if _TRACE_ROOT:
                     _resolve_target_frontier(
                         getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
                     )
-                    if _target_row is None and isinstance(hidden_states, torch.Tensor) and hidden_states.shape[0] > 999:
+                    if (
+                        _target_position == 999
+                        and _target_row < 0
+                        and isinstance(hidden_states, torch.Tensor)
+                        and hidden_states.shape[0] > 999
+                    ):
                         _target_position = 999
                         _target_row = 999
                         print(
@@ -291,7 +321,12 @@ if _TRACE_ROOT:
             _resolve_target_frontier(
                 getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
             )
-            if _target_row is None and isinstance(hidden_states, torch.Tensor) and hidden_states.shape[0] > 999:
+            if (
+                _target_position == 999
+                and _target_row < 0
+                and isinstance(hidden_states, torch.Tensor)
+                and hidden_states.shape[0] > 999
+            ):
                 # The pinned image does not expose input_ids/positions on its
                 # split-prefill ForwardBatch. The audited request is hash-
                 # checked and logged as one uncached 1,008-row prefill, so row
@@ -378,18 +413,7 @@ if _TRACE_ROOT:
     _orig_project = _df.DFlashDraftModel.project_target_hidden
 
     def _traced_project(self, target_hidden):
-        order = ["target.input.embedding", "target.layer0.attn_norm"]
-        for layer_id in range(6):
-            order.extend(
-                [
-                    f"target.layer{layer_id}.branch",
-                    f"target.layer{layer_id}.post_attn_residual",
-                    f"target.layer{layer_id}.mlp_norm",
-                    f"target.layer{layer_id}.mlp_output",
-                    f"target.layer{layer_id}.output_residual",
-                    f"target.layer{layer_id}.next_attn_norm",
-                ]
-            )
+        order = _target_order()
         if all(name in _target_trace for name in order):
             _dump("target.trajectory", torch.stack([_target_trace[name] for name in order]))
             dtype_codes = [_target_trace_dtypes[name] for name in order]
@@ -481,6 +505,26 @@ if _TRACE_ROOT:
     # image has an independent V100 accept-kernel failure, but the first draft
     # block is already complete and is the parity artifact we need.
     import sglang.srt.speculative.dflash_worker_v2 as _dw
+    from sglang.srt.speculative.dflash_info import DFlashVerifyInput as _DFlashVerifyInput
+
+    # The pinned image omitted the scheduler merge contract from its v1 verify
+    # record. Supply the same tensor concatenation semantics in memory so the
+    # single audited request can advance from target prefill into verification.
+    if not hasattr(_DFlashVerifyInput, "merge_batch"):
+
+        def _merge_verify_batch(self, other):
+            self.draft_token = torch.cat([self.draft_token, other.draft_token], dim=0)
+            self.positions = torch.cat([self.positions, other.positions], dim=0)
+            self.custom_mask = None
+            for field in ("selector_candidate_ids", "selector_q_rows"):
+                left = getattr(self, field, None)
+                right = getattr(other, field, None)
+                if left is None or left.numel() == 0:
+                    setattr(self, field, right)
+                elif right is not None and right.numel() > 0:
+                    setattr(self, field, torch.cat([left, right], dim=0))
+
+        _DFlashVerifyInput.merge_batch = _merge_verify_batch
 
     _orig_worker_init = _dw.DFlashWorkerV2.__init__
 

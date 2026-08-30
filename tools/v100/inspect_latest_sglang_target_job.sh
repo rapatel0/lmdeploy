@@ -2,7 +2,10 @@
 # Inspect the latest read-only SGLang target trace after a failed comparison.
 set -euo pipefail
 ROOT="$(find /results -maxdepth 1 -type d -name '*-sglang-dflash-parity-*' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
-[ -n "${ROOT}" ] || { echo 'FAIL: no SGLang parity result' >&2; exit 2; }
+[ -n "${ROOT}" ] || {
+    echo 'FAIL: no SGLang parity result' >&2
+    exit 2
+}
 echo "SGLANG_TARGET_RESULT=${ROOT}"
 echo '=== pinned qwen classes ==='
 PYTHONPATH=/opt/sglang/python python3 - <<'PY' || true
