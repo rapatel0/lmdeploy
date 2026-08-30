@@ -26,9 +26,11 @@ fi
 }
 "${NSYS}" --version
 
-if ! bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1; then
-    grep -aE 'error:|Error [0-9]+' "${RESULTS}/build.log" | head -40
-    exit 2
+if [ "${REUSE_WHEEL:-0}" != 1 ]; then
+    if ! bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1; then
+        grep -aE 'error:|Error [0-9]+' "${RESULTS}/build.log" | head -40
+        exit 2
+    fi
 fi
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
