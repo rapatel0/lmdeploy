@@ -536,7 +536,7 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out_,
                 const int     prepare_mode    = prepare ? prepare->mode : 0;
                 TM_CHECK(prepare_mode >= 0 && prepare_mode <= 2);
                 if (prepare_mode) {
-                    TM_CHECK(batch_size == 1 && total_tokens == 8 && std::is_same_v<T, half>);
+                    TM_CHECK((batch_size == 1 && total_tokens == 8 && std::is_same_v<T, half>));
                     TM_CHECK(conv_dim % ch_per_blk == 0);
                     TM_CHECK(prepare->key_dim % ch_per_blk == 0);
                     TM_CHECK(total_tokens * prepare->gate_stride <= threads);
