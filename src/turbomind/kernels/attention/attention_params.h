@@ -74,6 +74,7 @@ struct AttentionParams {
     // Frozen-KV parallel proposals carry Q rows whose positions begin after
     // the read-only context even though cu_k_len excludes those proposal rows.
     int q_position_shift{};
+    int kv_write_shift{};
     int layer_id;  // for debugging
 
     // rotary embedding

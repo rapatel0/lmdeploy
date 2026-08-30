@@ -163,6 +163,7 @@ void TestBlocks(const thrust::universal_vector<T>& k_cache,        // [B, H, S, 
                                          0,  // cp_rank
                                          1,  // cp_size
                                          seq_len,
+                                         0,  // kv_write_shift
                                          head_num,
                                          head_dim,
                                          batch_size,

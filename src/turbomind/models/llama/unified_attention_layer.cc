@@ -1319,6 +1319,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         params.num_kv_heads     = local_kv_head_num;
         params.size_per_head    = size_per_head;
         params.q_position_shift = p.frozen_kv ? stat.q_max : 0;
+        params.kv_write_shift   = p.kv_write_shift;
 
         double scaling = 1.;
         if (weights.softmax_scale) {  // model predefined softmax scale

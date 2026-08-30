@@ -31,6 +31,7 @@ __global__ void __launch_bounds__(128) ProcessKV_v2(char**          blocks,
                                                     int64_t         stride_h,
                                                     int64_t         stride_s,
                                                     int             cache_block_offset,
+                                                    int             kv_write_shift,
                                                     int             cp_rank,
                                                     FastDivmod      cp_size,
                                                     int             block_seq_len,
@@ -56,7 +57,7 @@ __global__ void __launch_bounds__(128) ProcessKV_v2(char**          blocks,
     const int q_len  = qi_end - qi_beg;
 
     const int k_len       = cu_k_len[batch_idx + 1] - cu_k_len[batch_idx];
-    const int history_len = k_len - q_len;
+    const int history_len = k_len - q_len + kv_write_shift;
 
     if (qi_beg + token_idx >= qi_end) {  // empty tile
         return;
@@ -229,6 +230,7 @@ void invokeProcessKV_v2(char**                 blocks,
                         int                    cp_rank,
                         FastDivmod             cp_size,
                         int                    max_q_len,
+                        int                    kv_write_shift,
                         int                    head_num,
                         int                    head_dim,
                         int                    batch_size,
@@ -267,6 +269,7 @@ void invokeProcessKV_v2(char**                 blocks,
                                                                               stride_h,
                                                                               stride_s,
                                                                               cache_block_offset,
+                                                                              kv_write_shift,
                                                                               cp_rank,
                                                                               cp_size,
                                                                               block_seq_len,
@@ -326,6 +329,7 @@ void invokeProcessKV_v2(char**                 blocks,
                                      int                    cp_rank,                                                   \
                                      FastDivmod             cp_size,                                                   \
                                      int                    max_q_len,                                                 \
+                                     int                    kv_write_shift,                                            \
                                      int                    head_num,                                                  \
                                      int                    head_dim,                                                  \
                                      int                    batch_size,                                                \

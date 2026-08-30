@@ -58,6 +58,7 @@ public:
         int               layer_id;
         float             output_input_scale{1.f};
         bool              kv_only{false};
+        int               kv_write_shift{};
         bool              use_dflash_workspace{false};
         bool              frozen_kv{false};
         Tensor            q_replay{};
