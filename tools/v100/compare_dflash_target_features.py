@@ -68,9 +68,7 @@ def main() -> int:
         for index, layer in enumerate(feature_layers):
             try:
                 delta = lm_value[index].astype(np.float32) - sg_value[index].astype(np.float32)
-                differing = int(
-                    np.count_nonzero(lm_value[index].view(np.uint16) != sg_value[index].view(np.uint16))
-                )
+                differing = int(np.count_nonzero(lm_value[index].view(np.uint16) != sg_value[index].view(np.uint16)))
                 maximum = float(np.max(np.abs(delta)))
                 rms = float(np.sqrt(np.mean(delta * delta, dtype=np.float64)))
             except (TypeError, ValueError, FloatingPointError) as error:

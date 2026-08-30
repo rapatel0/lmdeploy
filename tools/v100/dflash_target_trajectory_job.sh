@@ -65,7 +65,10 @@ while IFS= read -r candidate; do
         break
     fi
 done < <(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace/sglang' -print | sort -r)
-[ -n "${SG_REF}" ] || { echo 'FAIL: no SGLang target prompt-feature trace exists' >&2; exit 4; }
+[ -n "${SG_REF}" ] || {
+    echo 'FAIL: no SGLang target prompt-feature trace exists' >&2
+    exit 4
+}
 python3 /job/compare_dflash_target_features.py \
     --lmdeploy "${RESULTS}/parity/lmdeploy" --sglang "${SG_REF}" \
     --output "${RESULTS}/target_features.json" | tee "${RESULTS}/target_features.log"
