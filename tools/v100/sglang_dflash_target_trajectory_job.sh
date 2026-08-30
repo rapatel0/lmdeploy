@@ -8,12 +8,12 @@ LM_REF="$(find /results -maxdepth 3 -type d -path '*-dflash-target-trajectory-*/
 }
 export LM_DFLASH_PARITY_REF="${LM_REF}"
 export LM_DFLASH_TARGET_TRAJECTORY_REF="${LM_REF}"
-# TurboMind's retained trajectory starts at a target-verification row whose
-# input embedding is exactly checkpoint token 1596. Merged SGLang scheduler
-# batches can repeat/reorder logical positions, so resolve that unique token
-# first and persist the live resolved position in the trace log.
-export SGLANG_DFLASH_TARGET_POSITION=-1
-export SGLANG_DFLASH_TARGET_TOKEN_ID=1596
+# The live ModelRunner probe established that the merged 24-row target
+# verification slab's final row is logical position 1007. TurboMind likewise
+# retains the final verifier row. input_ids is absent at this boundary, so the
+# separately audited checkpoint-token-1596 embedding remains the token proof.
+export SGLANG_DFLASH_TARGET_POSITION=1007
+export SGLANG_DFLASH_TARGET_TOKEN_ID=-1
 # Target boundary hooks need the live eager prefill, not a compiled replay.
 # The generic parity job retains production CUDA graphs by default.
 export SGLANG_PARITY_DISABLE_CUDA_GRAPH=1

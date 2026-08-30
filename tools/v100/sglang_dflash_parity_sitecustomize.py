@@ -156,6 +156,11 @@ if _TRACE_ROOT:
         row = matrix[_target_row]
         _target_trace_dtypes[name] = 32 if row.dtype == torch.float32 else 16
         _target_trace[name] = row.to(torch.float16).clone()
+        print(
+            f"SGLANG_DFLASH_TARGET_BOUNDARY name={name} row={_target_row} "
+            f"rows={matrix.shape[0]} dtype={row.dtype}",
+            flush=True,
+        )
         order = _target_order()
         if all(boundary in _target_trace for boundary in order):
             _dump("target.trajectory", torch.stack([_target_trace[boundary] for boundary in order]))
