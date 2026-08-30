@@ -136,6 +136,26 @@ if _TRACE_ROOT:
             stream.write(json.dumps(record, separators=(",", ":")) + "\n")
         _seen.add(name)
 
+    try:
+        import sglang.srt.speculative.triton_ops.fused_kv_materialize as _fused_kv
+
+        _orig_fused_materialize = _fused_kv.FusedKVMaterializeHelper.materialize
+
+        def _traced_fused_materialize(self, ctx_hidden, positions, write_layer_kv):
+            rows = int(ctx_hidden.shape[0])
+            scope = "prompt" if rows == 1000 else "frontier"
+
+            def _traced_write(layer_idx, cache_k, cache_v):
+                _dump(f"context.{scope}.layer{layer_idx}.cache_k", cache_k)
+                _dump(f"context.{scope}.layer{layer_idx}.cache_v", cache_v)
+                write_layer_kv(layer_idx, cache_k, cache_v)
+
+            return _orig_fused_materialize(self, ctx_hidden, positions, _traced_write)
+
+        _fused_kv.FusedKVMaterializeHelper.materialize = _traced_fused_materialize
+    except (AttributeError, ImportError):
+        pass
+
     def _target_order() -> list[str]:
         order = ["target.input.embedding", "target.layer0.attn_norm"]
         for layer_id in range(6):
@@ -492,13 +512,41 @@ if _TRACE_ROOT:
 
     _orig_init = _df.DFlashDraftModel.__init__
 
+    def _trace_context_boundary(name, full_name, output):
+        if output.ndim == 2 and output.shape[0] == 1000:
+            _dump(full_name, output)
+        _dump(name, output, last_row=True)
+
+    def _trace_layer0_rotary(_module, _args, output):
+        if isinstance(output, (tuple, list)) and len(output) >= 2:
+            _dump("layer0.attention.q_rotated", output[0])
+            _dump("layer0.attention.k_rotated", output[1])
+
     def _traced_init(self, *args, **kwargs):
         _orig_init(self, *args, **kwargs)
-        self.fc.register_forward_hook(lambda _m, _a, out: _dump("context.fc", out, last_row=True))
-        self.hidden_norm.register_forward_hook(lambda _m, _a, out: _dump("context.norm", out, last_row=True))
+        self.fc.register_forward_hook(
+            lambda _m, _a, out: _trace_context_boundary("context.fc", "context.full_fc", out)
+        )
+        self.hidden_norm.register_forward_hook(
+            lambda _m, _a, out: _trace_context_boundary("context.norm", "context.full_norm", out)
+        )
         self.norm.register_forward_hook(lambda _m, _a, out: _dump("block.final_norm", out))
         for index, layer in enumerate(self.layers):
             layer._dflash_trace_name = f"layer{index}"
+            if index == 0:
+                layer.self_attn.qkv_proj.register_forward_hook(
+                    lambda _m, _a, out: _dump("layer0.attention.qkv_projection", out)
+                )
+                layer.self_attn.q_norm.register_forward_hook(
+                    lambda _m, _a, out: _dump("layer0.attention.q_normalized", out)
+                )
+                layer.self_attn.k_norm.register_forward_hook(
+                    lambda _m, _a, out: _dump("layer0.attention.k_normalized", out)
+                )
+                layer.self_attn.rotary_emb.register_forward_hook(_trace_layer0_rotary)
+                layer.self_attn.attn.register_forward_hook(
+                    lambda _m, _a, out: _dump("layer0.attention.core_output", out)
+                )
             layer.register_forward_pre_hook(
                 lambda module, args, i=index: (
                     (

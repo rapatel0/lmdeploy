@@ -1025,6 +1025,9 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
         TM_SCOPE_CALL(linear_.Forward(p.input, *weights.w_qkv, qkv));
 
         qk_norm(qkv, weights);
+        if (p.trace_fn && p.trace_qkv_pre) {
+            p.trace_fn(p.trace_context, p.trace_qkv_pre, qkv);
+        }
     }
     else {
         qkv = forward_mla(p.input, weights);
@@ -1038,6 +1041,12 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
     };
 
     Tensor attn = [&]() -> Tensor { TM_DISPATCH_PRIMARY_DTYPES_RET(qkv.dtype(), invoke); }();
+    if (p.trace_fn && p.trace_qkv_post) {
+        p.trace_fn(p.trace_context, p.trace_qkv_post, qkv);
+    }
+    if (!p.kv_only && p.trace_fn && p.trace_attention) {
+        p.trace_fn(p.trace_context, p.trace_attention, attn);
+    }
 
     // Context materialization for DFlash only needs projected, normalized and
     // rotated K/V in the cache. SGLang uses kv_proj_only here; running full

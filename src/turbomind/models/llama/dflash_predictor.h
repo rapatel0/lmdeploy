@@ -134,6 +134,7 @@ private:
 
     Buffer_<int> SelectCandidatesImpl(const Tensor& block_hidden, const Buffer_<int>& anchors, int phase) const;
     void CaptureParityTensor(const char* name, const Tensor& value) const;
+    void CapturePendingParityTensor(const char* name, const Tensor& value) const;
     void PrepareParityContext(const Tensor& target_hidden,
                               const Tensor& target_trajectory,
                               const Tensor& projected,
@@ -160,6 +161,8 @@ private:
     mutable std::unique_ptr<ParityTrace> parity_trace_;
     mutable bool                         context_replay_consumed_{};
     mutable bool                         context_row_replay_consumed_{};
+    mutable bool                         context_norm_replay_consumed_{};
+    mutable bool                         context_norm_row_replay_consumed_{};
     mutable bool                         draft_attention_input_replay_consumed_{};
     mutable bool                         draft_attention_output_replay_consumed_{};
 };

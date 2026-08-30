@@ -48,6 +48,8 @@ public:
     static constexpr int kMaxKVSplits        = 128;
     static constexpr int kMaxWorkspaceTokens = 4096;
 
+    using TraceFn = void (*)(const void*, const char*, const Tensor&);
+
     struct ForwardParam {
         int               phase;
         Tensor            input;
@@ -57,6 +59,11 @@ public:
         float             output_input_scale{1.f};
         bool              kv_only{false};
         bool              use_dflash_workspace{false};
+        const void*       trace_context{};
+        TraceFn           trace_fn{};
+        const char*       trace_qkv_pre{};
+        const char*       trace_qkv_post{};
+        const char*       trace_attention{};
     };
 
     ~UnifiedAttentionLayer();

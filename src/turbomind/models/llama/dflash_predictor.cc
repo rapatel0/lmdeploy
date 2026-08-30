@@ -177,11 +177,8 @@ struct DFlashPredictor::ParityTrace {
         return "draft";
     }
 
-    void Capture(const char* name, const Tensor& value)
+    void CaptureEntry(const char* name, const Tensor& value)
     {
-        if (!active) {
-            return;
-        }
         TM_CHECK(value.is_contiguous()) << "DFlash parity capture requires contiguous tensors: " << name;
         Entry entry;
         entry.name = name;
@@ -202,6 +199,20 @@ struct DFlashPredictor::ParityTrace {
                                       cudaMemcpyDeviceToHost,
                                       core::Context::stream().handle()));
         entries.push_back(std::move(entry));
+    }
+
+    void Capture(const char* name, const Tensor& value)
+    {
+        if (active) {
+            CaptureEntry(name, value);
+        }
+    }
+
+    void CapturePending(const char* name, const Tensor& value)
+    {
+        if (!completed && !active && context_pending) {
+            CaptureEntry(name, value);
+        }
     }
 
     void Flush()
@@ -597,6 +608,13 @@ void DFlashPredictor::CaptureParityTensor(const char* name, const Tensor& value)
     }
 }
 
+void DFlashPredictor::CapturePendingParityTensor(const char* name, const Tensor& value) const
+{
+    if (parity_trace_) {
+        parity_trace_->CapturePending(name, value);
+    }
+}
+
 void DFlashPredictor::SetupAttention(int phase, TensorMap& env)
 {
     TM_CHECK_GE(attention_phase_base_, 0);
@@ -707,6 +725,40 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
         invokeDFlashRoundBFloat16(normalized, core::Context::stream().handle());
         TM_CUDA_CHECK(cudaGetLastError());
     }
+    const char* norm_replay_path = std::getenv("TM_DFLASH_CONTEXT_NORM_REPLAY_FILE");
+    const bool replay_full_norm = normalized.shape(0) == 1000 && !context_norm_replay_consumed_;
+    const bool replay_frontier_norm =
+        parity_context_armed && normalized.shape(0) == 1 && !context_norm_row_replay_consumed_;
+    if (norm_replay_path && norm_replay_path[0] && (replay_full_norm || replay_frontier_norm)) {
+        TM_CHECK_EQ(normalized.dtype(), kHalf);
+        const size_t expected_bytes = normalized.size() * sizeof(__half);
+        const size_t full_bytes     = 1000 * normalized.shape(1) * sizeof(__half);
+        std::ifstream stream(norm_replay_path, std::ios::binary | std::ios::ate);
+        TM_CHECK(stream.is_open()) << "failed to open DFlash normalized-context replay file: " << norm_replay_path;
+        const auto file_bytes = static_cast<size_t>(stream.tellg());
+        if (replay_full_norm) {
+            TM_CHECK_EQ(file_bytes, expected_bytes);
+            stream.seekg(0, std::ios::beg);
+        }
+        else {
+            TM_CHECK(file_bytes == expected_bytes || file_bytes == full_bytes)
+                << "DFlash normalized frontier replay requires either one row or the full 1000-row context";
+            stream.seekg(file_bytes == full_bytes ? full_bytes - expected_bytes : 0, std::ios::beg);
+        }
+        Tensor host{normalized.shape(), normalized.dtype(), kCPU};
+        stream.read(static_cast<char*>(host.raw_data()), expected_bytes);
+        TM_CHECK(stream.good()) << "failed to read DFlash normalized-context replay file: " << norm_replay_path;
+        Tensor replay_norm{normalized.shape(), normalized.dtype(), kDEVICE};
+        Copy(host, replay_norm);
+        core::Context::stream().Sync();
+        normalized = std::move(replay_norm);
+        context_norm_replay_consumed_ |= replay_full_norm;
+        context_norm_row_replay_consumed_ |= replay_frontier_norm;
+        TM_LOG_INFO("[DFlash2] replaying normalized parity context rows={} from {} bytes={}",
+                    normalized.shape(0),
+                    norm_replay_path,
+                    expected_bytes);
+    }
     PrepareParityContext(*context_input, target_trajectory, projected, normalized);
     return normalized;
 }
@@ -725,8 +777,22 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
         TM_CHECK(layer->attention);
         Tensor discarded = workspace ? workspace->context_attention_outputs.at(i).slice(0, context.shape(0)) :
                                        Tensor{{context.shape(0), hidden_units_}, dtype_, kDEVICE};
-        attention_.Forward(
-            {target_phase, context, discarded, layer->attention.get(), attention_indices_[i], 1.f, true});
+        UnifiedAttentionLayer::ForwardParam params{
+            target_phase, context, discarded, layer->attention.get(), attention_indices_[i], 1.f, true};
+        const std::string trace_prefix = context.shape(0) == 1000 ?
+                                             "context.prompt.layer" + std::to_string(i) :
+                                             "context.frontier.layer" + std::to_string(i);
+        const std::string qkv_pre_name  = trace_prefix + ".qkv_pre_process";
+        const std::string qkv_post_name = trace_prefix + ".qkv_post_process";
+        if (parity_trace_) {
+            params.trace_context = this;
+            params.trace_fn = [](const void* object, const char* name, const Tensor& value) {
+                static_cast<const DFlashPredictor*>(object)->CapturePendingParityTensor(name, value);
+            };
+            params.trace_qkv_pre  = qkv_pre_name.c_str();
+            params.trace_qkv_post = qkv_post_name.c_str();
+        }
+        attention_.Forward(std::move(params));
         TM_CUDA_CHECK(cudaGetLastError());
     }
     static std::atomic<bool> logged{false};
@@ -1310,14 +1376,24 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         report_layer(i, ".attention.conv_side0", attn_input.output);
         Tensor attn_output = layer_workspace ? layer_workspace->attention_output.slice(0, token_num) :
                                                 Tensor{{token_num, hidden_units_}, dtype_, kDEVICE};
-        attention_.Forward({attention_phase,
-                            attn_input.output,
-                            attn_output,
-                            layer->attention.get(),
-                            attention_indices_[i],
-                            1.f / kResidualScale,
-                            false,
-                            true});
+        UnifiedAttentionLayer::ForwardParam params{attention_phase,
+                                                   attn_input.output,
+                                                   attn_output,
+                                                   layer->attention.get(),
+                                                   attention_indices_[i],
+                                                   1.f / kResidualScale,
+                                                   false,
+                                                   true};
+        if (i == 0 && ParityActive()) {
+            params.trace_context = this;
+            params.trace_fn = [](const void* object, const char* name, const Tensor& value) {
+                static_cast<const DFlashPredictor*>(object)->CaptureParityTensor(name, value);
+            };
+            params.trace_qkv_pre  = "layer0.attention.qkv_pre_process";
+            params.trace_qkv_post = "layer0.attention.qkv_post_process";
+            params.trace_attention = "layer0.attention.core_output";
+        }
+        attention_.Forward(std::move(params));
         report_layer(i, ".attention.wo_local", attn_output);
         if (reduce_before_conv) {
             reduce_branch(attn_output);
