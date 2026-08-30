@@ -126,6 +126,7 @@ server_pid=
 
 python3 - "${RESULTS}/trace/sglang" <<'PY'
 import json
+import os
 import pathlib
 import struct
 import sys
@@ -147,8 +148,13 @@ for directory in dirs:
     block_payload = (directory / block_record["file"]).read_bytes()
     assert block_record["dtype"] == "i64" and len(block_payload) == 64
     block_ids = list(struct.unpack("<8q", block_payload))
-    expected_ids = [1144] + [248070] * 7
-    assert block_ids == expected_ids, f"non-audited block IDs in {directory}: {block_ids}"
+    block_index = int(os.environ.get("SGLANG_DFLASH_PARITY_BLOCK_INDEX", "1"))
+    if block_index == 1:
+        expected_ids = [1144] + [248070] * 7
+        assert block_ids == expected_ids, f"non-audited block IDs in {directory}: {block_ids}"
+    else:
+        assert block_ids[0] != 248070 and block_ids[1:] == [248070] * 7, \
+            f"invalid proposal block IDs in {directory}: {block_ids}"
     for record in records:
         data = directory / record["file"]
         assert data.stat().st_size == record["bytes"]

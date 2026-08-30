@@ -25,6 +25,12 @@ if _TRACE_ROOT:
     _ordinal = 0
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
     try:
+        _capture_block_index = max(1, int(os.environ.get("SGLANG_DFLASH_PARITY_BLOCK_INDEX", "1")))
+    except (TypeError, ValueError):
+        _capture_block_index = 1
+    _draft_blocks_seen = 0
+    _capture_enabled = _capture_block_index == 1
+    try:
         _target_position = int(os.environ.get("SGLANG_DFLASH_TARGET_POSITION", "999"))
         _target_token_id = int(os.environ.get("SGLANG_DFLASH_TARGET_TOKEN_ID", "-1"))
     except (TypeError, ValueError):
@@ -35,13 +41,16 @@ if _TRACE_ROOT:
     _target_input_hash = ""
     _target_input_rows = 0
 
+    def _request_armed() -> bool:
+        return not _arm_file or Path(_arm_file).exists()
+
     def _armed() -> bool:
         # SGLang executes synthetic DFlash blocks while warming kernels during
         # server startup. The external client creates this shared marker only
         # after health_generate is ready, immediately before the audited real
         # request. Keeping every hook inert until then prevents a valid-looking
         # trace of dummy token IDs and avoids synchronizing warm-up kernels.
-        return not _arm_file or Path(_arm_file).exists()
+        return _request_armed() and _capture_enabled
 
     def _safe_int(value, default: int) -> int:
         try:
@@ -773,7 +782,7 @@ if _TRACE_ROOT:
         original_forward = self.draft_model_runner.forward
 
         def _traced_draft_forward(forward_batch, *forward_args, **forward_kwargs):
-            global _graph_flushed
+            global _capture_enabled, _draft_blocks_seen, _graph_flushed
             if _armed():
                 # These are the live inputs staged by DFlashWorkerV2 for this
                 # exact audited replay, not CUDA-graph capture placeholders.
@@ -787,7 +796,12 @@ if _TRACE_ROOT:
                     _seen.discard(name)
                     _dump(name, value)
             output = original_forward(forward_batch, *forward_args, **forward_kwargs)
-            if _armed() and _graph_refs and not _graph_flushed and bool(getattr(output, "can_run_graph", False)):
+            if _request_armed():
+                _draft_blocks_seen += 1
+                if _draft_blocks_seen >= _capture_block_index - 1:
+                    _capture_enabled = True
+            if _armed() and _draft_blocks_seen >= _capture_block_index and _graph_refs and not _graph_flushed \
+                    and bool(getattr(output, "can_run_graph", False)):
                 _graph_flushed = True
                 for name, tensor in _graph_refs.items():
                     _dump(name, tensor)
@@ -806,8 +820,11 @@ if _TRACE_ROOT:
 
     def _traced_worker_forward_generation(self, batch, on_publish=None):
         spec_info = getattr(batch, "spec_info", None)
-        if spec_info is None and not batch.forward_mode.is_extend() and not batch.is_extend_in_batch:
-            spec_info = _dw.DFlashDraftInputV2.create_idle_input(device=self.device)
+        if not isinstance(spec_info, _dw.DFlashDraftInputV2) and not batch.forward_mode.is_extend() \
+                and not batch.is_extend_in_batch:
+            retained = getattr(self, "_parity_next_draft", None)
+            spec_info = retained if isinstance(retained, _dw.DFlashDraftInputV2) else \
+                _dw.DFlashDraftInputV2.create_idle_input(device=self.device)
             batch.spec_info = spec_info
         bonus = getattr(spec_info, "bonus_tokens", None)
         if spec_info is not None and isinstance(bonus, torch.Tensor) and bonus.numel() == 0:
@@ -826,6 +843,7 @@ if _TRACE_ROOT:
         next_bonus = getattr(next_draft, "bonus_tokens", None)
         if isinstance(next_bonus, torch.Tensor) and next_bonus.numel():
             self._parity_prefill_bonus = next_bonus.detach().clone()
+            self._parity_next_draft = next_draft
         return result
 
     _dw.DFlashWorkerV2.forward_batch_generation = _traced_worker_forward_generation
