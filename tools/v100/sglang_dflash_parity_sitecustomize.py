@@ -151,9 +151,7 @@ if _TRACE_ROOT:
             return
         host_positions = positions.detach().reshape(-1).cpu().tolist()
         try:
-            matches = [
-                index for index, position in enumerate(host_positions) if int(position) == _target_position
-            ]
+            matches = [index for index, position in enumerate(host_positions) if int(position) == _target_position]
         except (TypeError, ValueError) as error:
             raise RuntimeError("DFLASH target trace received invalid positions") from error
         if len(matches) != 1:
@@ -181,6 +179,23 @@ if _TRACE_ROOT:
 
     _q35.Qwen3_5Model.forward = _traced_target_model_forward
 
+    # ModelRunner.forward is the live target entry even when TorchDynamo has
+    # compiled past the Python Qwen model wrapper. Patch the external class
+    # method before workers are constructed so the audited row is resolved
+    # before target layer hooks execute.
+    import sglang.srt.model_executor.model_runner as _model_runner
+
+    _orig_model_runner_forward = _model_runner.ModelRunner.forward
+
+    def _traced_model_runner_forward(self, forward_batch, *args, **kwargs):
+        if not bool(getattr(self, "is_draft_worker", False)):
+            _resolve_target_frontier(
+                getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
+            )
+        return _orig_model_runner_forward(self, forward_batch, *args, **kwargs)
+
+    _model_runner.ModelRunner.forward = _traced_model_runner_forward
+
     def _tag_target_layer(original_init):
         def wrapped(self, *args, **kwargs):
             original_init(self, *args, **kwargs)
@@ -203,12 +218,8 @@ if _TRACE_ROOT:
 
         return wrapped
 
-    _q35.Qwen3_5LinearDecoderLayer.__init__ = _tag_target_layer(
-        _q35.Qwen3_5LinearDecoderLayer.__init__
-    )
-    _q35.Qwen3_5AttentionDecoderLayer.__init__ = _tag_target_layer(
-        _q35.Qwen3_5AttentionDecoderLayer.__init__
-    )
+    _q35.Qwen3_5LinearDecoderLayer.__init__ = _tag_target_layer(_q35.Qwen3_5LinearDecoderLayer.__init__)
+    _q35.Qwen3_5AttentionDecoderLayer.__init__ = _tag_target_layer(_q35.Qwen3_5AttentionDecoderLayer.__init__)
 
     _orig_target_prepare_attn = _communicator.LayerCommunicator.prepare_attn
 
@@ -406,18 +417,6 @@ if _TRACE_ROOT:
         self._use_triton_prepare_block = False
         self._use_triton_accept_bonus = False
 
-        # The target ModelRunner may replay a compiled model path that bypasses
-        # the Python Qwen model wrapper above. Resolve the audited prompt row
-        # from the live ForwardBatch before entering that compiled path.
-        original_target_forward = self.target_worker.model_runner.forward
-
-        def _traced_target_runner_forward(forward_batch, *forward_args, **forward_kwargs):
-            _resolve_target_frontier(
-                getattr(forward_batch, "input_ids", None), getattr(forward_batch, "positions", None)
-            )
-            return original_target_forward(forward_batch, *forward_args, **forward_kwargs)
-
-        self.target_worker.model_runner.forward = _traced_target_runner_forward
         original_forward = self.draft_model_runner.forward
 
         def _traced_draft_forward(forward_batch, *forward_args, **forward_kwargs):
