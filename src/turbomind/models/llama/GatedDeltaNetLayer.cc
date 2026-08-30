@@ -670,7 +670,7 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
                                             : 0;
     uint8_t* state_snapshots = capture_intermediate ? snapshot_.data() : nullptr;
 
-    const FusedGdnPrepareParams fused_prepare{beta,
+    FusedGdnPrepareParams fused_prepare{beta,
                                                g,
                                                weights.A_log,
                                                weights.dt_bias,

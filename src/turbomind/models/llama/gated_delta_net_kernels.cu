@@ -509,7 +509,7 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out_,
                            uint8_t*              state_snapshots,
                            int64_t               snapshot_row_stride,
                            int64_t               snapshot_step_stride,
-                           const FusedGdnPrepareParams* prepare)
+                           FusedGdnPrepareParams* prepare)
 {
     auto& out = out_.get();
 

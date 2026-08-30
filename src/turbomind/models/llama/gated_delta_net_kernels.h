@@ -50,7 +50,7 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out,
                            uint8_t*              state_snapshots = nullptr,
                            int64_t               snapshot_row_stride = 0,
                            int64_t               snapshot_step_stride = 0,
-                           const FusedGdnPrepareParams* prepare = nullptr);
+                           FusedGdnPrepareParams* prepare = nullptr);
 
 inline void invokeFusedConv1dSiLU(Ref<Tensor>           out,
                                   const Tensor&         in,
