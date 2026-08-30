@@ -2,8 +2,6 @@
 
 #include "src/turbomind/models/ffn_weight.h"
 
-#include <cstdlib>
-
 #include "src/turbomind/core/data_type.h"
 #include "src/turbomind/core/registry.h"
 #include "src/turbomind/kernels/gemm/types.h"
@@ -11,23 +9,11 @@
 
 namespace turbomind {
 
-namespace {
-
-bool UseFusedSilu(const core::FfnConfig& cfg)
-{
-    const char* separate = std::getenv("TM_DFLASH_TARGET_SEPARATE_SILU");
-    const bool  target_qwen35_27b = cfg.hidden_dim == 5120 && cfg.inter_size == 17408 && !cfg.is_expert;
-    return cfg.fuse_silu && static_cast<ActivationType>(cfg.act_type) == ActivationType::kSilu
-           && !(target_qwen35_27b && separate && separate[0] == '1');
-}
-
-}  // namespace
-
 FfnWeight::FfnWeight(const core::FfnConfig& cfg):
     hidden_dim{cfg.hidden_dim},
     inter_size{cfg.inter_size / cfg.tp_size},
     act_type{static_cast<ActivationType>(cfg.act_type)},
-    is_fused_silu{UseFusedSilu(cfg)},
+    is_fused_silu{cfg.fuse_silu && act_type == ActivationType::kSilu},
     is_expert_{cfg.is_expert},
     data_type_{cfg.data_type},
     tp_size{cfg.tp_size},
@@ -40,13 +26,6 @@ void FfnWeight::prepare()
     // Set epilogue on existing w1w3 child if fused silu is active.
     if (w1w3) {
         auto* fused = static_cast<LinearWeight*>(w1w3.get());
-        if (!is_fused_silu && hidden_dim == 5120 && inter_size * tp_size == 17408) {
-            static bool logged = false;
-            if (!logged) {
-                logged = true;
-                TM_LOG_INFO("[DFlash2] target FFN separate SiLU active");
-            }
-        }
         if (is_fused_silu) {
             fused->epilogue = gemm::Epilogue::kGatedSilu;
             // SM90 FP8 fused SiLU quantizes to e4m3 + dynamic group-128 scales in-kernel.
