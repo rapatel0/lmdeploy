@@ -402,7 +402,8 @@ __global__ void __launch_bounds__(BLOCK_DIM) fused_conv1d_batched_kernel_v2(T*  
                     if (prepare_mode >= 2 && ch_tile * BLOCK_DIM * CHANNELS_PER_THREAD < 2 * prepare_key_dim) {
                         // Preserve the standalone kernel's FP16 boundary and
                         // exact lane-wise reduction order. Each 1024-channel
-                        // tile contains eight aligned 128-wide Q or K heads.
+                        // tile contains eight aligned 128-wide Q/K heads; a
+                        // tile may straddle the Q-to-K boundary between heads.
                         T* tile = norm_shared + tok * BLOCK_DIM * CHANNELS_PER_THREAD;
                         Store(tile + threadIdx.x * CHANNELS_PER_THREAD, out_vals);
                         __syncthreads();
@@ -540,7 +541,8 @@ void invokeFusedConv1dSiLU(Ref<Tensor>           out_,
                     // Only Q/K tiles synchronize for fused normalization;
                     // they are full aligned tiles even when the trailing V
                     // channels make conv_dim itself non-divisible.
-                    TM_CHECK(prepare->key_dim % ch_per_blk == 0);
+                    TM_CHECK(prepare->key_dim % 128 == 0);
+                    TM_CHECK(2 * prepare->key_dim % ch_per_blk == 0);
                     TM_CHECK(2 * prepare->key_dim <= conv_dim);
                     TM_CHECK(total_tokens * prepare->gate_stride <= threads);
                 }
