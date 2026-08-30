@@ -619,13 +619,20 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
     TM_CHECK_EQ(d.draft_block_size, block_size);
 
     const auto old_prefill = d.prefill;
-    int        expected_k_sum{};
-    int        expected_k_max{};
+    static const bool anchor_inclusive_frontier = [] {
+        const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
+        return value && value[0] == '1';
+    }();
+    const int frontier_adjust = anchor_inclusive_frontier ? -1 : 0;
+    int       expected_k_sum{};
+    int       expected_k_max{};
     for (int i = 0; i < batch_size; ++i) {
-        TM_CHECK_GE(committed_seq_lens[i], 0);
-        // Rollback publishes committed sequence lengths (token counts), and
-        // the draft appends one complete parallel proposal block.
-        const int expected = committed_seq_lens[i] + block_size;
+        TM_CHECK_GE(committed_seq_lens[i] + frontier_adjust, 0);
+        // The DFlash block includes the freshly generated anchor as row zero.
+        // When the host frontier already counts that anchor, its cache base is
+        // frontier-1 rather than frontier. The legacy control retains the old
+        // frontier+block contract for a one-build A/B.
+        const int expected = committed_seq_lens[i] + frontier_adjust + block_size;
         expected_k_sum += expected;
         expected_k_max = std::max(expected_k_max, expected);
         if (rebuild) {
@@ -648,7 +655,7 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
     if (assert_exact) {
         TM_CHECK_EQ((int)d.draft_k_lens_host.size(), batch_size);
         for (int i = 0; i < batch_size; ++i) {
-            TM_CHECK_EQ(d.draft_k_lens_host[i], committed_seq_lens[i] + block_size)
+            TM_CHECK_EQ(d.draft_k_lens_host[i], committed_seq_lens[i] + frontier_adjust + block_size)
                 << "DFlash draft metadata row " << i << " does not match the post-rollback committed frontier";
         }
         TM_CHECK_EQ(d.decode.n, 0);

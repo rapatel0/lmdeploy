@@ -1841,10 +1841,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     }
     TM_CHECK_EQ(K, weights_.dflash->block_size - 1);
 
-    // Rollback publishes the committed target frontier. Rebuild the shared
-    // key offsets before the next parallel draft block.
     Buffer_<int> k_offsets = env.at("k_offsets").buffer();
-    PrefixSum(sequence_length_.front().data<int>(), bsz, k_offsets.data(), core::Context::stream().handle());
 
     static const bool legacy_frontier_readback = [] {
         const char* value = std::getenv("TM_DFLASH_LEGACY_FRONTIER_READBACK");
@@ -1870,6 +1867,28 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
             TM_LOG_WARNING("[DFlash2] missing host frontier; using legacy device readback");
         }
     }
+    static const bool anchor_inclusive_frontier = [] {
+        const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
+        return value && value[0] == '1';
+    }();
+    // The proposal block contains the freshly generated anchor as row zero.
+    // The published frontier already counts that token, so the block's cache
+    // base is frontier-1. Build the exact cumulative offsets from the same
+    // host frontier used by metadata validation instead of advancing the
+    // device sequence length from a different lifecycle boundary.
+    if (anchor_inclusive_frontier) {
+        Buffer_<int> offsets_host{bsz + 1, kCPU};
+        offsets_host[0] = 0;
+        for (int i = 0; i < bsz; ++i) {
+            TM_CHECK_GT((*tips)[i], 0);
+            offsets_host[i + 1] = offsets_host[i] + (*tips)[i] - 1;
+        }
+        Copy(offsets_host, k_offsets);
+    }
+    else {
+        PrefixSum(sequence_length_.front().data<int>(), bsz, k_offsets.data(), core::Context::stream().handle());
+    }
+
     static const bool rebuild_dflash_metadata = [] {
         const char* value = std::getenv("TM_DFLASH_REBUILD_METADATA_AFTER_ROLLBACK");
         return !value || value[0] != '0';
@@ -1880,7 +1899,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     }();
     const bool after_rollback = std::any_of(
         d.num_drafts.begin(), d.num_drafts.end(), [](int num_drafts) { return num_drafts > 0; });
-    const bool rebuild_this_step = rebuild_dflash_metadata && after_rollback;
+    const bool rebuild_this_step = anchor_inclusive_frontier || (rebuild_dflash_metadata && after_rollback);
     // The contract under test is the post-rollback refresh. Initial Setup
     // metadata is constructed from input lengths before this host frontier is
     // published, so asserting it here would compare different lifecycle

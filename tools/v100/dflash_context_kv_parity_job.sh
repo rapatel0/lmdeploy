@@ -65,6 +65,8 @@ printf 'full_context=%s\nfull_norm=%s\nq_replay=%s\nk_replay=%s\n' \
 mkdir -p "$RESULTS/parity"
 TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" \
     TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM" \
+    TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1 \
+    TM_DFLASH_ASSERT_DRAFT_METADATA=1 \
     TM_DFLASH_REDUCE_BEFORE_CONV=1 \
     TM_DFLASH_PARITY_DIR="$RESULTS/parity" \
     python3 /job/bench_decode.py \
@@ -119,7 +121,7 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
     draft_normalized = load(lm_root, lm, 'layer0.attention.qkv_pre_process').reshape(8, -1)
     assert draft_projection.shape[1] == draft_normalized.shape[1] == 1536
     sg_projection = load(sg_root, sg, 'layer0.attention.qkv_projection')
-    flattened = load(lm_root, lm, 'layer0.attention.flattened_kv')
+    flattened_storage = load(lm_root, lm, 'layer0.attention.flattened_kv').reshape(-1)
     sg_prompt_k = load(sg_root, sg, 'context.prompt.layer0.cache_k')
     sg_prompt_v = load(sg_root, sg, 'context.prompt.layer0.cache_v')
     sg_block_k = load(sg_root, sg, 'layer0.attention.k_rotated').reshape(8, 2, 128)
@@ -127,6 +129,7 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
     sg_flat_k = np.concatenate([sg_prompt_k, sg_block_k], axis=0).transpose(1, 0, 2)
     sg_flat_v = np.concatenate([sg_prompt_v, sg_block_v], axis=0).transpose(1, 0, 2)
     key_count = sg_flat_k.shape[1]
+    flattened = flattened_storage[:2 * 2 * key_count * 128].reshape(2, 2, key_count, 128)
     pairs = {
         'context.k_projection': (prompt[:, 1024:1280], reorder_rope(load(sg_root, sg, 'context.prompt.layer0.k_projection'))),
         'context.v_projection': (prompt[:, 1280:1536], load(sg_root, sg, 'context.prompt.layer0.v_projection')),
