@@ -1415,8 +1415,8 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
     static bool target_prompt_trajectory_written = false;
     const char* target_parity_root = std::getenv("TM_DFLASH_TARGET_PARITY_DIR");
     if (!target_prompt_trajectory_written && target_parity_root && target_parity_root[0]
-        && env.try_("dflash_target_trajectory") && d.rows.size() == 1 && d.input_lens[0] == 1000
-        && !unified_decoder_->is_warm_up()) {
+        && env.try_("dflash_target_trajectory") && d.rows.size() == 1
+        && env.at("input_ids").buffer().size() == 1000 && !unified_decoder_->is_warm_up()) {
         const Tensor& trajectory = env.at("dflash_target_trajectory");
         TM_CHECK_EQ(trajectory.dtype(), kHalf);
         TM_CHECK_EQ(trajectory.shape(0), 38);
