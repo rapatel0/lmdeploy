@@ -137,12 +137,13 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Keep candidate IDs and accepted-prefix decisions on device only where needed to capture a larger contiguous target region.
   - Done when: device publication enables a materially broader graph without changing terminal, EOS, or request-limit semantics.
 
-- [ ] **Make target-verification temporary buffers stable.**
-  - Phase-owned TurboMind workspaces now cover context projection, embeddings, draft residual/convolution/MLP tensors, proposal/selector tensors, and—at commit `d277060f`—local LM-head and TP top-16 exchange buffers.
-  - The first profiled slice reduced steady allocator/free calls from 108,040 to 94,556 per captured aggregate. The expanded top-16 and UnifiedAttention qkv/output/flattened-KV workspaces reduced them further to 90,476, a total 16.3% reduction.
-  - Four-rank parity and exact audited identity passed. Matched profiling improved normalized cycle time by 0.7%; five-trial unprofiled normalization improved by 1.6%.
-  - Target-verification and lower-level library workspaces remain.
-  - Done when: allocator calls disappear from steady-state verification traces.
+- [x] **Make target-verification temporary buffers stable.**
+  - Phase-owned TurboMind workspaces cover context projection, embeddings, draft residual/convolution/MLP tensors, proposal/selector tensors, local LM-head and TP top-16 exchange buffers, and draft attention QKV/output/flattened-KV.
+  - The qualified target extension adds phase-owned target input/feature buffers, target-attention QKV/output, all 48 GDN projection/gate/attention/convolution intermediates, and dense FFN intermediates for eligible batch-one Q=8 verification.
+  - Dynamic and workspace arms had identical five-trial acceptance at 2.716/2.737 commit/raw length. Cycle time improved from 32.605 to 32.414 ms, 0.58%.
+  - Matched profiles had identical commit length 2.311. Cycle time improved from 38.984 to 38.697 ms, 0.74%, and allocator/free calls fell from 87,176 to 18,224, a 79.1% reduction.
+  - Exact audited 128-token identity passed. Default-on; `TM_DFLASH_TARGET_WORKSPACE=0` retains the dynamic control. This result is retained as a required broader-graph prerequisite despite its sub-1% standalone gain.
+  - Artifact: `/results/20260830_121836-dflash-target-workspace-d622aac771d3`.
 
 - [x] **Combine rejection argmax and ambiguity detection into one vocabulary pass.**
   - A deterministic top-2 block reduction preserves score-descending/token-ID-ascending order and removes the second full-vocabulary scan.

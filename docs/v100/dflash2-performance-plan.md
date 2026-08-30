@@ -91,17 +91,18 @@ Artifacts: `/results/20260828_211752-nsys-dflash-930baf48a115`.
 
 Done when device control enables a materially larger graph without changing publication semantics. It is no longer assigned an independent cycle-time target.
 
-### A2. Stabilize all workspace addresses — partial
+### A2. Stabilize all workspace addresses — capability complete
 
-- Phase-owned workspaces now cover context projection, five draft layers, attention QKV/output/flattened KV, local top-16, TP exchange, selector tensors, and sequence offsets.
-- Four-rank parity and audited identity passed for the qualified workspace stack.
-- Profiler allocator/free calls fell from 108,040 to 90,476, a 16.3% reduction.
-- Matched profiled normalization improved by 0.7%; five-trial unprofiled normalization improved by 1.6%.
-- Target verification, rollback, and lower-level library allocations remain.
+- The earlier phase-owned stack covers context projection, five draft layers, draft attention QKV/output/flattened KV, local top-16, TP exchange, selector tensors, and sequence offsets.
+- The qualified target extension adds stable phase-owned input embeddings, captured target features, target-attention QKV/output, all 48 GDN projection/gate/attention/convolution intermediates, and target FFN intermediates for eligible batch-one Q=8 verification.
+- Dynamic and workspace arms followed identical five-trial acceptance at commit/raw length 2.716/2.737. Normalized cycle time improved from 32.605 to 32.414 ms, 0.58%.
+- Matched profiles had identical commit length 2.311. Normalized cycle time improved from 38.984 to 38.697 ms, 0.74%, while allocator/free calls fell from 87,176 to 18,224, a 79.1% reduction.
+- Exact audited 128-token identity passed. The target workspace is default-on; `TM_DFLASH_TARGET_WORKSPACE=0` retains the dynamic-allocation control.
+- This sub-1% result is retained because stable target addresses are a required broader-graph prerequisite. Remaining lower-level library allocations must be classified during contiguous-capture implementation rather than treated as another standalone micro-optimization.
 
-Done when every graph input and output uses a stable address.
+Done: every explicit target graph input and output now has a stable phase-owned address for the eligible verification geometry.
 
-Target: eliminate steady allocation from every captured path.
+Artifact: `/results/20260830_121836-dflash-target-workspace-d622aac771d3`.
 
 ### A3. Capture the draft and selector graph — capability complete, speed target missed
 

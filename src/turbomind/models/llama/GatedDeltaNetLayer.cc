@@ -598,7 +598,7 @@ void GatedDeltaNetLayer::Forward(ForwardParam param)
 
     static const bool target_workspace_enabled = [] {
         const char* value = std::getenv("TM_DFLASH_TARGET_WORKSPACE");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     const bool use_target_workspace = target_workspace_enabled && token_num == 8 && phase_data.batch_size == 1
                                       && dtype == kHalf;

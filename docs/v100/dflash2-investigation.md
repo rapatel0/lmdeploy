@@ -400,6 +400,14 @@ The semantic micro-suite passed exact tie ordering, padded-tail exclusion, EOS m
 
 The compact verifier is default-on. `TM_DFLASH_TP_LOCAL_VERIFY_TOP2=0` retains the full-vocabulary TP exchange and rejection control. Artifact: `/results/20260829_232344-dflash-tp-local-top2-4a3faf70212a`.
 
+## Stable target-verification workspaces
+
+The batch-one Q=8 target path now has phase-owned addresses for input embeddings, captured target features, target-attention QKV/output, all 48 GDN all-projection, beta, decay, attention, and convolution intermediates, and dense FFN mix/scales. Prompt prefill, unsupported geometry, and the flag-zero arm retain dynamic allocation. An initial qualification abort was diagnostic-only: workspace tracing called `raw_data()` on intentionally empty optional fused-FFN buffers. Using nullable access fixed the trace without changing inference.
+
+The corrected five-trial arms followed identical acceptance at commit/raw length 2.716/2.737. Decode improved from 83.30 to 83.79 tok/s and normalized cycle time from 32.605 to 32.414 ms, **0.58%**. Matched profiles had identical commit length 2.311; decode improved from 59.28 to 59.72 tok/s and normalized cycle time from 38.984 to 38.697 ms, **0.74%**. Most importantly, allocator/free calls fell from 87,176 to 18,224, **79.1%**. Exact audited 128-token identity passed.
+
+The target workspace is default-on because it is a required contiguous-graph prerequisite despite the sub-1% standalone cycle gain. `TM_DFLASH_TARGET_WORKSPACE=0` retains the dynamic-allocation control. Artifact: `/results/20260830_121836-dflash-target-workspace-d622aac771d3`.
+
 ## Acceptance gap
 
 Current audited comparison:

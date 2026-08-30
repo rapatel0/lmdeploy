@@ -535,7 +535,7 @@ LanguageModel::Impl::Impl(
     const int local_vocab_size = weights_.output ? weights_.output->output_dim : 0;
     static const bool dflash_target_workspace = [] {
         const char* value = std::getenv("TM_DFLASH_TARGET_WORKSPACE");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     const bool allocate_dflash_target = dflash_target_workspace && engine.speculative_algorithm == "dflash2"
                                         && weights_.dflash && engine.max_batch_size == 1
