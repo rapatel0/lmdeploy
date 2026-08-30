@@ -63,7 +63,7 @@ setsid env \
     --model-path "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" \
     --dtype float16 \
     --kv-cache-dtype fp8_e5m2 \
-    --attention-backend flash_attn_v100 \
+    --attention-backend "${SGLANG_PARITY_ATTENTION_BACKEND:-flash_attn_v100}" \
     --linear-attn-prefill-backend triton \
     --linear-attn-decode-backend triton \
     --tensor-parallel-size "${TP:-4}" \

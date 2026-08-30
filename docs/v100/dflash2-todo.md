@@ -69,13 +69,12 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Commit `4fe99716` replayed SGLang's exact target residual inside TurboMind across TP4. Context FC RMS fell from `44.2053` to `0.05926`, and normalized context passed parity at max abs `0.00390625`, RMS `0.000277`.
   - The context projector is functionally aligned after normalization; the dominant context mismatch is upstream target-model numerical trajectory drift. Artifacts: `/results/20260829_032508-sglang-dflash-parity-b753831db680` and `/results/20260829_035037-dflash-context-replay-4fe9971622bc`.
 
-- [x] **Localize the first material target-trajectory amplification.**
-  - Full embedding-through-layer-5 TP4 trajectories localize the first material amplification to target layer 0's dense FFN.
-  - The MLP-normalized input differs from SGLang by at most `0.0004883` with RMS `7.62e-5`, but MLP output RMS is `0.01114` to `0.01309` with maximum error `0.5195` to `0.6641`.
-  - Exact bitwise replay of SGLang's MLP input did not improve output parity and reduced commit length from `2.716` to `2.564`; input replay is rejected as anything except a diagnostic.
-  - Replacing TurboMind's fused target SwiGLU epilogue with a separate FP16 activation worsened output RMS to `0.01531` to `0.01591`, accepted zero drafts on the first request, and collapsed commit length to `1.0`. The arm was removed.
-  - Continue inside dense-FFN projection/quantization arithmetic or weight layout; normalization input and the activation fusion boundary are falsified as sufficient causes.
-  - Artifacts: `/results/20260830_191814-dflash-target-mlp-replay-510d5bd14843` and `/results/20260830_192839-dflash-target-mlp-replay-991657d1f0dc`.
+- [ ] **Localize target drift beginning at the first full-attention layer.**
+  - The apparent layer-0 dense-FFN mismatch was a boundary error: SGLang captured globally reduced row-parallel output while TurboMind captured a local TP shard.
+  - Exact layer-0 MLP input and post-SwiGLU replay left that incomparable row unchanged, but shared post-allreduce residual RMS is only `1.96e-5`, `3.05e-5`, and `5.50e-5` after layers 0, 1, and 2 respectively.
+  - No target down-projection defect is established. The separate-SwiGLU arm accepted zero drafts and was removed.
+  - The eager SGLang trace becomes non-finite at layer 3, the first full-attention layer. Obtain a finite layer-3-plus trace with a safe attention backend, then compare shared post-allreduce residuals rather than local row-parallel outputs.
+  - Artifacts: `/results/20260830_195423-dflash-target-mlp-replay-a93b7e210cdf` and `/results/20260830_200112-dflash-target-mlp-replay-10a7d78d05df`.
 
 - [x] **Validate selector edge-score narrowing semantics.**
   - Explicitly FP16-rounding `predecessor * hidden` produced the same 2.664 commit length and identical acceptance counts as FP32 intermediates.
