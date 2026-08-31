@@ -45,8 +45,13 @@ void invokeAttention(const typename Kernel::ParamType& params, int sm_count, int
     // The grouped Q=8 kernel starts from only two head CTAs. Use every legal
     // 64-token tile pair at 1K so eight 128-token split spans expose 16 CTAs.
     // Existing one-head kernels retain the occupancy cost model.
-    const int split_cnt = Kernel::CTA_H > 1 ? max_split_count :
-                                             GetSplitCount(max_split_count, grid_size, max_active_ctas, sm_count, 8);
+    const bool sglang_dflash_verify_shape = Kernel::kHeadDim == 128 && params.batch_size == 1
+                                            && params.max_q_len == 8 && params.num_heads == 8
+                                            && params.num_kv_heads == 2;
+    const int split_cnt = sglang_dflash_verify_shape ? std::min(8, max_split_count) :
+                          Kernel::CTA_H > 1          ? max_split_count :
+                                                      GetSplitCount(
+                                                          max_split_count, grid_size, max_active_ctas, sm_count, 8);
 
     // printf("max split cnt: %d, split cnt: %d\n", max_split_count, split_cnt);
 
