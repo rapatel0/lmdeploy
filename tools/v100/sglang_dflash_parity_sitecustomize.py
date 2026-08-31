@@ -787,6 +787,26 @@ if _TRACE_ROOT:
 
     _schedule_batch.ScheduleBatch.merge_batch = _trace_safe_schedule_merge
 
+    _orig_compute_verify = _dw.compute_dflash_correct_drafts_and_bonus
+
+    def _traced_compute_verify(*, candidates, target_predict):
+        _dump("verify.candidates", candidates)
+        _dump("verify.target_top1", target_predict)
+        accept_len, bonus = _orig_compute_verify(candidates=candidates, target_predict=target_predict)
+        _dump("verify.accept_len", accept_len)
+        _dump("verify.bonus", bonus)
+        if _armed():
+            print(
+                f"SGLANG_DFLASH_VERIFY candidates={candidates.detach().cpu().reshape(-1).tolist()} "
+                f"target_top1={target_predict.detach().cpu().reshape(-1).tolist()} "
+                f"accept_len={accept_len.detach().cpu().reshape(-1).tolist()} "
+                f"bonus={bonus.detach().cpu().reshape(-1).tolist()}",
+                flush=True,
+            )
+        return accept_len, bonus
+
+    _dw.compute_dflash_correct_drafts_and_bonus = _traced_compute_verify
+
     _orig_worker_init = _dw.DFlashWorkerV2.__init__
 
     def _traced_worker_init(self, *args, **kwargs):
