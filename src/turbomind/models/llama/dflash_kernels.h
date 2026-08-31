@@ -17,8 +17,6 @@ void invokeGatherDFlashPredictions(Tensor& output, const Tensor& block_hidden, i
 
 void invokeDFlashCastToFloat(Tensor& output, const Tensor& input, cudaStream_t stream);
 
-void invokeDFlashCastToHalf(Tensor& output, const Tensor& input, cudaStream_t stream);
-
 /// Round FP16 activations through BF16 while retaining FP16 storage. DFlash2
 /// was trained with BF16 residual/norm boundaries, which affect draft quality.
 void invokeDFlashRoundBFloat16(Tensor& value, cudaStream_t stream);
@@ -48,17 +46,6 @@ void invokeDFlashInitialRMSNorm(Tensor&       output,
 /// Sum rank-major gathered FP16 values in rank order with an FP32 accumulator,
 /// matching SGLang's one-shot custom all-reduce arithmetic.
 void invokeDFlashRankOrderedSum(Tensor& output, const Tensor& gathered, int ranks, cudaStream_t stream);
-
-/// Match SGLang's target-model fused add RMSNorm contract: preserve the
-/// updated residual in FP32 while emitting FP16 normalized activations.
-void invokeDFlashTargetResidualRMSNorm(Tensor&       output,
-                                       Tensor&       residual,
-                                       const Tensor& reduced,
-                                       const Tensor& bias,
-                                       const Tensor& weight,
-                                       float         eps,
-                                       bool          zero_centered,
-                                       cudaStream_t  stream);
 
 void invokeDFlashResidualRMSNorm(Tensor&       output,
                                  Tensor&       residual,
