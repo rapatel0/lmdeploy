@@ -556,29 +556,14 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
                 TM_CHECK_EQ(capture->dtype(), dtype);
                 TM_CHECK_EQ(capture->shape(0), local_token_num);
                 TM_CHECK_EQ(capture->shape(1), (ssize_t)dflash_target_layer_ids_.size() * hidden_units_);
-                if (local_residual.dtype() == dtype) {
-                    TM_CUDA_CHECK(cudaMemcpy2DAsync((char*)capture->raw_data() + feature * row_bytes,
-                                                    byte_size(dtype, capture->stride(0)),
-                                                    local_residual.raw_data(),
-                                                    byte_size(dtype, local_residual.stride(0)),
-                                                    row_bytes,
-                                                    local_token_num,
-                                                    cudaMemcpyDeviceToDevice,
-                                                    stream));
-                }
-                else {
-                    TM_CHECK_EQ(local_residual.dtype(), kFloat32);
-                    Tensor narrowed{local_residual.shape(), dtype, kDEVICE};
-                    invokeDFlashCastToHalf(narrowed, local_residual, stream);
-                    TM_CUDA_CHECK(cudaMemcpy2DAsync((char*)capture->raw_data() + feature * row_bytes,
-                                                    byte_size(dtype, capture->stride(0)),
-                                                    narrowed.raw_data(),
-                                                    byte_size(dtype, narrowed.stride(0)),
-                                                    row_bytes,
-                                                    local_token_num,
-                                                    cudaMemcpyDeviceToDevice,
-                                                    stream));
-                }
+                TM_CUDA_CHECK(cudaMemcpy2DAsync((char*)capture->raw_data() + feature * row_bytes,
+                                                byte_size(dtype, capture->stride(0)),
+                                                local_residual.raw_data(),
+                                                byte_size(dtype, local_residual.stride(0)),
+                                                row_bytes,
+                                                local_token_num,
+                                                cudaMemcpyDeviceToDevice,
+                                                stream));
             }
         }
 
@@ -596,22 +581,12 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
     const bool output_hidden_states = args.try_("output_hidden_states");
 
     Tensor hidden_states{local_hidden_states};
-    Tensor stable_hidden_states;
 
     if (d_comm_ && (output_hidden_states || reuse_hidden_states)) {
-        // The full `hidden_states` buffer is needed for output but it is a ref
-        // into `symm_buf` at this point. The legacy FP16 path reuses the
-        // residual allocation; the FP32-residual parity arm needs a distinct
-        // FP16 owner because Tensor::Copy correctly rejects cross-dtype copies.
-        if (local_residual.dtype() == dtype) {
-            Copy(hidden_states, local_residual);
-            hidden_states = local_residual;
-        }
-        else {
-            stable_hidden_states = Tensor{hidden_states.shape(), dtype, kDEVICE};
-            Copy(hidden_states, stable_hidden_states);
-            hidden_states = stable_hidden_states;
-        }
+        // The full `hidden_states` buffer is needed for output but it's a ref into `symm_buf` atm.
+        // Copy to residual buf so that `symm_buf` may be reused safely later
+        Copy(hidden_states, local_residual);
+        hidden_states = local_residual;
     }
 
     Tensor selected_states;
