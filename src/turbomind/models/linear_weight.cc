@@ -177,8 +177,8 @@ void LinearWeight::prepare()
         const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
         return value && value[0] == '1';
     }();
-    const bool dflash_torch_fp16_shape =
-        (input_dim == 5120
+    const bool dflash_torch_fp16_shape = (input_dim == 768 && output_dim == 5120)
+        || (input_dim == 5120
          && (output_dim == 1280 || output_dim == 1536 || output_dim == 5120 || output_dim == 8704))
         || (input_dim == 4352 && output_dim == 5120);
     if (dflash_qkv_torch_layout && getSMVersion() == 70 && !is_grouped_ && dflash_torch_fp16_shape
