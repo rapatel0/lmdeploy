@@ -53,7 +53,8 @@ K_REPLAY=$RESULTS/k_normalized_tp4.bin
 FLATTENED_KV_REPLAY=$RESULTS/flattened_kv_tp4.bin
 Q_PROJECTION_REPLAY=$RESULTS/q_projection_tp4.bin
 K_PROJECTION_REPLAY=$RESULTS/k_projection_tp4.bin
-read -r LIVE_TILELANG REPLAY_CONTEXT_LEN < <(python3 - "$SG" <<'PY'
+read -r LIVE_TILELANG REPLAY_CONTEXT_LEN < <(
+    python3 - "$SG" <<'PY'
 import glob, json, sys
 roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
 rows = {row['name']: row for row in map(json.loads, open(roots[0] + '/manifest.jsonl'))}
