@@ -1353,6 +1353,30 @@ Buffer_<int> DFlashPredictor::SelectCandidatesImpl(const Tensor&       block_hid
     const int slots      = weights_.block_size - 1;
     const int rows       = batch_size * slots;
 
+    if (const char* path = std::getenv("TM_DFLASH_SELECTOR_ANCHOR_REPLAY_FILE");
+        ParityActive() && !selector_anchor_replay_consumed_ && path && path[0]) {
+        std::ifstream input(path, std::ios::binary | std::ios::ate);
+        TM_CHECK(input.is_open()) << "failed to open DFlash selector anchor replay: " << path;
+        const size_t expected_bytes = anchors.size() * sizeof(int);
+        const size_t file_bytes = static_cast<size_t>(input.tellg());
+        const int tp_rank = ctx_.comm.h_tp_group ? ctx_.comm.h_tp_group->rank() : 0;
+        const int tp_size = ctx_.comm.h_tp_group ? ctx_.comm.h_tp_group->n_ranks() : 1;
+        TM_CHECK(file_bytes == expected_bytes || file_bytes == expected_bytes * tp_size)
+            << "DFlash selector anchor replay must contain one buffer or one buffer per TP rank";
+        input.seekg(file_bytes == expected_bytes ? 0 : tp_rank * expected_bytes, std::ios::beg);
+        std::vector<int> host(batch_size);
+        input.read(reinterpret_cast<char*>(host.data()), expected_bytes);
+        TM_CHECK(input.good()) << "failed to read DFlash selector anchor replay: " << path;
+        TM_CUDA_CHECK(cudaMemcpyAsync(const_cast<int*>(anchors.data()),
+                                      host.data(),
+                                      expected_bytes,
+                                      cudaMemcpyHostToDevice,
+                                      core::Context::stream().handle()));
+        core::Context::stream().Sync();
+        selector_anchor_replay_consumed_ = true;
+        TM_LOG_INFO("[DFlash2] replaying selector anchors from {} bytes={}", path, expected_bytes);
+    }
+
     Workspace* workspace = persistent_workspace_ ? &workspaces_.at(phase) : nullptr;
     Tensor prediction_hidden = workspace ? workspace->prediction_hidden.slice(0, rows) :
                                            Tensor{{rows, hidden_units_}, dtype_, kDEVICE};
