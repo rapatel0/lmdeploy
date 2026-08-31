@@ -1652,6 +1652,12 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                       kResidualScale,
                       i,
                       ".attention.tp_reduced_post_conv");
+        report_layer(i, ".attention.norm_output_native", attn_output);
+        if (i == 0) {
+            replay_parity_tensor("TM_DFLASH_LAYER0_MLP_INPUT_REPLAY_FILE",
+                                 attn_output,
+                                 layer0_mlp_input_replay_consumed_);
+        }
         report_layer(i, ".attention.norm_output", attn_output);
         report_layer(i, ".attention.residual_state", residual);
         hidden = std::move(attn_output);
