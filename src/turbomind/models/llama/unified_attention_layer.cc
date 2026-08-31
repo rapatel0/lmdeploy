@@ -1519,17 +1519,24 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                     std::size_t{2} * local_kv_head_num * context_len * size_per_head;
                                 auto* packed_k = tmp_kv.data<half>() + flattened_elements;
                                 auto* packed_v = packed_k + context_len * local_kv_head_num * size_per_head;
-                                Tensor packed_k_view{
-                                    packed_k, Layout{{context_len, local_kv_head_num, size_per_head}}, kDEVICE};
-                                Tensor packed_v_view{
-                                    packed_v, Layout{{context_len, local_kv_head_num, size_per_head}}, kDEVICE};
-                                Tensor partial_o_view{reinterpret_cast<half*>(params.partial_O),
-                                                      Layout{{40, 16, 8, 128}},
-                                                      kDEVICE};
-                                Tensor partial_lse_view{params.partial_ML, Layout{{40, 16, 8}}, kDEVICE};
-                                Tensor block_table_view{params.split_cnt, Layout{{1, 1024}}, kDEVICE};
-                                Tensor cache_seqlens_view{params.split_cnt + 1024, Layout{{1}}, kDEVICE};
-                                Tensor query_start_loc_view{params.cu_q_len, Layout{{2}}, kDEVICE};
+                                Tensor packed_k_view{(void*)packed_k,
+                                                     Layout{{context_len, local_kv_head_num, size_per_head}},
+                                                     kHalf,
+                                                     kDEVICE};
+                                Tensor packed_v_view{(void*)packed_v,
+                                                     Layout{{context_len, local_kv_head_num, size_per_head}},
+                                                     kHalf,
+                                                     kDEVICE};
+                                Tensor partial_o_view{
+                                    (void*)params.partial_O, Layout{{40, 16, 8, 128}}, kHalf, kDEVICE};
+                                Tensor partial_lse_view{
+                                    (void*)params.partial_ML, Layout{{40, 16, 8}}, kFloat32, kDEVICE};
+                                Tensor block_table_view{
+                                    (void*)params.split_cnt, Layout{{1, 1024}}, kInt32, kDEVICE};
+                                Tensor cache_seqlens_view{
+                                    (void*)(params.split_cnt + 1024), Layout{{1}}, kInt32, kDEVICE};
+                                Tensor query_start_loc_view{
+                                    (void*)params.cu_q_len, Layout{{2}}, kInt32, kDEVICE};
                                 p.trace_fn(p.trace_context, "layer0.attention.tilelang.packed_k", packed_k_view);
                                 p.trace_fn(p.trace_context, "layer0.attention.tilelang.packed_v", packed_v_view);
                                 p.trace_fn(p.trace_context, "layer0.attention.tilelang.partial_o", partial_o_view);
