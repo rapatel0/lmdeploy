@@ -230,7 +230,7 @@ void invokeQkRMSNorm(Tensor&       qkv,
 
     static const bool dflash_qk_norm_warp32 = [] {
         const char* value = std::getenv("TM_DFLASH_QK_NORM_WARP32");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
 
     auto invoke = [&](auto t) {
