@@ -60,6 +60,14 @@ __global__ void DFlashCastToFloat(float* output, const __half* input, int count)
     }
 }
 
+__global__ void DFlashCastToHalf(__half* output, const float* input, int count)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < count) {
+        output[index] = __float2half_rn(input[index]);
+    }
+}
+
 __global__ void DFlashRoundBFloat16Half(__half* value, int count)
 {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -163,6 +171,43 @@ __global__ void DFlashResidualRMSNormHalf(__half*       output,
         const float gamma = __half2float(weight[channel]) + (zero_centered ? 1.f : 0.f);
         const float normalized = RoundBFloat16(residual[index] * scale * gamma);
         output[index] = __float2half_rn(normalized);
+    }
+}
+
+__global__ void DFlashTargetResidualRMSNormHalf(__half*       output,
+                                                float*        residual,
+                                                const __half* reduced,
+                                                const __half* bias,
+                                                const __half* weight,
+                                                int           hidden,
+                                                float         eps,
+                                                bool          zero_centered,
+                                                bool          initialize)
+{
+    const int token = blockIdx.x;
+    __shared__ float sums[256];
+    float sum = 0.f;
+    for (int channel = threadIdx.x; channel < hidden; channel += blockDim.x) {
+        const int index = token * hidden + channel;
+        const float value = __half2float(reduced[index])
+                            + (initialize ? 0.f : residual[index])
+                            + (bias ? __half2float(bias[channel]) : 0.f);
+        residual[index] = value;
+        sum += value * value;
+    }
+    sums[threadIdx.x] = sum;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            sums[threadIdx.x] += sums[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+    const float scale = rsqrtf(sums[0] / hidden + eps);
+    for (int channel = threadIdx.x; channel < hidden; channel += blockDim.x) {
+        const int index = token * hidden + channel;
+        const float gamma = __half2float(weight[channel]) + (zero_centered ? 1.f : 0.f);
+        output[index] = __float2half_rn(residual[index] * scale * gamma);
     }
 }
 
@@ -473,6 +518,18 @@ void invokeDFlashCastToFloat(Tensor& output, const Tensor& input, cudaStream_t s
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
+void invokeDFlashCastToHalf(Tensor& output, const Tensor& input, cudaStream_t stream)
+{
+    TM_CHECK_EQ(output.dtype(), kHalf);
+    TM_CHECK_EQ(input.dtype(), kFloat32);
+    TM_CHECK_EQ(output.size(), input.size());
+    constexpr int threads = 256;
+    const int blocks = (input.size() + threads - 1) / threads;
+    DFlashCastToHalf<<<blocks, threads, 0, stream>>>(
+        (__half*)output.raw_data(), input.data<float>(), input.size());
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
 void invokeDFlashRoundBFloat16(Tensor& value, cudaStream_t stream)
 {
     TM_CHECK_EQ(value.dtype(), kHalf);
@@ -556,6 +613,36 @@ void invokeDFlashResidualRMSNorm(Tensor&       output,
                                                                   eps,
                                                                   zero_centered,
                                                                   reduced_scale);
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
+void invokeDFlashTargetResidualRMSNorm(Tensor&       output,
+                                       Tensor&       residual,
+                                       const Tensor& reduced,
+                                       const Tensor& bias,
+                                       const Tensor& weight,
+                                       float         eps,
+                                       bool          zero_centered,
+                                       bool          initialize,
+                                       cudaStream_t  stream)
+{
+    TM_CHECK_EQ(output.dtype(), kHalf);
+    TM_CHECK_EQ(residual.dtype(), kFloat32);
+    TM_CHECK_EQ(reduced.dtype(), kHalf);
+    TM_CHECK_EQ(weight.dtype(), kHalf);
+    TM_CHECK_EQ(output.ndim(), 2);
+    TM_CHECK_EQ(output.size(), residual.size());
+    TM_CHECK_EQ(output.size(), reduced.size());
+    TM_CHECK_EQ(output.shape(1), weight.size());
+    DFlashTargetResidualRMSNormHalf<<<output.shape(0), 256, 0, stream>>>((__half*)output.raw_data(),
+                                                                        residual.data<float>(),
+                                                                        (const __half*)reduced.raw_data(),
+                                                                        (const __half*)bias.data_or((void*)nullptr),
+                                                                        (const __half*)weight.raw_data(),
+                                                                        output.shape(1),
+                                                                        eps,
+                                                                        zero_centered,
+                                                                        initialize);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 

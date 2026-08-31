@@ -91,7 +91,19 @@ if _TRACE_ROOT:
         except Exception:
             capturing = False
         if capturing:
-            _graph_refs[name] = tensor.detach()
+            # Q/K hook outputs are views that later kernels mutate in place
+            # (qkv -> QK norm -> RoPE). Snapshot only those exact arithmetic
+            # boundaries. Other graph references (notably block.ids) are
+            # intentionally populated later by replay and must stay live.
+            immutable_attention = {
+                "layer0.attention.qkv_projection",
+                "layer0.attention.q_normalized",
+                "layer0.attention.k_normalized",
+                "layer0.attention.q_rotated",
+                "layer0.attention.k_rotated",
+                "layer0.attention.core_output",
+            }
+            _graph_refs[name] = tensor.detach().clone() if name in immutable_attention else tensor.detach()
             return
         if not _armed():
             return

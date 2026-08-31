@@ -15,6 +15,7 @@
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/delta_net_weight.h"
 #include "src/turbomind/models/dflash_weight.h"
+#include "src/turbomind/models/llama/dflash_kernels.h"
 #include "src/turbomind/models/llama/llama_kernels.h"
 #include "src/turbomind/models/mtp_weight.h"
 #include "src/turbomind/models/llama/llama_utils.h"
@@ -270,16 +271,36 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
 
     constexpr auto device = kDEVICE;
 
-    Tensor      local_residual   = args.try_consume("input_embeds");
+    Tensor      decoder_input    = args.try_consume("input_embeds");
     const auto& local_token_nums = args.at("batch").data<BatchData*>()[0]->local_token_num;
     const bool  use_dflash_target_workspace = args.try_("dflash_target_workspace") != nullptr;
 
-    const auto local_token_num  = local_residual.shape(0);
+    const auto local_token_num  = decoder_input.shape(0);
     const auto global_token_num = std::accumulate(local_token_nums.begin(), local_token_nums.end(), ssize_t{});
 
     TM_CHECK_EQ(local_token_num, local_token_nums[attn_dp_rank_]);
 
-    const DataType dtype = local_residual.dtype();
+    const DataType dtype = decoder_input.dtype();
+    static const bool enable_dflash_target_fp32_residual = [] {
+        const char* value = std::getenv("TM_DFLASH_TARGET_FP32_RESIDUAL");
+        return value && value[0] == '1';
+    }();
+    const bool use_dflash_target_fp32_residual = enable_dflash_target_fp32_residual
+                                                  && args.try_("dflash_target_hidden") != nullptr
+                                                  && dtype == kHalf && attn_dp_size_ == 1;
+    Tensor local_residual = use_dflash_target_fp32_residual ?
+                                Tensor{{local_token_num, (ssize_t)hidden_units_}, kFloat32, kDEVICE} :
+                                decoder_input;
+    if (use_dflash_target_fp32_residual) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            TM_LOG_INFO("DFLASH_TARGET_FP32_RESIDUAL_ACTIVE phase={} rows={} hidden={}",
+                        phase,
+                        local_token_num,
+                        hidden_units_);
+        }
+    }
 
     Tensor global_hidden_states;
     if (d_comm_) {
@@ -287,7 +308,7 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
         global_hidden_states = {symm_buf.view(dtype), {global_token_num, (int)hidden_units_}};
     }
     else {
-        global_hidden_states = {{global_token_num, (int)hidden_units_}, local_residual.dtype(), kDEVICE};
+        global_hidden_states = {{global_token_num, (int)hidden_units_}, dtype, kDEVICE};
     }
 
     Tensor local_hidden_states;
@@ -328,15 +349,54 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
                                      cudaMemcpyDeviceToDevice,
                                      stream));
     };
-    capture_target_trajectory(0, local_residual);
+    capture_target_trajectory(0, decoder_input);
+
+    auto target_residual_norm = [&](Tensor&       hidden_states,
+                                    const Tensor& bias,
+                                    const Tensor& weight,
+                                    float         eps,
+                                    bool          zero_centered) {
+        TM_CHECK(use_dflash_target_fp32_residual);
+        if (d_comm_) {
+            d_comm_->AllReduceSum(hidden_states.raw_data(),
+                                  hidden_states.raw_data(),
+                                  hidden_states.size(),
+                                  dtype,
+                                  attn_tp_group_,
+                                  stream);
+            TM_CUDA_CHECK(cudaGetLastError());
+        }
+        invokeDFlashTargetResidualRMSNorm(hidden_states,
+                                           local_residual,
+                                           hidden_states,
+                                           bias,
+                                           weight,
+                                           eps,
+                                           zero_centered,
+                                           false,
+                                           stream);
+    };
 
     const auto& first_norm = *weights.at(0)->attention_norm;
-    invokeRMSNorm(local_hidden_states,
-                  local_residual,
-                  first_norm.weight,
-                  first_norm.norm_eps_,
-                  first_norm.zero_centered_,
-                  stream);
+    if (use_dflash_target_fp32_residual) {
+        invokeDFlashTargetResidualRMSNorm(local_hidden_states,
+                                           local_residual,
+                                           decoder_input,
+                                           {},
+                                           first_norm.weight,
+                                           first_norm.norm_eps_,
+                                           first_norm.zero_centered_,
+                                           true,
+                                           stream);
+    }
+    else {
+        invokeRMSNorm(local_hidden_states,
+                      local_residual,
+                      first_norm.weight,
+                      first_norm.norm_eps_,
+                      first_norm.zero_centered_,
+                      stream);
+    }
 
     TM_CUDA_CHECK(cudaGetLastError());
 
@@ -388,16 +448,25 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
             out_bias = weights.at(layer)->attention->wo->bias;
         }
 
-        AllreduceResidualRMSnorm(global_hidden_states,
-                                 local_residual,
+        if (use_dflash_target_fp32_residual) {
+            target_residual_norm(global_hidden_states,
                                  out_bias,
                                  weights.at(layer)->ffn_norm->weight,
                                  weights.at(layer)->ffn_norm->norm_eps_,
-                                 weights.at(layer)->ffn_norm->zero_centered_,
-                                 local_token_num,
-                                 attn_tp_group_,
-                                 0,
-                                 local_token_nums.data());
+                                 weights.at(layer)->ffn_norm->zero_centered_);
+        }
+        else {
+            AllreduceResidualRMSnorm(global_hidden_states,
+                                     local_residual,
+                                     out_bias,
+                                     weights.at(layer)->ffn_norm->weight,
+                                     weights.at(layer)->ffn_norm->norm_eps_,
+                                     weights.at(layer)->ffn_norm->zero_centered_,
+                                     local_token_num,
+                                     attn_tp_group_,
+                                     0,
+                                     local_token_nums.data());
+        }
 
         TM_DEBUG_TENSOR(local_residual, Concat("residual0", layer), 2);
         TM_DEBUG_TENSOR(local_hidden_states, Concat("norm1", layer), 2);
@@ -477,16 +546,25 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
         const bool scale_zero_centered =
             !last ? weights.at(layer + 1)->attention_norm->zero_centered_ : output_norm_zero_centered_;
 
-        AllreduceResidualRMSnorm(global_hidden_states,
-                                 local_residual,
+        if (use_dflash_target_fp32_residual) {
+            target_residual_norm(global_hidden_states,
                                  {},
                                  scale_weight,
                                  weights.at(layer)->ffn_norm->norm_eps_,
-                                 scale_zero_centered,
-                                 local_token_num,
-                                 0,
-                                 attn_tp_group_,
-                                 local_token_nums.data());
+                                 scale_zero_centered);
+        }
+        else {
+            AllreduceResidualRMSnorm(global_hidden_states,
+                                     local_residual,
+                                     {},
+                                     scale_weight,
+                                     weights.at(layer)->ffn_norm->norm_eps_,
+                                     scale_zero_centered,
+                                     local_token_num,
+                                     0,
+                                     attn_tp_group_,
+                                     local_token_nums.data());
+        }
         TM_CUDA_CHECK(cudaGetLastError());
 
         TM_DEBUG_TENSOR(local_residual, Concat("residual1", layer), 2);
@@ -508,10 +586,17 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
                 TM_CHECK_EQ(capture->dtype(), dtype);
                 TM_CHECK_EQ(capture->shape(0), local_token_num);
                 TM_CHECK_EQ(capture->shape(1), (ssize_t)dflash_target_layer_ids_.size() * hidden_units_);
+                Tensor capture_source = local_residual;
+                Tensor residual_half;
+                if (use_dflash_target_fp32_residual) {
+                    residual_half = {{local_token_num, (ssize_t)hidden_units_}, kHalf, kDEVICE};
+                    invokeDFlashCastToHalf(residual_half, local_residual, stream);
+                    capture_source = residual_half;
+                }
                 TM_CUDA_CHECK(cudaMemcpy2DAsync((char*)capture->raw_data() + feature * row_bytes,
                                                 byte_size(dtype, capture->stride(0)),
-                                                local_residual.raw_data(),
-                                                byte_size(dtype, local_residual.stride(0)),
+                                                capture_source.raw_data(),
+                                                byte_size(dtype, capture_source.stride(0)),
                                                 row_bytes,
                                                 local_token_num,
                                                 cudaMemcpyDeviceToDevice,
