@@ -2,6 +2,7 @@
 #include "src/turbomind/models/language_model.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -258,6 +259,10 @@ struct LanguageModel::Impl {
     size_t spec_ambiguous_steps_      = 0;
     size_t spec_ambiguity_discarded_  = 0;
 
+    /// At the first verifier mismatch, rank of the target token in that
+    /// slot's draft top-16 (index 16 means absent). Diagnostic-only.
+    std::array<size_t, 17> dflash_target_candidate_rank_{};
+
     /// Bounded draft-vs-target alignment dumps in RejectDrafts.
     int reject_dumps_ = 0;
 
@@ -339,6 +344,19 @@ struct LanguageModel::Impl {
                         spec_ambiguous_steps_,
                         spec_ambiguity_discarded_,
                         mtp_full_accepts_);
+        }
+        const size_t ranked = std::accumulate(dflash_target_candidate_rank_.begin(),
+                                              dflash_target_candidate_rank_.end(),
+                                              (size_t)0);
+        if (ranked) {
+            std::ostringstream counts;
+            for (size_t i = 0; i < dflash_target_candidate_rank_.size(); ++i) {
+                if (i) {
+                    counts << ',';
+                }
+                counts << dflash_target_candidate_rank_[i];
+            }
+            TM_LOG_INFO("DFLASH_TARGET_CANDIDATE_RANK total={} ranks_0_15_absent={}", ranked, counts.str());
         }
     }
 
@@ -2414,6 +2432,15 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     Buffer_<int> accepted{bsz, kCPU};
     Buffer_<int> bonus{bsz, kCPU};
     Buffer_<int> ambiguous{bsz, kCPU};
+    static const bool candidate_rank_trace = [] {
+        const char* value = std::getenv("TM_DFLASH_TARGET_CANDIDATE_RANK");
+        return value && value[0] == '1';
+    }();
+    std::optional<Buffer_<int>> candidate_ids;
+    if (candidate_rank_trace && dflash_predictor_) {
+        candidate_ids.emplace((ssize_t)bsz * K * 16, kCPU);
+        Copy(dflash_predictor_->LastCandidateIds(phase, bsz * K), *candidate_ids);
+    }
     Copy(env.at("num_accepted").buffer().slice(0, bsz), accepted);
     Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
     Copy(env.at("bonus_ambiguous").buffer().slice(0, bsz), ambiguous);
@@ -2478,6 +2505,18 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         TM_CHECK_GE(n, 0);
         TM_CHECK_LE(n, d.num_drafts[i]);
         const int verifier_n = n;
+        if (candidate_ids && n < K) {
+            const int target = bonus[i];
+            int rank = 16;
+            const int* slot = candidate_ids->data() + ((ssize_t)i * K + n) * 16;
+            for (int candidate_rank = 0; candidate_rank < 16; ++candidate_rank) {
+                if (slot[candidate_rank] == target) {
+                    rank = candidate_rank;
+                    break;
+                }
+            }
+            ++dflash_target_candidate_rank_[rank];
+        }
 
         // `seq_len` still points at the tip from before this forward, because
         // Update has not run yet for this step.

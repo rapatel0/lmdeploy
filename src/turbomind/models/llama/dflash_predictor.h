@@ -82,6 +82,10 @@ public:
     /// Execute the production draft block and selector, with optional full graph replay.
     Buffer_<int> DraftCandidates(const Buffer_<int>& anchors, int phase, TensorMap& env) const;
 
+    /// Candidate top-16 lattice from the latest proposal in this phase.
+    /// Available on the default persistent-workspace path for diagnostics.
+    Buffer_<int> LastCandidateIds(int phase, int rows) const;
+
     /// Associate the next context projection with an eligible request.
     void ArmParityContext(uint64_t uid) const;
 

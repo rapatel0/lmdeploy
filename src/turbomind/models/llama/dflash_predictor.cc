@@ -1068,6 +1068,16 @@ Buffer_<int> DFlashPredictor::DraftCandidates(const Buffer_<int>& anchors, int p
     return output;
 }
 
+Buffer_<int> DFlashPredictor::LastCandidateIds(int phase, int rows) const
+{
+    TM_CHECK(persistent_workspace_)
+        << "DFlash candidate-rank diagnostics require the default persistent workspace";
+    TM_CHECK_GE(phase, 0);
+    TM_CHECK_LT(phase, (int)workspaces_.size());
+    TM_CHECK_GE(rows, 0);
+    return workspaces_.at(phase).candidate_ids.slice(0, (ssize_t)rows * 16);
+}
+
 Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor&       block_hidden,
                                                 const Buffer_<int>& anchors,
                                                 int                 phase) const
