@@ -30,7 +30,7 @@ TM_DFLASH_TARGET_TRAJECTORY=1 \
     python3 /job/bench_decode.py "${common[@]}" --output-tokens 64 --trials 1 \
     --json-out "${RESULTS}/trace.json" 2>&1 | tee "${RESULTS}/trace.log"
 
-python3 - "${RESULTS}/parity/lmdeploy" <<'PY'
+python3 - "${RESULTS}/parity/target-prompt/lmdeploy" <<'PY'
 import json
 import pathlib
 import sys
@@ -70,7 +70,7 @@ done < <(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace
     exit 4
 }
 python3 /job/compare_dflash_target_features.py \
-    --lmdeploy "${RESULTS}/parity/lmdeploy" --sglang "${SG_REF}" \
+    --lmdeploy "${RESULTS}/parity/target-prompt/lmdeploy" --sglang "${SG_REF}" \
     --output "${RESULTS}/target_features.json" | tee "${RESULTS}/target_features.log"
 
 TM_DFLASH_TARGET_TRAJECTORY=0 \

@@ -1504,7 +1504,12 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         core::Context::stream().Sync();
         TM_CHECK_EQ(host_ids.size(), 1000);
 
-        const auto dir = std::filesystem::path(target_parity_root) / "lmdeploy"
+        // Keep prompt-target arithmetic separate from the proposal-time
+        // DFlash parity writer. Both diagnostics use this environment root,
+        // and the proposal writer owns <root>/lmdeploy for its 102-boundary
+        // manifest. A dedicated subtree prevents its flush from replacing the
+        // audited 1,000-token prompt trajectory.
+        const auto dir = std::filesystem::path(target_parity_root) / "target-prompt" / "lmdeploy"
                          / ("rank-" + std::to_string(tp_rank_) + "-pid-"
                             + std::to_string((long long)getpid()));
         TM_CHECK(!std::filesystem::exists(dir)) << "target trajectory directory already exists: " << dir.string();
