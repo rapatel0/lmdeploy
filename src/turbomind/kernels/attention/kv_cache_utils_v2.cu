@@ -217,7 +217,7 @@ __global__ void __launch_bounds__(128) ProcessKV_v2(char**          blocks,
 
 template<class BlockLayout>
 __global__ void __launch_bounds__(128) ProcessDFlashContextKV(char**          blocks,
-                                                              const half*     k,
+                                                              half*           k,
                                                               const half*     v,
                                                               const half*     norm_weight,
                                                               float           norm_eps,
@@ -261,6 +261,10 @@ __global__ void __launch_bounds__(128) ProcessDFlashContextKV(char**          bl
     }
     __syncthreads();
     normalized[lane] = raw * inv_rms * __half2float(norm_weight[lane]);
+    // The qkv buffer is dead after kv-only materialization. Retain the exact
+    // pre-RoPE FP16 boundary for parity diagnostics while the cache path keeps
+    // using the FP32 value below.
+    k[index] = __float2half_rn(normalized[lane]);
     __syncthreads();
 
     if (lane < 16) {
