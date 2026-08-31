@@ -162,6 +162,17 @@ void LinearWeight::prepare()
         return;
     }
 
+    // No format conversion needed if weight_spec was never set (trivial weights
+    // loaded via commit_tensor, e.g. tok_embeddings, output head).
+    if (weight_format.dtype == DataType{}) {
+        EnsureFloatDtype(weight, data_type);
+        if (weight.dtype() == data_type) {
+            k_desc.type = data_type;
+        }
+        prepared_ = true;
+        return;
+    }
+
     static const bool dflash_qkv_torch_layout = [] {
         const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
         return value && value[0] == '1';
@@ -198,19 +209,6 @@ void LinearWeight::prepare()
                          input_dim,
                          output_dim);
             std::fflush(stderr);
-        }
-        prepared_ = true;
-        return;
-    }
-
-    // No format conversion needed if weight_spec was never set (trivial weights
-    // loaded via commit_tensor, e.g. tok_embeddings, output head). Keep this
-    // after the DFlash torch-layout override because row-parallel Wo weights
-    // use the trivial checkpoint path but still need torch's physical [N,K].
-    if (weight_format.dtype == DataType{}) {
-        EnsureFloatDtype(weight, data_type);
-        if (weight.dtype() == data_type) {
-            k_desc.type = data_type;
         }
         prepared_ = true;
         return;
