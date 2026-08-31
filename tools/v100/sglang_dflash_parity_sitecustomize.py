@@ -112,6 +112,8 @@ if _TRACE_ROOT:
             torch.float16: "f16",
             torch.float32: "f32",
             torch.bfloat16: "bf16",
+            torch.float8_e4m3fn: "u8",
+            torch.float8_e5m2: "u8",
             torch.int32: "i32",
             torch.int64: "i64",
         }.get(tensor.dtype)
@@ -126,6 +128,8 @@ if _TRACE_ROOT:
         filename = f"{ordinal:06d}-{safe}.bin"
         if tensor.dtype == torch.bfloat16:
             payload = tensor.view(torch.uint16).numpy().tobytes(order="C")
+        elif tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            payload = tensor.view(torch.uint8).numpy().tobytes(order="C")
         else:
             payload = tensor.numpy().tobytes(order="C")
         (out / filename).write_bytes(payload)
@@ -565,12 +569,9 @@ if _TRACE_ROOT:
             from sglang.srt.model_executor.forward_context import get_attn_backend
 
             backend = get_attn_backend()
-            metadata = backend.forward_metadata
-            indptr = metadata.window_kv_indptr
-            indices = metadata.window_kv_indices
-            begin = int(indptr[0].item())
-            end = int(indptr[1].item())
-            live_indices = indices[begin:end].to(torch.long)
+            triton_backend = getattr(backend, "_triton", backend)
+            metadata = triton_backend.forward_metadata
+            live_indices = metadata.window_kv_indices.to(torch.long)
             cache_k, cache_v = backend.token_to_kv_pool.get_kv_buffer(module.layer_id)
             _dump("layer0.attention.live_cache_indices", live_indices)
             _dump("layer0.attention.live_cache_k", cache_k[live_indices])
