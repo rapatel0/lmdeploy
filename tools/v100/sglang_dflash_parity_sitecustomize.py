@@ -790,6 +790,7 @@ if _TRACE_ROOT:
         return _orig_unified_attention(query, key, value, output, save_kv_cache, layer_id, **kwargs)
 
     _radix_attention.unified_attention_with_output = _traced_unified_attention
+    _radix_attention.bcg_unified_attention_with_output = _traced_unified_attention
 
     _orig_prepare = _df.DFlashGroupedConv.prepare
 
