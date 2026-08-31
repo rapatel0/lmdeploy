@@ -178,7 +178,8 @@ void LinearWeight::prepare()
         return value && value[0] == '1';
     }();
     if (dflash_qkv_torch_layout && getSMVersion() == 70 && !is_grouped_ && input_dim == 5120
-        && output_dim == 1536 && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
+        && (output_dim == 1536 || output_dim == 8704) && data_type == kHalf && input_dtype() == kHalf
+        && weight.dtype() == kHalf) {
         // torch F.linear keeps [N,K] physical storage and asks cuBLAS for the
         // transposed logical operand. Match that route exactly for DFlash's
         // local QKV matrix instead of packing checkpoint [K,N] storage for a
