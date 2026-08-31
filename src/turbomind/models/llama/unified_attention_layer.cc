@@ -1111,7 +1111,7 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
                                      p.attention_replay.raw_data(),
                                      attn.byte_size(),
                                      cudaMemcpyDeviceToDevice,
-                                     stream_));
+                                     context_.stream));
     }
     if (p.trace_fn && p.trace_qkv_post) {
         p.trace_fn(p.trace_context, p.trace_qkv_post, qkv);
