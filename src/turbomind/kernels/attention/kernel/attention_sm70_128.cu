@@ -14,7 +14,7 @@ namespace turbomind::attention {
 constexpr int kHeadDim = 128;
 constexpr int kCTA_Q   = 64;
 constexpr int kCTA_S   = 64;
-constexpr int kWARP_Q  = 16;
+constexpr int kWARP_Q  = 8;
 constexpr int kStages  = 2;
 
 template<class T, bool Causal = true>
