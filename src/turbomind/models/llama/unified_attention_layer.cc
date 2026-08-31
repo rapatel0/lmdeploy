@@ -1436,9 +1436,13 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
 
     if (d.prefill.n && !is_warm_up_) {
         const int offset = d.decode.n;
-        // We are executing prefill & decoding kernels concurrently, but only have 1 workspace
-        // disable split kv for prefill for now
-        auto params = CreateParams(offset, d.prefill, use_dflash_grouped_paged_q8 ? 8 : 1, pf_stream);
+        // We are executing prefill & decoding kernels concurrently, but only have 1 workspace.
+        // The eligible batch-one DFlash draft owns the same phase workspace as the target Q=8 path
+        // and matches SGLang's eight-way native verifier split contract.
+        const bool use_dflash_draft_split = p.frozen_kv && size_per_head == 128 && d.prefill.q_sum == 8
+                                            && local_head_num == 8 && local_kv_head_num == 2;
+        auto params = CreateParams(
+            offset, d.prefill, (use_dflash_grouped_paged_q8 || use_dflash_draft_split) ? 8 : 1, pf_stream);
         if constexpr (sizeof(T) == 2) {
             if (!p.frozen_kv) {
                 invokeProcessKV_v2_(params);
