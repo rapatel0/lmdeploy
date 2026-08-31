@@ -411,34 +411,17 @@ struct AttentionUniversal {
             last_K  = history_len + min(query_idx + CTA_Q, input_len);
             first_K = max(history_len + query_idx - (params.window_size - 1), 0);
         }
-        const bool use_sglang_dflash_split = kHeadDim == 128 && params.batch_size == 1 && params.token_num == 8
-                                              && params.num_heads == 8 && params.num_kv_heads == 2 && split_cnt > 1
-                                              && params.cp_size == 1;
-        int active_split_cnt = split_cnt;
-        int split_first_K    = first_K;
-        int split_last_K     = last_K;
-        if (use_sglang_dflash_split) {
-            // Match SGLang's grouped SM70 verifier: choose active splits from
-            // the live key count, then balance keys (rather than 64-token
-            // tiles) across those splits.
-            active_split_cnt = min(split_cnt, max(1, cdiv(last_K, 128)));
-            if (split_idx >= active_split_cnt) {
-                return;
-            }
-            const int split_len = cdiv(last_K, active_split_cnt);
-            split_first_K       = split_idx * split_len;
-            split_last_K        = min(split_first_K + split_len, last_K);
-        }
-
         const int last_K_tile =
-            (get_cp_len(split_last_K, 0) - 1) / CTA_S + 1;  // past-the-end index to past-the-end tile index conversion
-        const int first_K_tile = get_cp_len(split_first_K, 0) / CTA_S;
-        const int tile_count   = last_K_tile - first_K_tile;
+            (get_cp_len(last_K, 0) - 1) / CTA_S + 1;  // past-the-end index to past-the-end tile index conversion
 
-        /// FIXME: The legacy scheme can produce fewer splits than expected.
-        const int tile_per_split = use_sglang_dflash_split ? tile_count : cdiv(tile_count, split_cnt);
-        const int iter_begin     = use_sglang_dflash_split ? 0 : tile_per_split * split_idx;
-        const int iter_end       = use_sglang_dflash_split ? tile_count : min(iter_begin + tile_per_split, tile_count);
+        const int first_K_tile = get_cp_len(first_K, 0) / CTA_S;
+
+        const int tile_count = last_K_tile - first_K_tile;
+
+        /// FIXME: This scheme produce splits less than expected
+        const int tile_per_split = cdiv(tile_count, split_cnt);
+        const int iter_begin     = tile_per_split * split_idx;
+        const int iter_end       = min(iter_begin + tile_per_split, tile_count);
 
         if (iter_begin >= iter_end) {
             return;
@@ -472,12 +455,8 @@ struct AttentionUniversal {
         const int offset_Q = history_len + query_idx;
         const int offset_K = (first_K_tile + iter_end - 1) * CTA_S;
 
-        const int min_K = use_sglang_dflash_split ? split_first_K : first_K;
-        // This is for avoiding OOB access only. The SGLang-compatible path
-        // also clamps every partial at its exact token-balanced upper bound.
-        const int max_K = use_sglang_dflash_split ? split_last_K :
-                                                    min(get_cp_len(context_len, params.cp_rank),
-                                                        (first_K_tile + iter_end) * CTA_S);
+        // This is for avoiding OOB access only
+        const int max_K = min(get_cp_len(context_len, params.cp_rank), (first_K_tile + iter_end) * CTA_S);
 
         int tile_iter = iter_end - iter_begin;
 
@@ -503,9 +482,6 @@ struct AttentionUniversal {
                                                - params.cp_size * (offset_K - tile_iter * CTA_S)),
                                        params.cp_size * CTA_S);
             }
-        }
-        if (use_sglang_dflash_split && split_first_K % CTA_S) {
-            mask_iter_front = max(mask_iter_front, 1);
         }
 
 #if 0
@@ -540,7 +516,6 @@ struct AttentionUniversal {
                  frag_L,
                  offset_Q,
                  offset_K,
-                 min_K,
                  max_K,
                  tile_iter,
                  mask_iter_back,
@@ -552,9 +527,7 @@ struct AttentionUniversal {
 
         Impl::Merge(frag_O, frag_M, frag_L, params.inv_sqrt_dh, storage);
 
-        const bool is_last_active_split = !use_sglang_dflash_split ? iter_end == tile_count :
-                                                                    split_idx + 1 == active_split_cnt;
-        if (params.sinks && is_last_active_split && params.cp_rank == 0) {
+        if (params.sinks && iter_end == tile_count && params.cp_rank == 0) {
             Impl::ForeachML(frag_M, frag_L, [&](int hi, int qi, int ri, float& M, float& L) {
                 if (check_h(hi) && M != -std::numeric_limits<float>::infinity()) {
                     auto sink = (float)params.sinks[head_idx + hi];
@@ -563,19 +536,19 @@ struct AttentionUniversal {
             });
         }
 
-        if (split_cnt > 1 && is_last_active_split && head_idx == 0) {
+        if (split_cnt > 1 && iter_end == tile_count && head_idx == 0) {
             // Store actual split count, only used by separate reduction kernel
             for (int ti = threadIdx.x; ti < CTA_Q; ti += kWarpCount * WARP_SIZE) {
                 if (qi_begin + ti < qi_end) {
                     // Publish the number of active partials, including the
                     // split-zero-only case produced by fixed graph geometry
                     // when the live context is shorter than the capture bound.
-                    params.split_cnt[qi_begin + ti] = active_split_cnt;
+                    params.split_cnt[qi_begin + ti] = split_idx + 1;
                 }
             }
         }
 
-        if (active_split_cnt == 1 && iter_begin == 0 && iter_end == tile_count && params.cp_size == 1) {
+        if (iter_begin == 0 && iter_end == tile_count && params.cp_size == 1) {
             StoreO(frag_O, frag_L, qi_begin, qi_end, head_idx, params, storage);
         }
         else {

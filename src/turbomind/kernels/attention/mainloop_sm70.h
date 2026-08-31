@@ -58,7 +58,6 @@ struct Mainloop<arch::Sm70, Impl_> {
                                FragL&         frag_L,
                                int            offset_Q,
                                int            offset_K,
-                               int            min_step,
                                int            max_step,
                                int            tile_iter,
                                int            mask_iter_back,
@@ -105,7 +104,7 @@ struct Mainloop<arch::Sm70, Impl_> {
             }
 
             if constexpr (is_mask) {
-                ApplyMask<Causal>(frag_S, offset_Q, offset_K, min_step, max_step, window_size);
+                ApplyMask<Causal>(frag_S, offset_Q, offset_K, max_step, window_size);
             }
 
             Impl::Softmax<is_mask>(frag_S, frag_M, frag_L, frag_O, qk_scale);
@@ -137,12 +136,11 @@ struct Mainloop<arch::Sm70, Impl_> {
     }
 
     template<bool Causal>
-    __device__ void
-    ApplyMask(FragS& frag_S, int offset_Q, int offset_K, int min_step, int max_step, int window_size)
+    __device__ void ApplyMask(FragS& frag_S, int offset_Q, int offset_K, int max_step, int window_size)
     {
         Impl::ForeachS(frag_S, [&](int hi, int qi, int si, int ri, float& score) {
             const int local_k = offset_K + si;
-            bool      valid   = min_step <= local_k && local_k < max_step;
+            bool      valid   = local_k < max_step;
             if constexpr (Causal) {
                 const int w = (offset_Q + qi) - (local_k * cp_size_ + cp_rank_);
                 valid       = valid && 0 <= w && w < window_size;
