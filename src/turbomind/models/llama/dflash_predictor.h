@@ -190,6 +190,7 @@ private:
     mutable bool                         layer0_mlp_w2_replay_consumed_{};
     mutable bool                         layer0_residual_replay_consumed_{};
     mutable bool                         layer0_mlp_output_replay_consumed_{};
+    mutable bool                         selector_input_replay_consumed_{};
 };
 
 }  // namespace turbomind

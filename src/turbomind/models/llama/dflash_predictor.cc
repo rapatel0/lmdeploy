@@ -1797,6 +1797,8 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         report_layer(i, ".mlp.residual_state", residual);
         hidden = std::move(mlp_output);
     }
+    replay_parity_tensor(
+        "TM_DFLASH_SELECTOR_INPUT_REPLAY_FILE", hidden, selector_input_replay_consumed_);
     return hidden;
 }
 
