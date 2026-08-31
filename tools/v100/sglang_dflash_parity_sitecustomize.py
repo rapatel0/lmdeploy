@@ -566,6 +566,8 @@ if _TRACE_ROOT:
     def _trace_layer0_attention_cache(module, _args, output):
         _dump("layer0.attention.core_output", output)
         try:
+            if torch.cuda.is_current_stream_capturing():
+                return
             from sglang.srt.model_executor.forward_context import get_attn_backend
 
             backend = get_attn_backend()
