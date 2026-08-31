@@ -53,7 +53,7 @@ K_REPLAY=$RESULTS/k_normalized_tp4.bin
 Q_PROJECTION_REPLAY=$RESULTS/q_projection_tp4.bin
 K_PROJECTION_REPLAY=$RESULTS/k_projection_tp4.bin
 if [ "$REPLAY_EXACT_QK" = 1 ]; then
-python3 - "$SG" "$Q_REPLAY" "$K_REPLAY" <<'PY'
+    python3 - "$SG" "$Q_REPLAY" "$K_REPLAY" <<'PY'
 import glob, json, pathlib, sys
 
 def interleave_rope(payload, rows, width):
@@ -76,7 +76,7 @@ for name, output, expected in (
 PY
 fi
 if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
-python3 - "$SG" "$Q_PROJECTION_REPLAY" "$K_PROJECTION_REPLAY" <<'PY'
+    python3 - "$SG" "$Q_PROJECTION_REPLAY" "$K_PROJECTION_REPLAY" <<'PY'
 import glob, json, numpy as np, pathlib, sys
 
 def interleave(value):
@@ -107,11 +107,11 @@ RUN_ENV=(env
     TM_DFLASH_PARITY_DIR="$RESULTS/parity")
 if [ "$REPLAY_EXACT_QK" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY"
-             TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY")
+        TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY")
 fi
 if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE="$Q_PROJECTION_REPLAY"
-             TM_DFLASH_DRAFT_K_PROJECTION_REPLAY_FILE="$K_PROJECTION_REPLAY")
+        TM_DFLASH_DRAFT_K_PROJECTION_REPLAY_FILE="$K_PROJECTION_REPLAY")
 fi
 if [ "$REPLAY_ATTENTION_INPUT" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE="$ATTENTION_INPUT")
