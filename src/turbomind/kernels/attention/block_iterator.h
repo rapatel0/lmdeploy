@@ -39,16 +39,6 @@ struct BlockIterator {
         }
     }
 
-    __device__ void Next()
-    {
-        block_ti_ += CTA_S;
-        if (block_ti_ >= block_head_.block_len()) {
-            block_ti_ -= block_head_.block_len();
-            block_id_ += 1;
-        }
-        block_ = block_ptrs_[block_id_];
-    }
-
     template<int Index>
     __device__ auto OffsetPtr(int offset) const
     {
