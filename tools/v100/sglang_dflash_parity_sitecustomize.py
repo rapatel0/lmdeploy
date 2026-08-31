@@ -610,6 +610,12 @@ if _TRACE_ROOT:
                 lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.norm_output", out)
             )
             layer.mlp.register_forward_hook(lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.w2_reduced", out))
+            layer.mlp.gate_up_proj.register_forward_hook(
+                lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.gate_up", out[0])
+            )
+            layer.mlp.down_proj.register_forward_hook(
+                lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.down_reduced", out[0])
+            )
             if layer.attention_conv is not None:
                 layer.attention_conv._dflash_trace_name = f"layer{index}.attention"
             if layer.mlp_conv is not None:
