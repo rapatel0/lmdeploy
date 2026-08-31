@@ -50,6 +50,7 @@ REPLAY_PROJECTED_QK=${REPLAY_PROJECTED_QK:-0}
 REPLAY_ATTENTION_INPUT=${REPLAY_ATTENTION_INPUT:-0}
 Q_REPLAY=$RESULTS/q_normalized_tp4.bin
 K_REPLAY=$RESULTS/k_normalized_tp4.bin
+FLATTENED_KV_REPLAY=$RESULTS/flattened_kv_tp4.bin
 Q_PROJECTION_REPLAY=$RESULTS/q_projection_tp4.bin
 K_PROJECTION_REPLAY=$RESULTS/k_projection_tp4.bin
 if [ "$REPLAY_EXACT_QK" = 1 ]; then
@@ -74,6 +75,20 @@ for name, output, expected in (
             assert len(payload) == expected, (name, root, len(payload))
             stream.write(interleave_rope(payload, 8, 1024 if 'q_' in name else 256))
 PY
+    python3 - "$SG" "$FLATTENED_KV_REPLAY" <<'PY'
+import glob, json, numpy as np, pathlib, sys
+
+roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
+assert len(roots) == 4
+with open(sys.argv[2], 'wb') as output:
+    for root in roots:
+        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        cache_k = np.fromfile(pathlib.Path(root, records['context.prompt.layer0.cache_k']['file']), dtype='<f2').reshape(1000, 2, 128)
+        cache_v = np.fromfile(pathlib.Path(root, records['context.prompt.layer0.cache_v']['file']), dtype='<f2').reshape(1000, 2, 128)
+        cache_k = cache_k.transpose(1, 0, 2).reshape(2, 1000, 2, 64).transpose(0, 1, 3, 2).copy().reshape(2, 1000, 128)
+        cache_v = cache_v.transpose(1, 0, 2).copy()
+        output.write(np.stack((cache_k, cache_v), axis=1).tobytes())
+PY
 fi
 if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
     python3 - "$SG" "$Q_PROJECTION_REPLAY" "$K_PROJECTION_REPLAY" <<'PY'
@@ -93,8 +108,8 @@ with open(sys.argv[2], 'wb') as q_out, open(sys.argv[3], 'wb') as k_out:
         k_out.write(interleave(value[:, 1024:1280]).tobytes())
 PY
 fi
-printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nattention_input=%s\nreplay_exact_qk=%s\nreplay_projected_qk=%s\nreplay_attention_input=%s\n' \
-    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$ATTENTION_INPUT" "$REPLAY_EXACT_QK" "$REPLAY_PROJECTED_QK" "$REPLAY_ATTENTION_INPUT"
+printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nattention_input=%s\nflattened_kv=%s\nreplay_exact_qk=%s\nreplay_projected_qk=%s\nreplay_attention_input=%s\n' \
+    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$ATTENTION_INPUT" "$FLATTENED_KV_REPLAY" "$REPLAY_EXACT_QK" "$REPLAY_PROJECTED_QK" "$REPLAY_ATTENTION_INPUT"
 
 mkdir -p "$RESULTS/parity"
 RUN_ENV=(env
@@ -107,7 +122,9 @@ RUN_ENV=(env
     TM_DFLASH_PARITY_DIR="$RESULTS/parity")
 if [ "$REPLAY_EXACT_QK" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY"
-        TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY")
+        TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY"
+        TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_FILE="$FLATTENED_KV_REPLAY"
+        TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_CONTEXT_LEN=1000)
 fi
 if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE="$Q_PROJECTION_REPLAY"
@@ -129,6 +146,7 @@ fi
 if [ "$REPLAY_EXACT_QK" = 1 ]; then
     [ "$(grep -c 'TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
     [ "$(grep -c 'TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+    [ "$(grep -c 'TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
 fi
 if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
     [ "$(grep -c 'TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]

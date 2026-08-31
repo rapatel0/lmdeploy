@@ -1651,6 +1651,23 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                 params.q_replay = std::move(q_replay);
                 params.k_replay = std::move(k_replay);
             }
+            if (const char* context_len_value = std::getenv("TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_CONTEXT_LEN");
+                context_len_value && context_len_value[0] &&
+                !draft_attention_flattened_kv_replay_consumed_) {
+                const int context_len = std::stoi(context_len_value);
+                TM_CHECK_GT(context_len, 0);
+                Tensor flattened_kv_replay{{layer->attention->kv_head_num / layer->attention->tp_size,
+                                            2,
+                                            context_len,
+                                            layer->attention->head_dim},
+                                           dtype_,
+                                           kDEVICE};
+                if (replay_parity_tensor("TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_FILE",
+                                         flattened_kv_replay,
+                                         draft_attention_flattened_kv_replay_consumed_)) {
+                    params.flattened_kv_replay = std::move(flattened_kv_replay);
+                }
+            }
             Tensor attention_replay{{token_num, q_width}, dtype_, kDEVICE};
             if (replay_parity_tensor("TM_DFLASH_DRAFT_CORE_OUTPUT_REPLAY_FILE",
                                      attention_replay,

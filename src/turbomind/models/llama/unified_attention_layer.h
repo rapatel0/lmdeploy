@@ -67,6 +67,7 @@ public:
         Tensor            k_projection_replay{};
         Tensor            q_replay{};
         Tensor            k_replay{};
+        Tensor            flattened_kv_replay{};
         Tensor            attention_replay{};
         const void*       trace_context{};
         TraceFn           trace_fn{};

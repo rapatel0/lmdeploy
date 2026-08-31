@@ -1492,6 +1492,20 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                 else {
                     invokeFlattenKV_v2_(params, d.prefill.k_sum);
                     TM_CUDA_CHECK(cudaGetLastError());
+                    if (p.flattened_kv_replay) {
+                        TM_CHECK_EQ(p.flattened_kv_replay.dtype(), tmp_kv.dtype());
+                        TM_CHECK_EQ(p.flattened_kv_replay.ndim(), 4);
+                        TM_CHECK_EQ(p.flattened_kv_replay.shape(0), local_kv_head_num);
+                        TM_CHECK_EQ(p.flattened_kv_replay.shape(1), 2);
+                        TM_CHECK_EQ(p.flattened_kv_replay.shape(2), d.prefill.k_sum);
+                        TM_CHECK_EQ(p.flattened_kv_replay.shape(3), size_per_head);
+                        TM_CHECK_LE(p.flattened_kv_replay.size(), tmp_kv.size());
+                        TM_CUDA_CHECK(cudaMemcpyAsync(tmp_kv.raw_data(),
+                                                      p.flattened_kv_replay.raw_data(),
+                                                      p.flattened_kv_replay.byte_size(),
+                                                      cudaMemcpyDeviceToDevice,
+                                                      pf_stream));
+                    }
                     if (p.trace_fn && p.trace_flattened_kv) {
                         p.trace_fn(p.trace_context, p.trace_flattened_kv, tmp_kv);
                     }
