@@ -1,6 +1,8 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 #pragma once
 
+#include <cublas_v2.h>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -164,7 +166,9 @@ private:
     mutable std::vector<Workspace> workspaces_;
     mutable std::vector<std::unique_ptr<SelectorGraph>> selector_graphs_;
     mutable std::vector<std::unique_ptr<DraftGraph>> draft_graphs_;
-    mutable std::unique_ptr<ParityTrace> parity_trace_;
+    Tensor                                           fused_context_kv_weight_;
+    cublasHandle_t                                   fused_context_kv_cublas_{};
+    mutable std::unique_ptr<ParityTrace>             parity_trace_;
     mutable bool                         context_replay_consumed_{};
     mutable bool                         context_row_replay_consumed_{};
     mutable bool                         context_norm_replay_consumed_{};

@@ -1026,10 +1026,19 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
 
     if (weights.w_qkv && weights.w_qkv->output_dim) {
         // [token_num, hidden_dim] -> [token_num, local_q_kv_head_num, head_dim]
-        if (dflash_workspace) {
-            qkv = dflash_workspace->qkv.slice(0, token_num);
+        if (p.qkv_replay) {
+            TM_CHECK_EQ(p.qkv_replay.ndim(), 2);
+            TM_CHECK_EQ(p.qkv_replay.shape(0), token_num);
+            TM_CHECK_EQ(p.qkv_replay.shape(1), weights.w_qkv->output_dim);
+            TM_CHECK_EQ(p.qkv_replay.dtype(), p.input.dtype());
+            qkv = p.qkv_replay;
         }
-        TM_SCOPE_CALL(linear_.Forward(p.input, *weights.w_qkv, qkv));
+        else {
+            if (dflash_workspace) {
+                qkv = dflash_workspace->qkv.slice(0, token_num);
+            }
+            TM_SCOPE_CALL(linear_.Forward(p.input, *weights.w_qkv, qkv));
+        }
         if (p.trace_fn && p.trace_qkv_projection) {
             p.trace_fn(p.trace_context, p.trace_qkv_projection, qkv);
         }

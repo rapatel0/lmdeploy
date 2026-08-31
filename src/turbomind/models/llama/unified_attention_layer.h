@@ -60,6 +60,7 @@ public:
         bool              kv_only{false};
         bool              use_dflash_workspace{false};
         bool              frozen_kv{false};
+        Tensor            qkv_replay{};
         Tensor            q_projection_replay{};
         Tensor            k_projection_replay{};
         Tensor            q_replay{};

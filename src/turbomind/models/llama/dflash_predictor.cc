@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "src/turbomind/core/check.h"
+#include "src/turbomind/kernels/gpt_kernels.h"
 #include "src/turbomind/kernels/norm/rms_norm.h"
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/dflash_weight.h"
@@ -396,6 +397,42 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
         TM_CHECK_GE(attention_phase_base_, 0);
     }
 
+    static const bool torch_qkv_layout = [] {
+        const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
+        return value && value[0] == '1';
+    }();
+    if (torch_qkv_layout && attention_indices_.size() == 5) {
+        constexpr int local_q_width  = 1024;
+        constexpr int local_kv_width = 512;
+        Tensor stacked{{(ssize_t)attention_indices_.size() * local_kv_width, hidden_units_}, dtype_, kDEVICE};
+        for (int i = 0; i < (int)attention_indices_.size(); ++i) {
+            auto* layer = TM_CHECK_NOTNULL(weights_.layer(i));
+            auto* attn  = TM_CHECK_NOTNULL(layer->attention.get());
+            auto* qkv   = TM_CHECK_NOTNULL(attn->w_qkv.get());
+            TM_CHECK_EQ(qkv->weight.shape(0), local_q_width + local_kv_width);
+            TM_CHECK_EQ(qkv->weight.shape(1), hidden_units_);
+            TM_CUDA_CHECK(cudaMemcpyAsync(static_cast<half*>(stacked.raw_data())
+                                              + (ssize_t)i * local_kv_width * hidden_units_,
+                                          static_cast<const half*>(qkv->weight.raw_data())
+                                              + (ssize_t)local_q_width * hidden_units_,
+                                          (size_t)local_kv_width * hidden_units_ * sizeof(half),
+                                          cudaMemcpyDeviceToDevice,
+                                          core::Context::stream().handle()));
+        }
+        fused_context_kv_weight_ =
+            {{hidden_units_, (ssize_t)attention_indices_.size() * local_kv_width}, dtype_, kDEVICE};
+        invokeTransposeAxis01(static_cast<half*>(fused_context_kv_weight_.raw_data()),
+                              static_cast<const half*>(stacked.raw_data()),
+                              stacked.shape(0),
+                              stacked.shape(1),
+                              1,
+                              core::Context::stream().handle());
+        TM_CHECK_EQ(cublasCreate(&fused_context_kv_cublas_), CUBLAS_STATUS_SUCCESS);
+        TM_LOG_INFO("[DFlash2] fused torch context-KV projection ready: {}x{}",
+                    fused_context_kv_weight_.shape(0),
+                    fused_context_kv_weight_.shape(1));
+    }
+
     static const bool persistent_workspace = [] {
         const char* value = std::getenv("TM_DFLASH_PERSISTENT_WORKSPACE");
         return !value || value[0] != '0';
@@ -519,7 +556,12 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                 hidden_units_);
 }
 
-DFlashPredictor::~DFlashPredictor() = default;
+DFlashPredictor::~DFlashPredictor()
+{
+    if (fused_context_kv_cublas_) {
+        cublasDestroy(fused_context_kv_cublas_);
+    }
+}
 
 void DFlashPredictor::ArmParityContext(uint64_t uid) const
 {
@@ -801,6 +843,37 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
     Workspace* workspace = persistent_workspace_ && context.shape(0) <= max_workspace_rows_ ?
                                &workspaces_.at(target_phase) :
                                nullptr;
+    Tensor fused_projection;
+    if (fused_context_kv_weight_) {
+        constexpr int local_kv_width = 512;
+        const int      rows           = context.shape(0);
+        const int      cols           = attention_indices_.size() * local_kv_width;
+        fused_projection              = {{rows, cols}, dtype_, kDEVICE};
+        const float alpha = 1.f;
+        const float beta  = 0.f;
+        const auto  stream = core::Context::stream().handle();
+        TM_CHECK_EQ(cublasSetStream(fused_context_kv_cublas_, stream), CUBLAS_STATUS_SUCCESS);
+        TM_CHECK_EQ(cublasGemmEx(fused_context_kv_cublas_,
+                                 CUBLAS_OP_N,
+                                 CUBLAS_OP_N,
+                                 cols,
+                                 rows,
+                                 hidden_units_,
+                                 &alpha,
+                                 fused_context_kv_weight_.raw_data(),
+                                 CUDA_R_16F,
+                                 cols,
+                                 context.raw_data(),
+                                 CUDA_R_16F,
+                                 hidden_units_,
+                                 &beta,
+                                 fused_projection.raw_data(),
+                                 CUDA_R_16F,
+                                 cols,
+                                 CUDA_R_32F,
+                                 CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+                    CUBLAS_STATUS_SUCCESS);
+    }
     for (int i = 0; i < (int)attention_indices_.size(); ++i) {
         auto* layer = TM_CHECK_NOTNULL(weights_.layer(i));
         TM_CHECK(layer->attention);
@@ -808,6 +881,30 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
                                        Tensor{{context.shape(0), hidden_units_}, dtype_, kDEVICE};
         UnifiedAttentionLayer::ForwardParam params{
             target_phase, context, discarded, layer->attention.get(), attention_indices_[i], 1.f, true};
+        Tensor fused_qkv;
+        if (fused_projection) {
+            constexpr int local_q_width  = 1024;
+            constexpr int local_kv_width = 512;
+            fused_qkv = {{context.shape(0), local_q_width + local_kv_width}, dtype_, kDEVICE};
+            const size_t elem_bytes = sizeof(half);
+            auto* dst = static_cast<char*>(fused_qkv.raw_data());
+            auto* src = static_cast<const char*>(fused_projection.raw_data());
+            TM_CUDA_CHECK(cudaMemset2DAsync(dst,
+                                            fused_qkv.stride(0) * elem_bytes,
+                                            0,
+                                            local_q_width * elem_bytes,
+                                            context.shape(0),
+                                            core::Context::stream().handle()));
+            TM_CUDA_CHECK(cudaMemcpy2DAsync(dst + local_q_width * elem_bytes,
+                                            fused_qkv.stride(0) * elem_bytes,
+                                            src + i * local_kv_width * elem_bytes,
+                                            fused_projection.stride(0) * elem_bytes,
+                                            local_kv_width * elem_bytes,
+                                            context.shape(0),
+                                            cudaMemcpyDeviceToDevice,
+                                            core::Context::stream().handle()));
+            params.qkv_replay = fused_qkv;
+        }
         const std::string trace_prefix = context.shape(0) == 1000 ?
                                              "context.prompt.layer" + std::to_string(i) :
                                              "context.frontier.layer" + std::to_string(i);
