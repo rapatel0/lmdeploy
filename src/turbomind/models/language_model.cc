@@ -335,11 +335,13 @@ struct LanguageModel::Impl {
     {
         if (mtp_steps_ != 0) {
             TM_LOG_INFO("[spec] final commit length {:.3f}, raw {:.3f} over {} verification steps "
-                        "({} committed, {} raw committed, {} accepted drafts, {} raw accepted drafts, "
-                        "{} ambiguous steps, {} tokens discarded by ambiguity, {} full accepts)",
+                        "(accepted-draft length {:.3f}, {} committed, {} raw committed, {} accepted drafts, "
+                        "{} raw accepted drafts, {} ambiguous steps, {} tokens discarded by ambiguity, "
+                        "{} full accepts)",
                         (double)mtp_committed_ / (double)mtp_steps_,
                         (double)spec_raw_committed_ / (double)mtp_steps_,
                         mtp_steps_,
+                        (double)mtp_accepted_ / (double)mtp_steps_,
                         mtp_committed_,
                         spec_raw_committed_,
                         mtp_accepted_,
