@@ -21,24 +21,12 @@ struct LinearIterator {
         tile_id_ = tile_id;
     }
 
-    __device__ void SetPosition(int token_id)
-    {
-        key_ptr_ = kv_cache_ + token_id * HeadDim;
-        tile_id_ = token_id / CTA_S;
-    }
-
     __device__ void Advance()
     {
         --tile_id_;
         if (tile_id_ >= 0) {
             key_ptr_ -= CTA_S * HeadDim;
         }
-    }
-
-    __device__ void AdvanceForward()
-    {
-        ++tile_id_;
-        key_ptr_ += CTA_S * HeadDim;
     }
 
     template<int Index>

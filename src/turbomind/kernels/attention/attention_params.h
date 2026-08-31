@@ -73,9 +73,8 @@ struct AttentionParams {
     bool  causal{true};
     // Frozen-KV parallel proposals carry Q rows whose positions begin after
     // the read-only context even though cu_k_len excludes those proposal rows.
-    int  q_position_shift{};
-    bool dflash_sglang_order{};
-    int  layer_id;  // for debugging
+    int q_position_shift{};
+    int layer_id;  // for debugging
 
     // rotary embedding
     RopeKernelParam rope_param;
