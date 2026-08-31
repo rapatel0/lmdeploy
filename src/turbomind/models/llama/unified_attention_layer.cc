@@ -1081,7 +1081,20 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
         };
 
         replay_qk(p.q_projection_replay, p.k_projection_replay);
-        qk_norm(qkv, weights);
+        if (p.fused_context_k_norm) {
+            TM_CHECK(p.kv_only);
+            const int q_width = weights.head_num / weights.tp_size * weights.head_dim;
+            const int k_width = weights.kv_head_num / weights.tp_size * weights.head_dim;
+            invokeDFlashContextKNorm(qkv,
+                                     weights.k_norm->weight,
+                                     weights.k_norm->norm_eps_,
+                                     q_width,
+                                     k_width,
+                                     core::Context::stream().handle());
+        }
+        else {
+            qk_norm(qkv, weights);
+        }
         replay_qk(p.q_replay, p.k_replay);
         if (p.trace_fn && p.trace_qkv_pre) {
             p.trace_fn(p.trace_context, p.trace_qkv_pre, qkv);

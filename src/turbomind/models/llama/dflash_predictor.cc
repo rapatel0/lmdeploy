@@ -903,7 +903,8 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
                                             context.shape(0),
                                             cudaMemcpyDeviceToDevice,
                                             core::Context::stream().handle()));
-            params.qkv_replay = fused_qkv;
+            params.qkv_replay          = fused_qkv;
+            params.fused_context_k_norm = true;
         }
         const std::string trace_prefix = context.shape(0) == 1000 ?
                                              "context.prompt.layer" + std::to_string(i) :
