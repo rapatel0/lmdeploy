@@ -31,6 +31,7 @@
 #include <numeric>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 
@@ -1495,7 +1496,12 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                         p.trace_fn(p.trace_context, p.trace_flattened_kv, tmp_kv);
                     }
                     if (use_dflash_tilelang_draft_attention) {
-                        dispatchDFlashTileLangAttention(params, d.prefill.k_sum, tmp_kv.size());
+                        if constexpr (std::is_same_v<T, half>) {
+                            dispatchDFlashTileLangAttention(params, d.prefill.k_sum, tmp_kv.size());
+                        }
+                        else {
+                            TM_CHECK(false) << "TileLang draft attention requires FP16";
+                        }
                     }
                     else {
                         dispatchAttention(params);
