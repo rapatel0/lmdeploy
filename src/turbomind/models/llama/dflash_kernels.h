@@ -34,6 +34,10 @@ void invokeDFlashLagunaSilu(Tensor&       output,
 
 void invokeDFlashScaleRows(Tensor& value, const Tensor& row_scales, float scale, cudaStream_t stream);
 
+/// Sum rank-major gathered FP16 values in rank order with an FP32 accumulator,
+/// matching SGLang's one-shot custom all-reduce arithmetic.
+void invokeDFlashRankOrderedSum(Tensor& output, const Tensor& gathered, int ranks, cudaStream_t stream);
+
 void invokeDFlashResidualRMSNorm(Tensor&       output,
                                  Tensor&       residual,
                                  const Tensor& reduced,

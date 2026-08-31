@@ -131,6 +131,7 @@ private:
         Buffer_<int>                block_ids;
         Tensor                      embedding;
         Tensor                      residual;
+        Tensor                      rank_reduce_gather;
         std::vector<LayerWorkspace> layers;
         Tensor                      prediction_hidden;
         Buffer_<int>                candidate_ids;

@@ -480,6 +480,8 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
             workspace.block_ids            = {(ssize_t)max_workspace_rows_, kDEVICE};
             workspace.embedding            = {{max_workspace_rows_, hidden_units_}, dtype_, kDEVICE};
             workspace.residual             = {{max_workspace_rows_, hidden_units_}, kFloat32, kDEVICE};
+            workspace.rank_reduce_gather =
+                {{ctx_.comm.d_tp_size * max_workspace_rows_ * hidden_units_}, dtype_, kDEVICE};
             workspace.layers.resize(attention_indices_.size());
             for (int i = 0; i < (int)attention_indices_.size(); ++i) {
                 auto* layer     = TM_CHECK_NOTNULL(weights_.layer(i));
@@ -1514,14 +1516,31 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         return value && value[0] == '1';
     }();
 
+    static const bool rank_ordered_allreduce = [] {
+        const char* value = std::getenv("TM_DFLASH_RANK_ORDERED_ALLREDUCE");
+        return value && value[0] == '1';
+    }();
     auto reduce_branch = [&](Tensor& value) {
         if (ctx_.comm.d_comm) {
-            ctx_.comm.d_comm->AllReduceSum(value.raw_data(),
-                                           value.raw_data(),
-                                           value.size(),
-                                           kHalf,
-                                           ctx_.comm.d_tp_group,
-                                           stream);
+            if (rank_ordered_allreduce && ctx_.comm.d_tp_size > 1) {
+                Tensor gathered = workspace ? workspace->rank_reduce_gather.slice(0, ctx_.comm.d_tp_size * value.size()) :
+                                              Tensor{{ctx_.comm.d_tp_size * value.size()}, kHalf, kDEVICE};
+                ctx_.comm.d_comm->AllGather(value.raw_data(),
+                                            gathered.raw_data(),
+                                            value.size(),
+                                            kHalf,
+                                            ctx_.comm.d_tp_group,
+                                            stream);
+                invokeDFlashRankOrderedSum(value, gathered, ctx_.comm.d_tp_size, stream);
+            }
+            else {
+                ctx_.comm.d_comm->AllReduceSum(value.raw_data(),
+                                               value.raw_data(),
+                                               value.size(),
+                                               kHalf,
+                                               ctx_.comm.d_tp_group,
+                                               stream);
+            }
         }
     };
 

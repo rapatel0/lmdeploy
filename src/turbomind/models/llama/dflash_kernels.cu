@@ -125,6 +125,18 @@ __global__ void DFlashScaleRowsHalf(__half* value, const float* row_scales, int 
     }
 }
 
+__global__ void DFlashRankOrderedSumHalf(__half* output, const __half* gathered, size_t count, int ranks)
+{
+    const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < count) {
+        float sum = 0.f;
+        for (int rank = 0; rank < ranks; ++rank) {
+            sum += __half2float(gathered[static_cast<size_t>(rank) * count + index]);
+        }
+        output[index] = __float2half_rn(sum);
+    }
+}
+
 __global__ void DFlashResidualRMSNormHalf(__half*       output,
                                           float*        residual,
                                           const __half* reduced,
@@ -527,6 +539,21 @@ void invokeDFlashScaleRows(Tensor& value, const Tensor& row_scales, float scale,
                                                         value.shape(0),
                                                         value.shape(1),
                                                         scale);
+    TM_CUDA_CHECK(cudaGetLastError());
+}
+
+void invokeDFlashRankOrderedSum(Tensor& output, const Tensor& gathered, int ranks, cudaStream_t stream)
+{
+    TM_CHECK_EQ(output.dtype(), kHalf);
+    TM_CHECK_EQ(gathered.dtype(), kHalf);
+    TM_CHECK_GT(ranks, 0);
+    TM_CHECK_EQ(gathered.size(), ranks * output.size());
+    constexpr int threads = 256;
+    const int blocks = (output.size() + threads - 1) / threads;
+    DFlashRankOrderedSumHalf<<<blocks, threads, 0, stream>>>((__half*)output.raw_data(),
+                                                             (const __half*)gathered.raw_data(),
+                                                             output.size(),
+                                                             ranks);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
