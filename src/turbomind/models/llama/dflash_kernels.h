@@ -34,6 +34,15 @@ void invokeDFlashLagunaSilu(Tensor&       output,
 
 void invokeDFlashScaleRows(Tensor& value, const Tensor& row_scales, float scale, cudaStream_t stream);
 
+/// Match SGLang Laguna's SM70 no-residual RMSNorm. Keep the normalized
+/// activation and weight product in FP32, then round the output through BF16.
+void invokeDFlashInitialRMSNorm(Tensor&       output,
+                                const Tensor& input,
+                                const Tensor& weight,
+                                float         eps,
+                                bool          zero_centered,
+                                cudaStream_t  stream);
+
 /// Sum rank-major gathered FP16 values in rank order with an FP32 accumulator,
 /// matching SGLang's one-shot custom all-reduce arithmetic.
 void invokeDFlashRankOrderedSum(Tensor& output, const Tensor& gathered, int ranks, cudaStream_t stream);
