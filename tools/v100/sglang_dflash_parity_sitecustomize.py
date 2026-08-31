@@ -21,7 +21,6 @@ if _TRACE_ROOT:
     _target_trace: dict[str, torch.Tensor] = {}
     _target_trace_dtypes: dict[str, int] = {}
     _target_feature_trace: dict[int, torch.Tensor] = {}
-    _target_feature_full_trace: dict[int, torch.Tensor] = {}
     _graph_flushed = False
     _ordinal = 0
     _arm_file = os.environ.get("SGLANG_DFLASH_PARITY_ARM_FILE", "")
@@ -267,19 +266,12 @@ if _TRACE_ROOT:
         if _target_row < 0 or matrix.shape[0] <= _target_row:
             return
         _target_feature_trace[layer_id] = matrix[_target_row].to(torch.float16).clone()
-        capture_full = os.environ.get("SGLANG_DFLASH_FULL_PROMPT_CONTEXT", "0") == "1"
-        if capture_full and matrix.shape[0] >= 1000:
-            _target_feature_full_trace[layer_id] = matrix[:1000].to(torch.float16).clone()
         print(f"SGLANG_DFLASH_TARGET_FEATURE layer={layer_id} row={_target_row}", flush=True)
         if all(feature_id in _target_feature_trace for feature_id in feature_ids):
             _dump(
                 "target.prompt_features",
                 torch.stack([_target_feature_trace[feature_id] for feature_id in feature_ids]),
             )
-        if capture_full and all(feature_id in _target_feature_full_trace for feature_id in feature_ids):
-            full = torch.cat([_target_feature_full_trace[feature_id] for feature_id in feature_ids], dim=1)
-            _dump("target.prompt_features_full", full)
-            _target_feature_full_trace.clear()
 
     # Trace the target Qwen3.5 trajectory before DFlash context projection.
     # These are external in-memory hooks; the SGLang source remains read-only.
