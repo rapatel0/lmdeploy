@@ -296,8 +296,8 @@ void invokeProcessDFlashContextKV(const AttentionParams<half>& params)
 {
     TM_CHECK_EQ(params.size_per_head, 128);
     TM_CHECK_EQ(params.quant_policy, 0);
-    TM_CHECK_EQ(params.rope_param.type, RopeType::kDefault);
-    TM_CHECK_EQ(params.rope_param.mrope_mode, MropeMode::kNone);
+    TM_CHECK(params.rope_param.type == RopeType::kDefault);
+    TM_CHECK(params.rope_param.mrope_mode == MropeMode::kNone);
     TM_CHECK(params.dflash_context_k_norm_weight);
     dim3 grid(params.max_q_len, params.num_kv_heads, params.batch_size);
     block::Layout block_layout{
