@@ -5,7 +5,6 @@
 #include "src/turbomind/kernels/attention/cta_map.h"
 #include "src/turbomind/kernels/attention/impl.h"
 #include "src/turbomind/kernels/attention/impl_884.h"
-#include "src/turbomind/kernels/attention/impl_884_grouped.h"
 #include "src/turbomind/kernels/attention/linear_iterator.h"
 #include "src/turbomind/kernels/attention/mainloop_sm70.h"
 #include "src/turbomind/kernels/attention/registrar.h"
@@ -34,22 +33,11 @@ using PagedKT = AttentionUniversal<
     AttentionCtaMap,
     true>;
 
-// Match SGLang's native DFlash draft verifier geometry: each CTA computes
-// four GQA heads for all eight parallel query positions.
-template<class T>
-using GroupedPagedQ8KT = AttentionUniversal<
-    arch::Sm70,
-    Mainloop<arch::Sm70, Impl<MMA_884_GROUPED, T, T, 4, 8, 64, 1, 16, 64, kHeadDim, kStages>>,
-    GetBlockIterFactory<T, T, 64, kHeadDim>,
-    AttentionCtaMap,
-    true>;
-
 namespace {
 Registrar reg([](Collector& c) {
     c.add<KT<half>>();
     c.add<KT<half, false>>();
     c.add<PagedKT<half>>();
-    c.add<GroupedPagedQ8KT<half>>();
 });
 }
 
