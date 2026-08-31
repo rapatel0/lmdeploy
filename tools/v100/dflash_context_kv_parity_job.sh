@@ -73,7 +73,7 @@ for name, output, expected in (
             row = records[name]
             payload = pathlib.Path(root, row['file']).read_bytes()
             assert len(payload) == expected, (name, root, len(payload))
-            stream.write(interleave_rope(payload, 8, 1024 if 'q_' in name else 256))
+            stream.write(payload if name.endswith('q_rotated') else interleave_rope(payload, 8, 256))
 PY
     python3 - "$SG" "$FLATTENED_KV_REPLAY" <<'PY'
 import glob, json, numpy as np, pathlib, sys
@@ -85,7 +85,7 @@ with open(sys.argv[2], 'wb') as output:
         records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
         cache_k = np.fromfile(pathlib.Path(root, records['context.prompt.layer0.cache_k']['file']), dtype='<f2').reshape(1000, 2, 128)
         cache_v = np.fromfile(pathlib.Path(root, records['context.prompt.layer0.cache_v']['file']), dtype='<f2').reshape(1000, 2, 128)
-        cache_k = cache_k.transpose(1, 0, 2).reshape(2, 1000, 2, 64).transpose(0, 1, 3, 2).copy().reshape(2, 1000, 128)
+        cache_k = cache_k.transpose(1, 0, 2).copy()
         cache_v = cache_v.transpose(1, 0, 2).copy()
         output.write(np.stack((cache_k, cache_v), axis=1).tobytes())
 PY
@@ -213,9 +213,9 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
         'draft.q_projection': (draft_projection[:, :1024], reorder_rope(sg_projection[:, :1024])),
         'draft.k_projection': (draft_projection[:, 1024:1280], reorder_rope(sg_projection[:, 1024:1280])),
         'draft.v_projection': (draft_projection[:, 1280:1536], sg_projection[:, 1280:1536]),
-        'draft.q_attention': (draft_normalized[:, :1024], reorder_rope(load(sg_root, sg, 'layer0.attention.q_rotated'))),
+        'draft.q_attention': (draft_normalized[:, :1024], load(sg_root, sg, 'layer0.attention.q_rotated')),
         'draft.k_normalized': (draft_normalized[:, 1024:1280], reorder_rope(load(sg_root, sg, 'layer0.attention.k_normalized'))),
-        'draft.cache_k': (flattened[:, 0, :key_count, :], reorder_rope(sg_flat_k)),
+        'draft.cache_k': (flattened[:, 0, :key_count, :], sg_flat_k),
         'draft.cache_v': (flattened[:, 1, :key_count, :], sg_flat_v),
         'draft.core_output': (
             load(lm_root, lm, 'layer0.attention.core_output'),
