@@ -15,6 +15,7 @@
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/delta_net_weight.h"
 #include "src/turbomind/models/dflash_weight.h"
+#include "src/turbomind/models/llama/dflash_kernels.h"
 #include "src/turbomind/models/llama/llama_kernels.h"
 #include "src/turbomind/models/mtp_weight.h"
 #include "src/turbomind/models/llama/llama_utils.h"
@@ -202,6 +203,28 @@ void UnifiedDecoder::AllreduceResidualRMSnorm(Tensor&       hidden_states,
 
     const auto stream = core::Context::stream().handle();
 
+    static const bool target_fp32_residual = [] {
+        const char* value = std::getenv("TM_DFLASH_TARGET_FP32_RESIDUAL");
+        return value && value[0] == '1';
+    }();
+    if (target_fp32_residual && residual.dtype() == kFloat32) {
+        TM_CHECK_EQ(dtype, kHalf);
+        TM_CHECK(!(group0 && group1)) << "FP32 target residual does not support simultaneous TP groups";
+        if (d_comm_) {
+            const int group = group0 ? group0 : group1;
+            d_comm_->AllReduceSum(hidden_states.raw_data(),
+                                  hidden_states.raw_data(),
+                                  hidden_states.size(),
+                                  dtype,
+                                  group,
+                                  stream);
+            TM_CUDA_CHECK(cudaGetLastError());
+        }
+        invokeDFlashTargetResidualRMSNorm(
+            hidden_states, residual, hidden_states, bias, weight, eps, zero_centered, stream);
+        return;
+    }
+
     if (0) {}
     else if (group0 || group1) {
         d_comm_->AllreduceResidualBiasRMSnormEx(hidden_states.raw_data(),
@@ -320,13 +343,27 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
         TM_CHECK_EQ(target_trajectory->shape(1), (ssize_t)hidden_units_);
         TM_CHECK_EQ(value.shape(1), (ssize_t)hidden_units_);
         const auto row_bytes = byte_size(dtype, hidden_units_);
-        TM_CUDA_CHECK(cudaMemcpyAsync((char*)target_trajectory->raw_data()
-                                         + slot * byte_size(dtype, target_trajectory->stride(0)),
-                                     (const char*)value.raw_data()
-                                         + (value.shape(0) - 1) * byte_size(dtype, value.stride(0)),
-                                     row_bytes,
-                                     cudaMemcpyDeviceToDevice,
-                                     stream));
+        if (value.dtype() == dtype) {
+            TM_CUDA_CHECK(cudaMemcpyAsync((char*)target_trajectory->raw_data()
+                                             + slot * byte_size(dtype, target_trajectory->stride(0)),
+                                         (const char*)value.raw_data()
+                                             + (value.shape(0) - 1) * byte_size(dtype, value.stride(0)),
+                                         row_bytes,
+                                         cudaMemcpyDeviceToDevice,
+                                         stream));
+        }
+        else {
+            TM_CHECK_EQ(value.dtype(), kFloat32);
+            Tensor source = value.slice({value.shape(0) - 1, 0}, {1, -1});
+            Tensor narrowed{{1, (ssize_t)hidden_units_}, dtype, kDEVICE};
+            invokeDFlashCastToHalf(narrowed, source, stream);
+            TM_CUDA_CHECK(cudaMemcpyAsync((char*)target_trajectory->raw_data()
+                                             + slot * byte_size(dtype, target_trajectory->stride(0)),
+                                         narrowed.raw_data(),
+                                         row_bytes,
+                                         cudaMemcpyDeviceToDevice,
+                                         stream));
+        }
     };
     capture_target_trajectory(0, local_residual);
 
@@ -342,6 +379,17 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
 
     TM_DEBUG_TENSOR(local_hidden_states, Concat("norm0", 0), 2);
     capture_target_trajectory(1, local_hidden_states);
+
+    static const bool target_fp32_residual = [] {
+        const char* value = std::getenv("TM_DFLASH_TARGET_FP32_RESIDUAL");
+        return value && value[0] == '1';
+    }();
+    Tensor target_residual_fp32;
+    if (target_fp32_residual && args.try_("dflash_target_hidden")) {
+        target_residual_fp32 = Tensor{local_residual.shape(), kFloat32, kDEVICE};
+        invokeDFlashCastToFloat(target_residual_fp32, local_residual, stream);
+        local_residual = target_residual_fp32;
+    }
 
     // auto stack_alloc{core::Context::device_alloc().adapt<core::StackAllocatorImpl>()};
     // core::ContextGuard ctx{Allocator{stack_alloc}};
