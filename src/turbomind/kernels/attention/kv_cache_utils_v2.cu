@@ -263,19 +263,22 @@ __global__ void __launch_bounds__(128) ProcessDFlashContextKV(char**          bl
     normalized[lane] = raw * inv_rms * __half2float(norm_weight[lane]);
     __syncthreads();
 
-    float rotated = normalized[lane];
-    if (lane < 64) {
-        const float inv_freq = exp2f((2.f * lane) * rope_param.scale_factor);
-        float       sin_v;
-        float       cos_v;
-        sincosf(ti * inv_freq, &sin_v, &cos_v);
-        const float first  = normalized[lane];
-        const float second = normalized[lane + 64];
-        normalized[lane]      = first * cos_v - second * sin_v;
-        normalized[lane + 64] = second * cos_v + first * sin_v;
+    if (lane < 16) {
+        Array<float, 8> values;
+        PRAGMA_UNROLL
+        for (int i = 0; i < 8; ++i) {
+            values[i] = normalized[lane * 8 + i];
+        }
+        FastRoPE rope(rope_param, batch_idx, std::integral_constant<int, 8>{});
+        rope.init(lane * 8);
+        rope.apply(values, ti, qi);
+        PRAGMA_UNROLL
+        for (int i = 0; i < 8; ++i) {
+            normalized[lane * 8 + i] = values[i];
+        }
     }
     __syncthreads();
-    rotated = normalized[lane];
+    const float rotated = normalized[lane];
 
     int local_ti_rank{};
     const int local_ti = cp_size.divmod(local_ti_rank, ti);
