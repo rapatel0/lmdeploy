@@ -47,7 +47,8 @@ public:
                                         const int* committed_seq_lens,
                                         int        batch_size,
                                         bool       rebuild,
-                                        bool       assert_exact) const;
+                                        bool       assert_exact,
+                                        bool       prefill_priming = false) const;
     void AssertDraftAttentionKeySpans(int phase, int batch_size) const;
 
     /// Project [tokens, context_features * hidden] target residuals to the

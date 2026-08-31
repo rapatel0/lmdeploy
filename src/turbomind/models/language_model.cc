@@ -426,6 +426,10 @@ struct LanguageModel::Impl {
     bool CanDraft(int phase) const
     {
         const auto& d = data_.at(phase);
+        static const bool dflash_prefill_priming = [] {
+            const char* value = std::getenv("TM_DFLASH_PREFILL_PRIMING");
+            return value && value[0] == '1';
+        }();
         if (d.rows.empty() || (!mtp_predictor_ && !dflash_predictor_)) {
             return false;
         }
@@ -445,7 +449,11 @@ struct LanguageModel::Impl {
             // with no error at all.
             const int expected = 1 + d.num_drafts[i];
             if (!d.autoregres[i] && c->input_len != expected) {
-                return false;
+                const bool final_dflash_prefill = dflash_prefill_priming && dflash_predictor_
+                                                  && d.num_drafts[i] == 0 && c->input_len > 1;
+                if (!final_dflash_prefill) {
+                    return false;
+                }
             }
         }
         return true;
@@ -1871,12 +1879,19 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
         const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
         return value && value[0] == '1';
     }();
+    static const bool dflash_prefill_priming = [] {
+        const char* value = std::getenv("TM_DFLASH_PREFILL_PRIMING");
+        return value && value[0] == '1';
+    }();
+    const bool prefill_priming = dflash_prefill_priming
+                                 && std::any_of(d.input_lens.begin(), d.input_lens.end(), [](int len) { return len > 1; })
+                                 && std::all_of(d.num_drafts.begin(), d.num_drafts.end(), [](int n) { return n == 0; });
     // The proposal block contains the freshly generated anchor as row zero.
     // The published frontier already counts that token, so the block's cache
     // base is frontier-1. Build the exact cumulative offsets from the same
     // host frontier used by metadata validation instead of advancing the
     // device sequence length from a different lifecycle boundary.
-    if (anchor_inclusive_frontier) {
+    if (anchor_inclusive_frontier && !prefill_priming) {
         Buffer_<int> offsets_host{bsz + 1, kCPU};
         offsets_host[0] = 0;
         for (int i = 0; i < bsz; ++i) {
@@ -1899,14 +1914,15 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     }();
     const bool after_rollback = std::any_of(
         d.num_drafts.begin(), d.num_drafts.end(), [](int num_drafts) { return num_drafts > 0; });
-    const bool rebuild_this_step = anchor_inclusive_frontier || (rebuild_dflash_metadata && after_rollback);
+    const bool rebuild_this_step = prefill_priming || anchor_inclusive_frontier
+                                   || (rebuild_dflash_metadata && after_rollback);
     // The contract under test is the post-rollback refresh. Initial Setup
     // metadata is constructed from input lengths before this host frontier is
     // published, so asserting it here would compare different lifecycle
     // boundaries. Arm validation only after at least one speculative rollback.
     if (rebuild_this_step || (assert_dflash_metadata && after_rollback)) {
         dflash_predictor_->ValidateDraftAttentionMetadata(
-            phase, tips->data(), bsz, rebuild_this_step, assert_dflash_metadata);
+            phase, tips->data(), bsz, rebuild_this_step, assert_dflash_metadata, prefill_priming);
     }
     else if (assert_dflash_metadata) {
         // A phase persists across requests. Disarm the prior request's live

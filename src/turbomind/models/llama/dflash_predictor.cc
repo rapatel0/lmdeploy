@@ -654,7 +654,8 @@ void DFlashPredictor::ValidateDraftAttentionMetadata(int        phase,
                                                      const int* committed_seq_lens,
                                                      int        batch_size,
                                                      bool       rebuild,
-                                                     bool       assert_exact) const
+                                                     bool       assert_exact,
+                                                     bool       prefill_priming) const
 {
     TM_CHECK_GE(attention_phase_base_, 0);
     attention_.ValidateDFlashDraftMetadata(attention_phase_base_ + phase,
@@ -662,7 +663,8 @@ void DFlashPredictor::ValidateDraftAttentionMetadata(int        phase,
                                            batch_size,
                                            weights_.block_size,
                                            rebuild,
-                                           assert_exact);
+                                           assert_exact,
+                                           prefill_priming);
 }
 
 void DFlashPredictor::AssertDraftAttentionKeySpans(int phase, int batch_size) const
