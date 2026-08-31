@@ -1458,7 +1458,8 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         if (!ParityActive() || consumed || !path || !path[0]) {
             return false;
         }
-        TM_CHECK_EQ(value.dtype(), kHalf);
+        TM_CHECK(value.dtype() == kHalf || value.dtype() == kFloat32)
+            << "DFlash parity replay supports FP16 and FP32 tensors";
         const size_t expected_bytes = value.byte_size();
         std::ifstream input(path, std::ios::binary | std::ios::ate);
         TM_CHECK(input.is_open()) << "failed to open DFlash parity replay file: " << path;
