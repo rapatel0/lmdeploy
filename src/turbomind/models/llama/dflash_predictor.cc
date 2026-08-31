@@ -552,7 +552,17 @@ void DFlashPredictor::PrepareParityContext(const Tensor& target_hidden,
         return;
     }
     trace.pending_target = target_hidden;
-    trace.pending_trajectory = target_trajectory;
+    if (target_trajectory) {
+        // The phase-owned target-trajectory workspace is reused by the
+        // ordinary decode that publishes the first DFlash anchor before
+        // BeginParityBlock. Retain an owning copy now so the prompt trace is
+        // not silently replaced by that later one-token forward.
+        trace.pending_trajectory = Tensor{target_trajectory.shape(), target_trajectory.dtype(), kDEVICE};
+        Copy(target_trajectory, trace.pending_trajectory);
+    }
+    else {
+        trace.pending_trajectory = {};
+    }
     trace.pending_fc = projected;
     trace.pending_norm = normalized;
     trace.pending_uid = trace.armed_uid;
