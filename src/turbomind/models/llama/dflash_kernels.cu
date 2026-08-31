@@ -11,6 +11,7 @@
 #endif
 
 #include <climits>
+#include <cmath>
 #include <cstdlib>
 
 #include "src/turbomind/core/check.h"
@@ -339,7 +340,8 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
                                          int           batch_size,
                                          int           slots,
                                          int           top_k,
-                                         int           rank)
+                                         int           rank,
+                                         float         transition_scale)
 {
     const int batch = blockIdx.x;
     if (batch >= batch_size) {
@@ -362,7 +364,8 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
             // Preserve the former serial accumulation order exactly while
             // evaluating all 16 candidates concurrently.
             for (int i = 0; i < rank; ++i) {
-                score += __half2float(pred[i]) * __half2float(state[i]) * __half2float(succ[i]);
+                score += transition_scale * __half2float(pred[i]) * __half2float(state[i])
+                         * __half2float(succ[i]);
             }
             candidate_scores[candidate_index] = score;
             if constexpr (TraceScores) {
@@ -652,6 +655,11 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
     TM_CHECK_EQ(selector_hidden.shape(0), (ssize_t)batch_size * slots);
     TM_CHECK_EQ(predecessor_codebook.shape(1), rank);
     TM_CHECK_EQ(successor_codebook.shape(1), rank);
+    static const float transition_scale = [] {
+        const char* value = std::getenv("TM_DFLASH_SELECTOR_TRANSITION_SCALE");
+        return value && value[0] ? std::strtof(value, nullptr) : 1.f;
+    }();
+    TM_CHECK(std::isfinite(transition_scale));
     if (trace_scores) {
         TM_CHECK_EQ(trace_scores->dtype(), kFloat32);
         TM_CHECK_EQ(trace_scores->size(), (ssize_t)batch_size * slots * top_k);
@@ -666,7 +674,8 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                                                      batch_size,
                                                                      slots,
                                                                      top_k,
-                                                                     rank);
+                                                                     rank,
+                                                                     transition_scale);
     }
     else {
         DFlashGreedySelectorHalf<false><<<batch_size, 32, 0, stream>>>(output.data(),
@@ -680,7 +689,8 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                                                       batch_size,
                                                                       slots,
                                                                       top_k,
-                                                                      rank);
+                                                                      rank,
+                                                                      transition_scale);
     }
     TM_CUDA_CHECK(cudaGetLastError());
 }
