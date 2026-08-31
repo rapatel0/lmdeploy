@@ -47,12 +47,7 @@ bool invokeDecoding(const typename Kernel::ParamType& params, int sm_count, int 
     dim3 grid = CtaMap::get_grid_shape(params.num_kv_heads, params.batch_size, 1, cta_per_q_group);
 
     const int grid_size = grid.x * grid.y * grid.z;
-    const bool sglang_dflash_verify_shape = Kernel::kHeadDim == 128 && params.batch_size == 1
-                                            && params.token_num == 8 && params.num_heads == 8
-                                            && params.num_kv_heads == 2;
-    const int split_cnt = sglang_dflash_verify_shape ? std::min(8, max_split_count) :
-                                                       GetSplitCount(
-                                                           max_split_count, grid_size, max_active_ctas, sm_count, 4);
+    const int split_cnt = GetSplitCount(max_split_count, grid_size, max_active_ctas, sm_count, 4);
 
     grid = CtaMap::get_grid_shape(params.num_kv_heads, params.batch_size, split_cnt, cta_per_q_group);
 
