@@ -44,14 +44,7 @@ struct LlamaLinear::Impl {
         TM_CUDA_CHECK(cudaMemsetAsync(workspace_.barriers, 0, workspace_.barriers_size, st));
         TM_CUDA_CHECK(cudaMallocAsync(&workspace_.flags, sizeof(int), st));
 
-        // PyTorch's CUDA handle pool assigns this default workspace before
-        // F.linear. The workspace can change cublasGemmEx's selected tensor-op
-        // algorithm for prompt-sized M even when the explicit algo is DEFAULT.
-        constexpr size_t kTorchCublasWorkspaceBytes = 8519680;
-        TM_CUDA_CHECK(cudaMallocAsync(&torch_cublas_workspace_, kTorchCublasWorkspaceBytes, st));
         TM_CHECK_EQ(cublasCreate(&torch_cublas_), CUBLAS_STATUS_SUCCESS);
-        TM_CHECK_EQ(cublasSetWorkspace(torch_cublas_, torch_cublas_workspace_, kTorchCublasWorkspaceBytes),
-                    CUBLAS_STATUS_SUCCESS);
         core::Context::stream().Sync();
     }
 
@@ -67,10 +60,6 @@ struct LlamaLinear::Impl {
         if (torch_cublas_) {
             cublasDestroy(torch_cublas_);
             torch_cublas_ = {};
-        }
-        if (torch_cublas_workspace_) {
-            cudaFreeAsync(torch_cublas_workspace_, st);
-            torch_cublas_workspace_ = {};
         }
     }
 
@@ -277,7 +266,6 @@ struct LlamaLinear::Impl {
     gemm::Gemm           gemm_;
     gemm::DispatchPolicy dispatch_policy_{gemm::DispatchPolicy::kDefault};
     cublasHandle_t       torch_cublas_{};
-    void*                torch_cublas_workspace_{};
 
     gemm::Workspace workspace_;
 };
