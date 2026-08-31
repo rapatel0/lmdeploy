@@ -74,6 +74,12 @@ ISLAND2="GPU-c1aa8bd9-f642-328d-96f8-79d7c38ce61e GPU-c275f176-56b9-eb8d-14d7-a3
     exit 2
 }
 
+# Stage the exact local commit before each launch. sync_src.sh returns quickly
+# when the remote SOURCE_STAMP already matches. It refuses dirty local trees and
+# stale-source replacement during another island-1 job.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+DEST=/localpool/lmdeploy-v100-island1/src ISLAND=1 "$REPO_ROOT/tools/v100/sync_src.sh"
+
 kubectl -n "$NS" delete job "$JOB" --ignore-not-found >/dev/null 2>&1 || true
 kubectl -n "$NS" delete configmap "${JOB}-script" --ignore-not-found >/dev/null 2>&1 || true
 CM_ARGS=(--from-file=work.sh="$SCRIPT")

@@ -286,7 +286,7 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
         return value && value[0] == '1';
     }();
     const bool use_dflash_target_fp32_residual = enable_dflash_target_fp32_residual
-                                                  && args.try_("dflash_target_hidden") != nullptr
+                                                  && !dflash_target_layer_ids_.empty()
                                                   && dtype == kHalf && attn_dp_size_ == 1;
     Tensor local_residual = use_dflash_target_fp32_residual ?
                                 Tensor{{local_token_num, (ssize_t)hidden_units_}, kFloat32, kDEVICE} :
@@ -619,11 +619,19 @@ void UnifiedDecoder::Forward(int phase, TensorMap& args, const std::vector<Weigh
 
     Tensor hidden_states{local_hidden_states};
 
+    Tensor stable_hidden_states;
     if (d_comm_ && (output_hidden_states || reuse_hidden_states)) {
         // The full `hidden_states` buffer is needed for output but it's a ref into `symm_buf` atm.
-        // Copy to residual buf so that `symm_buf` may be reused safely later
-        Copy(hidden_states, local_residual);
-        hidden_states = local_residual;
+        // Keep FP16 output storage separate from the optional FP32 target residual.
+        if (use_dflash_target_fp32_residual) {
+            stable_hidden_states = {{local_token_num, (ssize_t)hidden_units_}, dtype, kDEVICE};
+            Copy(hidden_states, stable_hidden_states);
+            hidden_states = stable_hidden_states;
+        }
+        else {
+            Copy(hidden_states, local_residual);
+            hidden_states = local_residual;
+        }
     }
 
     Tensor selected_states;

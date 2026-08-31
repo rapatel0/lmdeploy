@@ -70,6 +70,16 @@ kubectl -n "${NS}" run "${POD}" \
 
 kubectl -n "${NS}" wait --for=condition=Ready "pod/${POD}" --timeout=120s >/dev/null
 
+# A matching stamp proves that a prior git archive already staged this exact
+# commit. Avoid replacing the tree, and allow launchers to call this script
+# before every job without disrupting an active build on the other island.
+LANDED="$(kubectl -n "${NS}" exec "${POD}" -- sh -c \
+    'test -f /dest/lmdeploy/SOURCE_STAMP && sed -n "s/^commit=//p" /dest/lmdeploy/SOURCE_STAMP || true' | tr -d '\r\n')"
+if [ "${LANDED}" = "${SHA}" ]; then
+    echo "PASS: ${NODE} already serves ${SHA:0:12}"
+    exit 0
+fi
+
 # Replace rather than merge. A merge leaves files that the commit deleted, and
 # a stale leftover is precisely the failure this script prevents.
 # Refuse to sync while a job is building from this tree.
@@ -81,7 +91,11 @@ kubectl -n "${NS}" wait --for=condition=Ready "pod/${POD}" --timeout=120s >/dev/
 #
 # which looks exactly like a code defect in the job's log and cost two GPU
 # runs to recognise as a race with my own sync.
-if ACTIVE=$(kubectl -n "${NS}" get jobs -o jsonpath='{range .items[?(@.status.active)]}{.metadata.name} {end}' 2>/dev/null) &&
+JOB_SELECTOR=()
+if [ -n "${ISLAND:-}" ]; then
+    JOB_SELECTOR=(-l "island=${ISLAND}")
+fi
+if ACTIVE=$(kubectl -n "${NS}" get jobs "${JOB_SELECTOR[@]}" -o jsonpath='{range .items[?(@.status.active)]}{.metadata.name} {end}' 2>/dev/null) &&
     [ -n "${ACTIVE// /}" ]; then
     echo "REFUSING: jobs still active: ${ACTIVE}" >&2
     echo "  Wait for them or delete them; syncing now would delete the tree they are building." >&2
