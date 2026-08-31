@@ -88,7 +88,9 @@ struct Mainloop<arch::Sm70, Impl_> {
             typename GmemIterV::Fragment tmp_V;
 
             gmem_V.Load<is_residue>(cache_iter, tmp_V, is_residue ? max_step - offset_K : CTA_S);
-            cache_iter.Advance();
+            if (tile_iter > 1) {
+                cache_iter.Next();
+            }
 
             FragS frag_S{};
 
@@ -99,7 +101,7 @@ struct Mainloop<arch::Sm70, Impl_> {
 
             gmem_V.Save(tmp_V);
 
-            if (tile_iter > 0) {
+            if (tile_iter > 1) {
                 gmem_K.Load<false>(cache_iter, tmp_K, CTA_S);
             }
 
@@ -118,20 +120,14 @@ struct Mainloop<arch::Sm70, Impl_> {
 
             gmem_K.Save(tmp_K);
 
-            offset_K -= CTA_S;
+            offset_K += CTA_S;
         };
 
-        for (int mask_iter = max(1, mask_iter_back); tile_iter > 0 && mask_iter > 0; --tile_iter, --mask_iter) {
-            loop(std::true_type{}, std::true_type{});
-        }
-
-        PRAGMA_NO_UNROLL
-        for (; tile_iter > mask_iter_front; --tile_iter) {
-            loop(std::false_type{}, std::false_type{});
-        }
-
+        // Triton extend attention visits 64-key tiles in ascending order and
+        // applies the validity mask to every tile. Use the same traversal for
+        // this parity experiment; the residue load is a no-op on full tiles.
         for (; tile_iter > 0; --tile_iter) {
-            loop(std::false_type{}, std::true_type{});
+            loop(std::true_type{}, std::true_type{});
         }
     }
 

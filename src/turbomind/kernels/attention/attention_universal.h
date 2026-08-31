@@ -453,7 +453,7 @@ struct AttentionUniversal {
         __syncthreads();
 
         const int offset_Q = history_len + query_idx;
-        const int offset_K = (first_K_tile + iter_end - 1) * CTA_S;
+        const int offset_K = (first_K_tile + iter_begin) * CTA_S;
 
         // This is for avoiding OOB access only
         const int max_K = min(get_cp_len(context_len, params.cp_rank), (first_K_tile + iter_end) * CTA_S);
@@ -504,7 +504,7 @@ struct AttentionUniversal {
         }
 #endif
 
-        cache_iter.SetTile(first_K_tile + iter_end - 1);
+        cache_iter.SetTile(first_K_tile + iter_begin);
 
         Mainloop mainloop;
         mainloop.SetCpInfo(params.cp_size, params.cp_rank);
