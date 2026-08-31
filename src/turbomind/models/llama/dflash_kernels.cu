@@ -160,7 +160,8 @@ __global__ void DFlashResidualRMSNormHalf(__half*       output,
     const float scale = rsqrtf(sums[0] / hidden + eps);
     for (int channel = threadIdx.x; channel < hidden; channel += blockDim.x) {
         const int index = token * hidden + channel;
-        const float gamma = __half2float(weight[channel]) + (zero_centered ? 1.f : 0.f);
+        const float gamma =
+            RoundBFloat16(__half2float(weight[channel])) + (zero_centered ? 1.f : 0.f);
         const float normalized = RoundBFloat16(residual[index] * scale * gamma);
         output[index] = __float2half_rn(normalized);
     }
