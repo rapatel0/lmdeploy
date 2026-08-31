@@ -79,6 +79,11 @@ struct AttentionParams {
     // rotary embedding
     RopeKernelParam rope_param;
 
+    // DFlash fused context materialization keeps K normalization and RoPE in
+    // FP32 and narrows only the final rotated K cache value.
+    const T* dflash_context_k_norm_weight{nullptr};
+    float    dflash_context_k_norm_eps{};
+
     // log(n) attention
     bool use_logn_attn;
     int  max_position_embeddings;

@@ -23,15 +23,6 @@ void invokeDFlashRoundBFloat16(Tensor& value, cudaStream_t stream);
 
 void invokeDFlashScale(Tensor& value, float scale, cudaStream_t stream);
 
-/// Match SGLang's fused context-materialization K RMSNorm: one 128-thread
-/// reduction block per token/head, FP32 reduction/product, FP16 final store.
-void invokeDFlashContextKNorm(Tensor&       qkv,
-                              const Tensor& weight,
-                              float         eps,
-                              int           q_width,
-                              int           k_width,
-                              cudaStream_t  stream);
-
 /// Reproduce Laguna's overflow-safe SM70 SwiGLU path. gate_up is the W13
 /// projection of an input divided by 32; output is dynamically row-scaled for
 /// W2 and row_scales records the factor restored after W2.

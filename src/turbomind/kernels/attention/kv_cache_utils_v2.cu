@@ -2,6 +2,12 @@
 
 #include <type_traits>
 
+#if CUDART_VERSION >= 11000
+#include <cub/cub.cuh>
+#else
+#include "3rdparty/cub/cub.cuh"
+#endif
+
 #include "src/turbomind/kernels/attention/block.h"
 #include "src/turbomind/kernels/attention/kv_cache_utils_v2.h"
 #include "src/turbomind/kernels/attention/quantization.h"
@@ -207,6 +213,114 @@ __global__ void __launch_bounds__(128) ProcessKV_v2(char**          blocks,
             });
         }
     }
+}
+
+template<class BlockLayout>
+__global__ void __launch_bounds__(128) ProcessDFlashContextKV(char**          blocks,
+                                                              const half*     k,
+                                                              const half*     v,
+                                                              const half*     norm_weight,
+                                                              float           norm_eps,
+                                                              const int*      cu_q_len,
+                                                              const int*      cu_k_len,
+                                                              const int*      cu_block_num,
+                                                              const int*      readonly_block_num,
+                                                              RopeKernelParam rope_param,
+                                                              int64_t         stride_c,
+                                                              int64_t         stride_h,
+                                                              int64_t         stride_s,
+                                                              int             cache_block_offset,
+                                                              int             cp_rank,
+                                                              FastDivmod      cp_size,
+                                                              int             block_seq_len,
+                                                              BlockLayout     block_layout)
+{
+    using Reduce = cub::BlockReduce<float, 128>;
+    __shared__ typename Reduce::TempStorage storage;
+    __shared__ float normalized[128];
+
+    const int qi        = blockIdx.x;
+    const int head_idx  = blockIdx.y;
+    const int batch_idx = blockIdx.z;
+    const int lane      = threadIdx.x;
+    const int qi_beg    = cu_q_len[batch_idx];
+    const int qi_end    = cu_q_len[batch_idx + 1];
+    const int q_len     = qi_end - qi_beg;
+    if (qi >= q_len) {
+        return;
+    }
+    const int k_len       = cu_k_len[batch_idx + 1] - cu_k_len[batch_idx];
+    const int history_len = k_len - q_len;
+    const int ti          = history_len + qi;
+    const int64_t index = (qi_beg * stride_c + qi * stride_s + head_idx * stride_h) * 128 + lane;
+    const float raw      = __half2float(k[index]);
+    const float sum      = Reduce(storage).Sum(raw * raw);
+    __shared__ float inv_rms;
+    if (lane == 0) {
+        inv_rms = rsqrtf(sum / 128.f + norm_eps);
+    }
+    __syncthreads();
+    normalized[lane] = raw * inv_rms * __half2float(norm_weight[lane]);
+    __syncthreads();
+
+    float rotated = normalized[lane];
+    if (lane < 64) {
+        const float inv_freq = exp2f((2.f * lane) * rope_param.scale_factor);
+        float       sin_v;
+        float       cos_v;
+        sincosf(ti * inv_freq, &sin_v, &cos_v);
+        const float first  = normalized[lane];
+        const float second = normalized[lane + 64];
+        normalized[lane]      = first * cos_v - second * sin_v;
+        normalized[lane + 64] = second * cos_v + first * sin_v;
+    }
+    __syncthreads();
+    rotated = normalized[lane];
+
+    int local_ti_rank{};
+    const int local_ti = cp_size.divmod(local_ti_rank, ti);
+    const int logical_block_size = block_seq_len * (int)cp_size;
+    const int readonly_len = readonly_block_num ? readonly_block_num[batch_idx] * logical_block_size : 0;
+    if (ti < readonly_len || local_ti_rank != cp_rank) {
+        return;
+    }
+    blocks += cu_block_num[batch_idx];
+    block::Head<half, half, BlockLayout> block_head{block_layout, cache_block_offset, head_idx};
+    block_head.with((char**)blocks, local_ti, [&](auto k_cache, auto v_cache, half*, half*) {
+        k_cache[lane] = __float2half_rn(rotated);
+        v_cache[lane] = v[index];
+    });
+}
+
+void invokeProcessDFlashContextKV(const AttentionParams<half>& params)
+{
+    TM_CHECK_EQ(params.size_per_head, 128);
+    TM_CHECK_EQ(params.quant_policy, 0);
+    TM_CHECK_EQ(params.rope_param.type, RopeType::kDefault);
+    TM_CHECK_EQ(params.rope_param.mrope_mode, MropeMode::kNone);
+    TM_CHECK(params.dflash_context_k_norm_weight);
+    dim3 grid(params.max_q_len, params.num_kv_heads, params.batch_size);
+    block::Layout block_layout{
+        block::Config<half, half, 128, false>{params.num_kv_heads, params.block_iter_params.block_len}};
+    ProcessDFlashContextKV<<<grid, 128, 0, params.stream>>>((char**)params.block_iter_params.block_ptrs,
+                                                            params.k,
+                                                            params.v,
+                                                            params.dflash_context_k_norm_weight,
+                                                            params.dflash_context_k_norm_eps,
+                                                            params.cu_q_len,
+                                                            params.cu_k_len,
+                                                            params.block_iter_params.cu_block_nums,
+                                                            params.readonly_block_num,
+                                                            params.rope_param,
+                                                            params.stride / params.size_per_head,
+                                                            1,
+                                                            params.stride / params.size_per_head,
+                                                            params.block_iter_params.offset,
+                                                            params.cp_rank,
+                                                            params.cp_size,
+                                                            params.block_iter_params.block_len,
+                                                            block_layout);
+    TM_CUDA_CHECK(cudaGetLastError());
 }
 
 template<class T>

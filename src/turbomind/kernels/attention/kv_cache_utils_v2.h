@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <type_traits>
+
 #include "src/turbomind/core/data_type.h"
 #include "src/turbomind/kernels/attention/attention_params.h"
 
@@ -33,9 +35,17 @@ void invokeProcessKV_v2(char**                 blocks,
                         int                    quant_policy,
                         cudaStream_t           stream = {});
 
+void invokeProcessDFlashContextKV(const AttentionParams<half>& params);
+
 template<class T>
 void invokeProcessKV_v2_(const AttentionParams<T>& params)
 {
+    if constexpr (std::is_same_v<T, half>) {
+        if (params.dflash_context_k_norm_weight) {
+            invokeProcessDFlashContextKV(params);
+            return;
+        }
+    }
     invokeProcessKV_v2((char**)params.block_iter_params.block_ptrs,
                        params.k,
                        params.v,

@@ -1083,14 +1083,6 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
         replay_qk(p.q_projection_replay, p.k_projection_replay);
         if (p.fused_context_k_norm) {
             TM_CHECK(p.kv_only);
-            const int q_width = weights.head_num / weights.tp_size * weights.head_dim;
-            const int k_width = weights.kv_head_num / weights.tp_size * weights.head_dim;
-            invokeDFlashContextKNorm(qkv,
-                                     weights.k_norm->weight,
-                                     weights.k_norm->norm_eps_,
-                                     q_width,
-                                     k_width,
-                                     core::Context::stream().handle());
         }
         else {
             qk_norm(qkv, weights);
@@ -1374,6 +1366,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
             return !value || value[0] != '0';
         }();
         params.rope_param = per_layer_rope ? rope_params_.at(&weights) : rope_param_;
+        if (p.fused_context_k_norm) {
+            params.dflash_context_k_norm_weight = (const T*)weights.k_norm->weight.raw_data();
+            params.dflash_context_k_norm_eps    = weights.k_norm->norm_eps_;
+        }
         if (params.rope_param.type == RopeType::kDynamic) {
             params.rope_param.base = d.rope_base.data() + offset;
         }

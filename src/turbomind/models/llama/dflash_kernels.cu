@@ -695,57 +695,6 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
-template<int BLOCK>
-__global__ void DFlashContextKNormHalf(__half*       qkv,
-                                       const __half* weight,
-                                       float         eps,
-                                       int           rows,
-                                       int           stride,
-                                       int           q_width,
-                                       int           k_width)
-{
-    using Reduce = cub::BlockReduce<float, BLOCK>;
-    __shared__ typename Reduce::TempStorage storage;
-    __shared__ float inv_rms;
-
-    const int head_dim      = BLOCK;
-    const int heads_per_row = k_width / head_dim;
-    const int row           = blockIdx.x / heads_per_row;
-    const int head          = blockIdx.x % heads_per_row;
-    const int lane          = threadIdx.x;
-    const int offset        = row * stride + q_width + head * head_dim + lane;
-    const float value       = __half2float(qkv[offset]);
-    const float sum         = Reduce(storage).Sum(value * value);
-    if (lane == 0) {
-        inv_rms = rsqrtf(sum / head_dim + eps);
-    }
-    __syncthreads();
-    qkv[offset] = __float2half_rn(value * inv_rms * __half2float(weight[lane]));
-}
-
-void invokeDFlashContextKNorm(Tensor&       qkv,
-                              const Tensor& weight,
-                              float         eps,
-                              int           q_width,
-                              int           k_width,
-                              cudaStream_t  stream)
-{
-    TM_CHECK_EQ(qkv.dtype(), kHalf);
-    TM_CHECK_EQ(weight.dtype(), kHalf);
-    TM_CHECK_EQ(qkv.ndim(), 2);
-    TM_CHECK_EQ(weight.size(), 128);
-    TM_CHECK_EQ(k_width % 128, 0);
-    const int blocks = qkv.shape(0) * (k_width / 128);
-    DFlashContextKNormHalf<128><<<blocks, 128, 0, stream>>>(static_cast<__half*>(qkv.raw_data()),
-                                                            static_cast<const __half*>(weight.raw_data()),
-                                                            eps,
-                                                            qkv.shape(0),
-                                                            qkv.stride(0),
-                                                            q_width,
-                                                            k_width);
-    TM_CUDA_CHECK(cudaGetLastError());
-}
-
 void invokeDFlashGroupedConv(Tensor&       output,
                              const Tensor& input,
                              const Tensor& delta,
