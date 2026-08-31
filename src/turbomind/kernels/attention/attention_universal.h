@@ -506,7 +506,7 @@ struct AttentionUniversal {
 
         Mainloop mainloop;
         mainloop.SetCpInfo(params.cp_size, params.cp_rank);
-        if constexpr (Arch::value == 70) {
+        if constexpr (Arch::value == 700) {
             if (params.dflash_sglang_order && split_cnt == 1 && params.cp_size == 1) {
                 mainloop.ForwardDFlash(std::integral_constant<bool, kCausal>{},
                                        frag_Q,
