@@ -403,7 +403,7 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
     }();
     static const bool fused_context_kv_projection = [] {
         const char* value = std::getenv("TM_DFLASH_FUSED_CONTEXT_KV_PROJECTION");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     if (torch_qkv_layout && fused_context_kv_projection && attention_indices_.size() == 5) {
         constexpr int local_q_width  = 1024;
@@ -423,14 +423,11 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                                           cudaMemcpyDeviceToDevice,
                                           core::Context::stream().handle()));
         }
-        fused_context_kv_weight_ =
-            {{hidden_units_, (ssize_t)attention_indices_.size() * local_kv_width}, dtype_, kDEVICE};
-        invokeTransposeAxis01(static_cast<half*>(fused_context_kv_weight_.raw_data()),
-                              static_cast<half*>(stacked.raw_data()),
-                              (int)stacked.shape(0),
-                              (int)stacked.shape(1),
-                              1,
-                              core::Context::stream().handle());
+        // SGLang's FusedKVMaterializeHelper keeps the concatenated [N,K]
+        // rows and evaluates F.linear with a transposed logical operand. Keep
+        // the same physical layout and cublasGemmEx contract; transposing to
+        // [K,N] changes SM70 tensor-op accumulation for prompt-sized M.
+        fused_context_kv_weight_ = std::move(stacked);
         TM_CHECK_EQ(cublasCreate(&fused_context_kv_cublas_), CUBLAS_STATUS_SUCCESS);
 
         auto* first_layer = TM_CHECK_NOTNULL(weights_.layer(0));
@@ -882,7 +879,7 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
         const auto  stream = core::Context::stream().handle();
         TM_CHECK_EQ(cublasSetStream(fused_context_kv_cublas_, stream), CUBLAS_STATUS_SUCCESS);
         TM_CHECK_EQ(cublasGemmEx(fused_context_kv_cublas_,
-                                 CUBLAS_OP_N,
+                                 CUBLAS_OP_T,
                                  CUBLAS_OP_N,
                                  cols,
                                  rows,
@@ -890,7 +887,7 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
                                  &alpha,
                                  fused_context_kv_weight_.raw_data(),
                                  CUDA_R_16F,
-                                 cols,
+                                 hidden_units_,
                                  context.raw_data(),
                                  CUDA_R_16F,
                                  hidden_units_,
