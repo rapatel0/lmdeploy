@@ -248,7 +248,7 @@ void invokeQkRMSNorm(Tensor&       qkv,
     }();
     static const bool dflash_qk_full_product = [] {
         const char* value = std::getenv("TM_DFLASH_QK_FULL_PRODUCT");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
 
     auto invoke = [&](auto t) {
