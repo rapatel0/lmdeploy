@@ -399,7 +399,7 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
 
     static const bool torch_qkv_layout = [] {
         const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
-        return value && value[0] == '1';
+        return !value || value[0] != '0';
     }();
     if (torch_qkv_layout && attention_indices_.size() == 5) {
         constexpr int local_q_width  = 1024;
