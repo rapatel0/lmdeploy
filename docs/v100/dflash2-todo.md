@@ -69,13 +69,12 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Commit `4fe99716` replayed SGLang's exact target residual inside TurboMind across TP4. Context FC RMS fell from `44.2053` to `0.05926`, and normalized context passed parity at max abs `0.00390625`, RMS `0.000277`.
   - The context projector is functionally aligned after normalization; the dominant context mismatch is upstream target-model numerical trajectory drift. Artifacts: `/results/20260829_032508-sglang-dflash-parity-b753831db680` and `/results/20260829_035037-dflash-context-replay-4fe9971622bc`.
 
-- [ ] **Localize the first downstream draft mismatch under exact runtime context.**
-  - Target layer-0 FFN was a local-versus-global TP boundary error; shared residual RMS remains only `1.01e-4` through layer 5.
-  - Prompt-feature RMS grows gradually to `0.027449` at layer 61, but all source dtypes are FP16 and exact pre-communication replay regressed acceptance.
-  - SGLang `project_target_hidden` uses row 999 and the expected diagonal feature order. Its large difference from the pre-communication residual is introduced by the capture communication path, not row or feature permutation.
-  - Exact post-communication replay regressed commit/raw length from `2.800/2.831` to `2.495/2.520` and decode from `85.09` to `76.02` tok/s. Do not adopt either context replay in isolation.
-  - Capture and compare all downstream draft boundaries under exact post-communication replay; implement only the first equivalent measured mismatch.
-  - Artifacts: `/results/20260830_205123-sglang-dflash-parity-e72d0ec7e484` and `/results/20260830_210147-dflash-actual-context-replay-141ca20ddf79`.
+- [ ] **Close the first downstream draft mismatch under exact runtime context.**
+  - Target layer-0 FFN was a local-versus-global TP boundary error; shared residual RMS remains only `1.01e-4` through layer 5. All SGLang target trajectory source dtypes are FP16. A direct FP32-residual control left target-context parity unchanged, changed raw commit only `2.340` to `2.327`, regressed decode `70.60` to `68.99` tok/s, and was removed after exact identity passed.
+  - SGLang `project_target_hidden` uses row 999 and the expected diagonal feature order. Exact post-communication context replay regressed acceptance and is diagnostic-only.
+  - Under exact context and initial-normalization replay, block construction, convolution projection, and convolution side 0 agree. The first material discrepancy is layer-0 attention core output (reduced replay probe max abs `17.125`, RMS `0.1462`). Replaying SGLang's exact reduced attention output makes the rest of layer 0 nearly identical through its MLP, ruling out grouped-convolution side 1 as primary.
+  - Corrected snapshots show interleaved TurboMind Q/K projections and normalized Q/K closely match SGLang after layout conversion. Isolate RoPE, prompt K/V materialization, and core attention arithmetic next; implement only the first equivalent measured mismatch.
+  - Artifacts: `/results/20260830_205123-sglang-dflash-parity-e72d0ec7e484`, `/results/20260830_210147-dflash-actual-context-replay-141ca20ddf79`, `/results/20260831_043449-dflash-target-fp32-b38309313b24`, and `/results/20260831_044110-dflash-target-fp32-followup-b38309313b24`.
 
 - [x] **Validate selector edge-score narrowing semantics.**
   - Explicitly FP16-rounding `predecessor * hidden` produced the same 2.664 commit length and identical acceptance counts as FP32 intermediates.
