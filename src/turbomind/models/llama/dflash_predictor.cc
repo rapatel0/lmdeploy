@@ -423,8 +423,8 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
             {{hidden_units_, (ssize_t)attention_indices_.size() * local_kv_width}, dtype_, kDEVICE};
         invokeTransposeAxis01(static_cast<half*>(fused_context_kv_weight_.raw_data()),
                               static_cast<const half*>(stacked.raw_data()),
-                              stacked.shape(0),
-                              stacked.shape(1),
+                              (int)stacked.shape(0),
+                              (int)stacked.shape(1),
                               1,
                               core::Context::stream().handle());
         TM_CHECK_EQ(cublasCreate(&fused_context_kv_cublas_), CUBLAS_STATUS_SUCCESS);
