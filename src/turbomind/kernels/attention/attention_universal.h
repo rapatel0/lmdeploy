@@ -608,18 +608,39 @@ struct AttentionUniversal {
                    + (head_idx + hi) * params.max_split_k + split_idx;
         };
 
-        Impl::StoreO<false>(frag_O, frag_L, storage, [&](int hi, int qi, int di, const auto& vec) {
-            if (qi_begin + qi < qi_end && check_h(hi)) {
-                Store(&params.partial_O[get_index(hi, qi) * kHeadDim + di], vec);
-            }
-        });
-
-        Impl::ForeachML(frag_M, frag_L, [&](int hi, int qi, int ri, float M, float L) {
-            const int index = get_index(hi, qi);
-            if (qi_begin + qi < qi_end && ri == 0 && check_h(hi)) {
-                Store(&params.partial_ML[index * 2], Array<float, 2>{M, L});
-            }
-        });
+        if constexpr (kHeadDim == 128) {
+            // SGLang's grouped SM70 verifier stores each normalized split
+            // output in FP16 and combines it using a split log-sum-exp. Encode
+            // the same contract in the existing float workspaces: quantize the
+            // normalized partial through FP16, and publish raw-score-equivalent
+            // logsumexp with unit denominator.
+            Impl::StoreO<true>(frag_O, frag_L, storage, [&](int hi, int qi, int di, const auto& vec) {
+                if (qi_begin + qi < qi_end && check_h(hi)) {
+                    const auto quantized = cast<float>(cast<half>(vec));
+                    Store(&params.partial_O[get_index(hi, qi) * kHeadDim + di], quantized);
+                }
+            });
+            Impl::ForeachML(frag_M, frag_L, [&](int hi, int qi, int ri, float M, float L) {
+                const int index = get_index(hi, qi);
+                if (qi_begin + qi < qi_end && ri == 0 && check_h(hi)) {
+                    const float logsumexp = L > 0.f ? M + log2f(L) / params.inv_sqrt_dh : M;
+                    Store(&params.partial_ML[index * 2], Array<float, 2>{logsumexp, 1.f});
+                }
+            });
+        }
+        else {
+            Impl::StoreO<false>(frag_O, frag_L, storage, [&](int hi, int qi, int di, const auto& vec) {
+                if (qi_begin + qi < qi_end && check_h(hi)) {
+                    Store(&params.partial_O[get_index(hi, qi) * kHeadDim + di], vec);
+                }
+            });
+            Impl::ForeachML(frag_M, frag_L, [&](int hi, int qi, int ri, float M, float L) {
+                const int index = get_index(hi, qi);
+                if (qi_begin + qi < qi_end && ri == 0 && check_h(hi)) {
+                    Store(&params.partial_ML[index * 2], Array<float, 2>{M, L});
+                }
+            });
+        }
     }
 };
 
