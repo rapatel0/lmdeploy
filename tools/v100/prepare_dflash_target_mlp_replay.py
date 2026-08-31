@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
+
+AUDITED_PROMPT_SHA256 = "9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01"
+AUDITED_TOKEN_198_EMBEDDING_SHA256 = "19ae10cba7028c81d25b525c086479035b4069702bcd74764e16e66495669234"
 
 
 def load_manifest(path: Path) -> list[dict[str, object]]:
@@ -47,13 +51,25 @@ def main() -> int:
         if len(matching) != 1:
             raise RuntimeError(f"rank {rank} missing target trajectory")
         record = matching[0]
-        if record.get("position") != 999 or record.get("token_id") != 198:
+        if record.get("position") != 999:
             raise RuntimeError(f"rank {rank} has invalid target alignment: {record}")
         try:
             trajectory_file = str(record["file"])
         except (KeyError, TypeError, ValueError) as error:
             raise RuntimeError(f"rank {rank} has invalid trajectory metadata") from error
         trajectory = np.fromfile(directory / trajectory_file, dtype="<f2").reshape(38, 5120)
+        token_id = record.get("token_id")
+        if token_id != 198:
+            # Some split-prefill ForwardBatch objects omit input_ids. Accept
+            # that explicit sentinel only when both the audited prompt hash
+            # and the checkpoint-exact token-198 embedding prove alignment.
+            embedding_sha256 = hashlib.sha256(trajectory[0].tobytes()).hexdigest()
+            if not (
+                token_id == -1
+                and record.get("input_ids_sha256") == AUDITED_PROMPT_SHA256
+                and embedding_sha256 == AUDITED_TOKEN_198_EMBEDDING_SHA256
+            ):
+                raise RuntimeError(f"rank {rank} has invalid target alignment: {record}")
         row = trajectory[4].copy()  # target.layer0.mlp_norm
         path = args.output / f"rank-{rank}.bin"
         row.tofile(path)
