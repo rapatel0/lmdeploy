@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Extract SGLang's TP4 layer-0 MLP-normalized final prompt row."""
 
-from __future__ import annotations
-
 import argparse
 import hashlib
 import json

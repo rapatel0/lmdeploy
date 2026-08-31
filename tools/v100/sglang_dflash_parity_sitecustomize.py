@@ -692,7 +692,8 @@ if _TRACE_ROOT:
 
     def _traced_row_parallel_forward(self, input_, skip_all_reduce=False, forward_batch=None):
         name = getattr(self, "_dflash_local_trace_name", "")
-        if not (_armed() and name and self.reduce_results and self.tp_size > 1 and not skip_all_reduce):
+        trace_now = _armed() or torch.cuda.is_current_stream_capturing()
+        if not (trace_now and name and self.reduce_results and self.tp_size > 1 and not skip_all_reduce):
             return _orig_row_parallel_forward(
                 self,
                 input_,
