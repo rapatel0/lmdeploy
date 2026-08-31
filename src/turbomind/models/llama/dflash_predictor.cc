@@ -401,7 +401,11 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
         const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
         return !value || value[0] != '0';
     }();
-    if (torch_qkv_layout && attention_indices_.size() == 5) {
+    static const bool fused_context_kv_projection = [] {
+        const char* value = std::getenv("TM_DFLASH_FUSED_CONTEXT_KV_PROJECTION");
+        return value && value[0] == '1';
+    }();
+    if (torch_qkv_layout && fused_context_kv_projection && attention_indices_.size() == 5) {
         constexpr int local_q_width  = 1024;
         constexpr int local_kv_width = 512;
         Tensor stacked{{(ssize_t)attention_indices_.size() * local_kv_width, hidden_units_}, dtype_, kDEVICE};
