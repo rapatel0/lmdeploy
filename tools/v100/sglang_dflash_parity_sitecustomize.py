@@ -728,6 +728,32 @@ if _TRACE_ROOT:
 
     _df.DFlashDraftModel.forward = _traced_forward
 
+    import sglang.srt.layers.attention.triton_backend as _triton_backend
+
+    _orig_triton_extend = _triton_backend.TritonAttnBackend.forward_extend
+
+    def _traced_triton_extend(self, q, k, v, layer, forward_batch, *args, **kwargs):
+        if _armed() and getattr(layer, "layer_id", -1) == 0:
+            metadata = self.forward_metadata
+            _dump("layer0.attention.backend_q", q)
+            _dump("layer0.attention.backend_k", k)
+            _dump("layer0.attention.backend_v", v)
+            if metadata is not None:
+                for field in (
+                    "qo_indptr",
+                    "kv_indptr",
+                    "kv_indices",
+                    "window_kv_indptr",
+                    "window_kv_indices",
+                    "window_kv_offsets",
+                    "custom_mask",
+                    "mask_indptr",
+                ):
+                    _dump(f"layer0.attention.metadata.{field}", getattr(metadata, field, None))
+        return _orig_triton_extend(self, q, k, v, layer, forward_batch, *args, **kwargs)
+
+    _triton_backend.TritonAttnBackend.forward_extend = _traced_triton_extend
+
     _orig_prepare = _df.DFlashGroupedConv.prepare
 
     def _traced_prepare(self, hidden_states):
