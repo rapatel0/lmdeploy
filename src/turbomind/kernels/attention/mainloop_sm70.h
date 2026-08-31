@@ -135,6 +135,68 @@ struct Mainloop<arch::Sm70, Impl_> {
         }
     }
 
+    template<bool Causal, class CacheIter, class StoreS>
+    __device__ void ForwardDFlash(std::integral_constant<bool, Causal>,
+                                  FragQ&         frag_Q,
+                                  CacheIter&     cache_iter,
+                                  FragO&         frag_O,
+                                  FragM&         frag_M,
+                                  FragL&         frag_L,
+                                  int            offset_Q,
+                                  int            first_K,
+                                  int            history_len,
+                                  int            input_len,
+                                  int            max_step,
+                                  int            window_size,
+                                  float          qk_scale,
+                                  SharedStorage& storage,
+                                  const StoreS&  store_S)
+    {
+        GmemIterK gmem_K{};
+        GmemIterV gmem_V{};
+        Impl::SetSmemKV(gmem_K, gmem_V, storage, true);
+
+        typename Impl::StateQK state_QK{storage, frag_Q};
+        typename Impl::StatePV state_PV{storage, true};
+        constexpr auto         nop = [](int) {};
+
+        auto process_tile = [&](int offset_K, int valid_keys) {
+            cache_iter.SetPosition(offset_K);
+            typename GmemIterK::Fragment tmp_K;
+            typename GmemIterV::Fragment tmp_V;
+            gmem_K.Load<true>(cache_iter, tmp_K, valid_keys);
+            gmem_K.Save(tmp_K);
+            gmem_V.Load<true>(cache_iter, tmp_V, valid_keys);
+
+            FragS frag_S{};
+            Impl::Sync();
+            state_QK.Load(0, 0);
+            Impl::ComputeQK(state_QK, frag_S, 0, nop, [&] {});
+            gmem_V.Save(tmp_V);
+
+            ApplyMask<Causal>(frag_S, offset_Q, offset_K, max_step, window_size);
+            Impl::Softmax<true>(frag_S, frag_M, frag_L, frag_O, qk_scale);
+            Impl::ConvertStoP(frag_S, state_PV.frag_P, storage);
+
+            Impl::Sync();
+            state_PV.Load(0, 0);
+            Impl::ComputePV(state_PV, frag_O, 0, nop, [&] {});
+        };
+
+        // Match SGLang's extend_attention kernel: consume the prefix in
+        // ascending 64-key tiles, including its partial tail, then process the
+        // eight proposal keys as a separate causal softmax stage. TurboMind's
+        // generic path walks a flattened prefix+proposal span in reverse and
+        // mixes both regions in the final tile, changing FP32 online-softmax
+        // accumulation despite identical Q/K/V tensors.
+        for (int offset_K = first_K; offset_K < history_len; offset_K += CTA_S) {
+            process_tile(offset_K, min(CTA_S, history_len - offset_K));
+        }
+        if (input_len > 0) {
+            process_tile(history_len, input_len);
+        }
+    }
+
     template<bool Causal>
     __device__ void ApplyMask(FragS& frag_S, int offset_Q, int offset_K, int max_step, int window_size)
     {

@@ -1368,6 +1368,15 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         // not leave AttentionParams at its causal default.
         params.causal      = weights.causal;
         params.window_size = weights.window_size;
+        static const bool enable_dflash_sglang_order = [] {
+            const char* value = std::getenv("TM_DFLASH_SGLANG_ATTN_ORDER");
+            return value && value[0] == '1';
+        }();
+        params.dflash_sglang_order = enable_dflash_sglang_order
+                                      && engine_param_.speculative_algorithm == "dflash2" && arch_ == 70
+                                      && quant_policy_ == 0 && p.use_dflash_workspace && d.decode.n == 0
+                                      && d.prefill.n == 1 && d.prefill.q_sum == dflash_block && dflash_block == 8
+                                      && size_per_head == 128 && weights.causal && weights.window_size > 0;
         if (!params.window_size) {
             params.window_size = 256 << 20;  // 256 M
         }

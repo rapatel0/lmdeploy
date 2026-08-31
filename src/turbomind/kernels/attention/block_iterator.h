@@ -27,6 +27,12 @@ struct BlockIterator {
         block_ = block_ptrs_[block_id_];
     }
 
+    __device__ void SetPosition(int token_id)
+    {
+        block_head_.get_block_coord(token_id, block_id_, block_ti_);
+        block_ = block_ptrs_[block_id_];
+    }
+
     __device__ void Advance()
     {
         block_ti_ -= CTA_S;
@@ -37,6 +43,16 @@ struct BlockIterator {
         if (block_id_ >= 0) {
             block_ = block_ptrs_[block_id_];
         }
+    }
+
+    __device__ void AdvanceForward()
+    {
+        block_ti_ += CTA_S;
+        if (block_ti_ >= block_head_.block_len()) {
+            block_ti_ -= block_head_.block_len();
+            block_id_ += 1;
+        }
+        block_ = block_ptrs_[block_id_];
     }
 
     template<int Index>

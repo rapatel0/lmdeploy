@@ -504,26 +504,65 @@ struct AttentionUniversal {
         }
 #endif
 
-        cache_iter.SetTile(first_K_tile + iter_end - 1);
-
         Mainloop mainloop;
         mainloop.SetCpInfo(params.cp_size, params.cp_rank);
-        mainloop(std::integral_constant<bool, kCausal>{},
-                 frag_Q,
-                 cache_iter,
-                 frag_O,
-                 frag_M,
-                 frag_L,
-                 offset_Q,
-                 offset_K,
-                 max_K,
-                 tile_iter,
-                 mask_iter_back,
-                 mask_iter_front,
-                 params.window_size,
-                 params.inv_sqrt_dh,
-                 storage,
-                 StoreS(params, query_idx, head_idx, batch_idx, context_len));
+        if constexpr (Arch::value == 70) {
+            if (params.dflash_sglang_order && split_cnt == 1 && params.cp_size == 1) {
+                mainloop.ForwardDFlash(std::integral_constant<bool, kCausal>{},
+                                       frag_Q,
+                                       cache_iter,
+                                       frag_O,
+                                       frag_M,
+                                       frag_L,
+                                       offset_Q,
+                                       first_K,
+                                       history_len,
+                                       input_len,
+                                       context_len,
+                                       params.window_size,
+                                       params.inv_sqrt_dh,
+                                       storage,
+                                       StoreS(params, query_idx, head_idx, batch_idx, context_len));
+            }
+            else {
+                cache_iter.SetTile(first_K_tile + iter_end - 1);
+                mainloop(std::integral_constant<bool, kCausal>{},
+                         frag_Q,
+                         cache_iter,
+                         frag_O,
+                         frag_M,
+                         frag_L,
+                         offset_Q,
+                         offset_K,
+                         max_K,
+                         tile_iter,
+                         mask_iter_back,
+                         mask_iter_front,
+                         params.window_size,
+                         params.inv_sqrt_dh,
+                         storage,
+                         StoreS(params, query_idx, head_idx, batch_idx, context_len));
+            }
+        }
+        else {
+            cache_iter.SetTile(first_K_tile + iter_end - 1);
+            mainloop(std::integral_constant<bool, kCausal>{},
+                     frag_Q,
+                     cache_iter,
+                     frag_O,
+                     frag_M,
+                     frag_L,
+                     offset_Q,
+                     offset_K,
+                     max_K,
+                     tile_iter,
+                     mask_iter_back,
+                     mask_iter_front,
+                     params.window_size,
+                     params.inv_sqrt_dh,
+                     storage,
+                     StoreS(params, query_idx, head_idx, batch_idx, context_len));
+        }
 
         Impl::Merge(frag_O, frag_M, frag_L, params.inv_sqrt_dh, storage);
 
