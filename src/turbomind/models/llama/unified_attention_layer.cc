@@ -1254,7 +1254,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
     // audited fixed shape. The first parity arm remains opt-in.
     const bool use_dflash_tilelang_draft_attention =
         enable_dflash_tilelang_draft_attention && engine_param_.speculative_algorithm == "dflash2" && arch_ == 70 &&
-        use_dflash_workspace && p.frozen_kv && !is_mla && !weights.causal && quant_policy_ == 0 &&
+        use_dflash_workspace && p.frozen_kv && !is_mla && quant_policy_ == 0 &&
         d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == 8 && d.prefill.k_sum <= 16 * 1024 &&
         dtype == kHalf && dflash_block == 8 && q_count == 8 && local_head_num == 8 && local_kv_head_num == 2 &&
         size_per_head == 128;
@@ -1540,7 +1540,12 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                         if constexpr (std::is_same_v<T, half>) {
                             const int context_len =
                                 p.flattened_kv_replay ? p.flattened_kv_replay.shape(2) : d.prefill.k_sum;
-                            dispatchDFlashTileLangAttention(params, context_len, tmp_kv.size());
+                            // The DFlash verifier evaluates sibling proposals against the same frozen
+                            // prefix. Its attention is intentionally noncausal even though the model's
+                            // ordinary autoregressive attention weights are marked causal.
+                            auto tilelang_params = params;
+                            tilelang_params.causal = false;
+                            dispatchDFlashTileLangAttention(tilelang_params, context_len, tmp_kv.size());
                             if (p.trace_fn) {
                                 const std::size_t flattened_elements =
                                     std::size_t{2} * local_kv_head_num * context_len * size_per_head;
@@ -1555,15 +1560,15 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                                      kHalf,
                                                      kDEVICE};
                                 Tensor partial_o_view{
-                                    (void*)params.partial_O, Layout{{40, 16, 8, 128}}, kHalf, kDEVICE};
+                                    (void*)tilelang_params.partial_O, Layout{{40, 16, 8, 128}}, kHalf, kDEVICE};
                                 Tensor partial_lse_view{
-                                    (void*)params.partial_ML, Layout{{40, 16, 8}}, kFloat32, kDEVICE};
+                                    (void*)tilelang_params.partial_ML, Layout{{40, 16, 8}}, kFloat32, kDEVICE};
                                 Tensor block_table_view{
-                                    (void*)params.split_cnt, Layout{{1, 1024}}, kInt32, kDEVICE};
+                                    (void*)tilelang_params.split_cnt, Layout{{1, 1024}}, kInt32, kDEVICE};
                                 Tensor cache_seqlens_view{
-                                    (void*)(params.split_cnt + 1024), Layout{{1}}, kInt32, kDEVICE};
+                                    (void*)(tilelang_params.split_cnt + 1024), Layout{{1}}, kInt32, kDEVICE};
                                 Tensor query_start_loc_view{
-                                    (void*)params.cu_q_len, Layout{{2}}, kInt32, kDEVICE};
+                                    (void*)tilelang_params.cu_q_len, Layout{{2}}, kInt32, kDEVICE};
                                 p.trace_fn(p.trace_context, "layer0.attention.tilelang.packed_k", packed_k_view);
                                 p.trace_fn(p.trace_context, "layer0.attention.tilelang.packed_v", packed_v_view);
                                 p.trace_fn(p.trace_context, "layer0.attention.tilelang.partial_o", partial_o_view);
