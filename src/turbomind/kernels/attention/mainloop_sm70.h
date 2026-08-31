@@ -107,7 +107,13 @@ struct Mainloop<arch::Sm70, Impl_> {
                 ApplyMask<Causal>(frag_S, offset_Q, offset_K, max_step, window_size);
             }
 
-            Impl::Softmax<is_mask>(frag_S, frag_M, frag_L, frag_O, qk_scale);
+            // Triton extend attention scales QK scores before row-max and
+            // subtraction, then applies its base-2 exponential conversion.
+            // Preserve that FP32 rounding boundary instead of scaling only
+            // the post-subtraction exponent argument.
+            constexpr float kLog2E = 1.4426950408889634f;
+            Impl::ForeachS(frag_S, [&](int, int, int, int, float& score) { score *= qk_scale / kLog2E; });
+            Impl::Softmax<is_mask>(frag_S, frag_M, frag_L, frag_O, kLog2E);
 
             Impl::ConvertStoP(frag_S, state_PV.frag_P, storage);
 
