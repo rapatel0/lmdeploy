@@ -504,10 +504,16 @@ struct AttentionUniversal {
         }
 #endif
 
-        cache_iter.SetTile(first_K_tile + iter_end - 1);
+        const bool forward_k_tiles = params.dflash_forward_k_tiles && params.cp_size == 1;
+        const int  mainloop_offset_K =
+            forward_k_tiles ? (first_K_tile + iter_begin) * CTA_S : offset_K;
+        cache_iter.SetTile(forward_k_tiles ? first_K_tile + iter_begin : first_K_tile + iter_end - 1);
 
         Mainloop mainloop;
         mainloop.SetCpInfo(params.cp_size, params.cp_rank);
+        if constexpr (std::is_same_v<Arch, arch::Sm70>) {
+            mainloop.SetForwardKTiles(forward_k_tiles);
+        }
         mainloop(std::integral_constant<bool, kCausal>{},
                  frag_Q,
                  cache_iter,
@@ -515,7 +521,7 @@ struct AttentionUniversal {
                  frag_M,
                  frag_L,
                  offset_Q,
-                 offset_K,
+                 mainloop_offset_K,
                  max_K,
                  tile_iter,
                  mask_iter_back,

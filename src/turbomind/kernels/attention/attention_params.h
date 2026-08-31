@@ -71,6 +71,7 @@ struct AttentionParams {
     float inv_sqrt_dh;
     int   window_size;
     bool  causal{true};
+    bool  dflash_forward_k_tiles{};
     // Frozen-KV parallel proposals carry Q rows whose positions begin after
     // the read-only context even though cu_k_len excludes those proposal rows.
     int q_position_shift{};

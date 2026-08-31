@@ -40,13 +40,19 @@ struct Mainloop<arch::Sm70, Impl_> {
 
     static constexpr int CTA_S = Impl::CTA_S;
 
-    int cp_size_{1};
-    int cp_rank_{0};
+    int  cp_size_{1};
+    int  cp_rank_{0};
+    bool forward_k_tiles_{};
 
     __device__ void SetCpInfo(int cp_size, int cp_rank)
     {
         cp_size_ = cp_size;
         cp_rank_ = cp_rank;
+    }
+
+    __device__ void SetForwardKTiles(bool value)
+    {
+        forward_k_tiles_ = value;
     }
 
     template<bool Causal, class CacheIter, class StoreS>
@@ -88,7 +94,12 @@ struct Mainloop<arch::Sm70, Impl_> {
             typename GmemIterV::Fragment tmp_V;
 
             gmem_V.Load<is_residue>(cache_iter, tmp_V, is_residue ? max_step - offset_K : CTA_S);
-            cache_iter.Advance();
+            if (forward_k_tiles_) {
+                cache_iter.AdvanceForward();
+            }
+            else {
+                cache_iter.Advance();
+            }
 
             FragS frag_S{};
 
@@ -118,20 +129,43 @@ struct Mainloop<arch::Sm70, Impl_> {
 
             gmem_K.Save(tmp_K);
 
-            offset_K -= CTA_S;
+            offset_K += forward_k_tiles_ ? CTA_S : -CTA_S;
         };
 
-        for (int mask_iter = max(1, mask_iter_back); tile_iter > 0 && mask_iter > 0; --tile_iter, --mask_iter) {
-            loop(std::true_type{}, std::true_type{});
+        if (forward_k_tiles_) {
+            // Triton extend attention traverses prefix tiles from oldest to
+            // newest. Preserve that online-softmax accumulation order for the
+            // DFlash frozen-KV block. The last/high tile is the only possible
+            // residue; front masks apply to the first/low tiles.
+            for (int mask_iter = mask_iter_front; tile_iter > mask_iter_back && mask_iter > 0;
+                 --tile_iter, --mask_iter) {
+                loop(std::false_type{}, std::true_type{});
+            }
+            PRAGMA_NO_UNROLL
+            for (; tile_iter > mask_iter_back; --tile_iter) {
+                loop(std::false_type{}, std::false_type{});
+            }
+            for (; tile_iter > 1; --tile_iter) {
+                loop(std::false_type{}, std::true_type{});
+            }
+            if (tile_iter > 0) {
+                loop(std::true_type{}, std::true_type{});
+            }
         }
+        else {
+            for (int mask_iter = max(1, mask_iter_back); tile_iter > 0 && mask_iter > 0;
+                 --tile_iter, --mask_iter) {
+                loop(std::true_type{}, std::true_type{});
+            }
 
-        PRAGMA_NO_UNROLL
-        for (; tile_iter > mask_iter_front; --tile_iter) {
-            loop(std::false_type{}, std::false_type{});
-        }
+            PRAGMA_NO_UNROLL
+            for (; tile_iter > mask_iter_front; --tile_iter) {
+                loop(std::false_type{}, std::false_type{});
+            }
 
-        for (; tile_iter > 0; --tile_iter) {
-            loop(std::false_type{}, std::true_type{});
+            for (; tile_iter > 0; --tile_iter) {
+                loop(std::false_type{}, std::true_type{});
+            }
         }
     }
 

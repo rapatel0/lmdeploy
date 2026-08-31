@@ -29,6 +29,12 @@ struct LinearIterator {
         }
     }
 
+    __device__ void AdvanceForward()
+    {
+        ++tile_id_;
+        key_ptr_ += CTA_S * HeadDim;
+    }
+
     template<int Index>
     __device__ const T* OffsetPtr(int offset) const
     {
