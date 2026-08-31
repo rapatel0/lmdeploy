@@ -1230,6 +1230,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         const char* value = std::getenv("TM_DFLASH_DRAFT_GRAPH");
         return value && value[0] == '1';
     }();
+    static const bool enable_dflash_tilelang_draft_attention = [] {
+        const char* value = std::getenv("TM_DFLASH_TILELANG_DRAFT_ATTENTION");
+        return value && value[0] == '1';
+    }();
     const int dflash_block = engine_param_.speculative_dflash_block_size > 0 ?
                                  engine_param_.speculative_dflash_block_size :
                                  engine_param_.num_draft_tokens + 1;
@@ -1245,6 +1249,14 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                              size_per_head == 256 && weights.window_size == 0;
     const bool use_dflash_paged_q8 = (enable_dflash_paged_q8 || use_dflash_grouped_paged_q8) &&
                                      dflash_paged_q8_eligible;
+    // Match SGLang's exact generated TileLang draft verifier only on its
+    // audited fixed shape. The first parity arm remains opt-in.
+    const bool use_dflash_tilelang_draft_attention =
+        enable_dflash_tilelang_draft_attention && engine_param_.speculative_algorithm == "dflash2" && arch_ == 70 &&
+        use_dflash_workspace && p.frozen_kv && !is_mla && !weights.causal && quant_policy_ == 0 &&
+        d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == 8 && d.prefill.k_sum <= 16 * 1024 &&
+        dtype == kHalf && dflash_block == 8 && q_count == 8 && local_head_num == 8 && local_kv_head_num == 2 &&
+        size_per_head == 128;
     const bool use_fixed_dflash_graph_geometry =
         use_dflash_paged_q8 && enable_dflash_draft_graph && p.use_dflash_workspace;
     const int dflash_graph_k_bound = weights.window_size > 0 ?
@@ -1449,7 +1461,8 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         const int offset = d.decode.n;
         // We are executing prefill & decoding kernels concurrently, but only have 1 workspace
         // disable split kv for prefill for now
-        auto params = CreateParams(offset, d.prefill, use_dflash_grouped_paged_q8 ? 8 : 1, pf_stream);
+        auto params = CreateParams(
+            offset, d.prefill, use_dflash_tilelang_draft_attention ? 40 : (use_dflash_grouped_paged_q8 ? 8 : 1), pf_stream);
         if constexpr (sizeof(T) == 2) {
             if (!p.frozen_kv) {
                 invokeProcessKV_v2_(params);
@@ -1481,7 +1494,12 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                     if (p.trace_fn && p.trace_flattened_kv) {
                         p.trace_fn(p.trace_context, p.trace_flattened_kv, tmp_kv);
                     }
-                    dispatchAttention(params);
+                    if (use_dflash_tilelang_draft_attention) {
+                        dispatchDFlashTileLangAttention(params, d.prefill.k_sum, tmp_kv.size());
+                    }
+                    else {
+                        dispatchAttention(params);
+                    }
                 }
                 TM_CUDA_CHECK(cudaGetLastError());
             }
