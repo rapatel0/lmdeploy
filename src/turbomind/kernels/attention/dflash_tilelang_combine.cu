@@ -1,10 +1,13 @@
 // Generated from SGLang's Apache-2.0 TileLang SM70 DFlash verifier.
 // Specialization: B1, Q8, H8/HKV2, D128, FP16 KV, noncausal, 40 split slots.
 #include "attention.h"
-#include "tilelang_compat/tilelang_sm70_compat.h"
+#include "tilelang_compat/common.h"
 #include "src/turbomind/utils/cuda_utils.h"
 
+#include <cuda.h>
 #include <cstddef>
+
+#include "dflash_tilelang_ptx.inc"
 
 extern "C" __global__ void dflash_tilelang_partial_kernel(const half_t* __restrict__ K_cache,
                                                            float* __restrict__ Partial_LSE,
@@ -66,6 +69,40 @@ extern "C" __global__ void __launch_bounds__(128, 1) dflash_tilelang_combine_ker
 
 namespace turbomind {
 namespace {
+
+void CheckDriver(CUresult result)
+{
+    if (result != CUDA_SUCCESS) {
+        const char* name{};
+        const char* message{};
+        cuGetErrorName(result, &name);
+        cuGetErrorString(result, &message);
+        TM_CHECK(false) << "CUDA driver failure: " << (name ? name : "unknown") << ": "
+                        << (message ? message : "unknown");
+    }
+}
+
+struct DFlashTileLangDriverKernels {
+    CUmodule   partial_module{};
+    CUmodule   combine_module{};
+    CUfunction partial{};
+    CUfunction combine{};
+
+    DFlashTileLangDriverKernels()
+    {
+        CheckDriver(cuModuleLoadData(&partial_module, kDFlashTileLangPartialPtx));
+        CheckDriver(cuModuleLoadData(&combine_module, kDFlashTileLangCombinePtx));
+        CheckDriver(cuModuleGetFunction(&partial, partial_module, "main_kernel"));
+        CheckDriver(cuModuleGetFunction(&combine, combine_module, "main_kernel"));
+        CheckDriver(cuFuncSetAttribute(partial, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, 59392));
+    }
+};
+
+DFlashTileLangDriverKernels& GetDFlashTileLangDriverKernels()
+{
+    static DFlashTileLangDriverKernels kernels;
+    return kernels;
+}
 
 __global__ void PackDFlashTileLangInputs(const half_t* __restrict__ q,
                                          int64_t q_stride,
@@ -139,29 +176,49 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                                             params.split_cnt,
                                                             context_len);
     TM_CUDA_CHECK(cudaGetLastError());
-    TM_CUDA_CHECK(cudaFuncSetAttribute(
-        dflash_tilelang_partial_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kPartialSmem));
 
-    dflash_tilelang_partial_kernel<<<dim3(2, 40, 1), 256, kPartialSmem, params.stream>>>(
-        packed_k,
-        params.partial_ML,
-        reinterpret_cast<half_t*>(params.partial_O),
-        packed_q,
-        packed_v,
-        params.split_cnt,
-        params.split_cnt + 1024,
-        params.cu_q_len,
-        8,
-        kSoftmaxScale);
-    TM_CUDA_CHECK(cudaGetLastError());
+    auto& kernels = GetDFlashTileLangDriverKernels();
+    auto* partial_lse = params.partial_ML;
+    auto* partial_o = reinterpret_cast<half_t*>(params.partial_O);
+    auto* block_table = params.split_cnt;
+    auto* cache_seqlens = params.split_cnt + 1024;
+    auto* query_start_loc = params.cu_q_len;
+    int nt = 8;
+    float softmax_scale = kSoftmaxScale;
+    void* partial_args[] = {&packed_k,
+                            &partial_lse,
+                            &partial_o,
+                            &packed_q,
+                            &packed_v,
+                            &block_table,
+                            &cache_seqlens,
+                            &query_start_loc,
+                            &nt,
+                            &softmax_scale};
+    CheckDriver(cuLaunchKernel(kernels.partial,
+                               2,
+                               40,
+                               1,
+                               256,
+                               1,
+                               1,
+                               kPartialSmem,
+                               reinterpret_cast<CUstream>(params.stream),
+                               partial_args,
+                               nullptr));
 
-    dflash_tilelang_combine_kernel<<<dim3(16, 8, 1), 128, kCombineSmem, params.stream>>>(
-        packed_q,
-        params.partial_ML,
-        reinterpret_cast<const half_t*>(params.partial_O),
-        params.split_cnt + 1024,
-        params.cu_q_len);
-    TM_CUDA_CHECK(cudaGetLastError());
+    void* combine_args[] = {&packed_q, &partial_lse, &partial_o, &cache_seqlens, &query_start_loc};
+    CheckDriver(cuLaunchKernel(kernels.combine,
+                               16,
+                               8,
+                               1,
+                               128,
+                               1,
+                               1,
+                               kCombineSmem,
+                               reinterpret_cast<CUstream>(params.stream),
+                               combine_args,
+                               nullptr));
 }
 
 }  // namespace turbomind

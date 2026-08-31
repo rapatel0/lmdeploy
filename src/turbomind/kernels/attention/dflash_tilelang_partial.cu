@@ -1,6 +1,7 @@
 // Generated from SGLang's Apache-2.0 TileLang SM70 DFlash verifier.
 // Specialization: B1, Q8, H8/HKV2, D128, FP16 KV, noncausal, 40 split slots.
-#include "tilelang_compat/tilelang_sm70_compat.h"
+#include "tilelang_compat/instruction/mma_sm70.h"
+#include "tilelang_compat/reduce.h"
 #include <math_constants.h>
 
 extern "C" __global__ void dflash_tilelang_partial_kernel(const half_t* __restrict__ K_cache, float* __restrict__ Partial_LSE, half_t* __restrict__ Partial_O, const half_t* __restrict__ Q, const half_t* __restrict__ V_cache, const int* __restrict__ block_table, const int* __restrict__ cache_seqlens, const int* __restrict__ query_start_loc, int nt, float sm_scale);

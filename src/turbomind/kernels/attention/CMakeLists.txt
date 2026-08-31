@@ -6,7 +6,6 @@ add_library(attention STATIC
             attention.cu
             decoding.cu
             dflash_tilelang_combine.cu
-            dflash_tilelang_partial.cu
             kv_cache_utils_v2.cu
             cp_utils.cu
             registry.cu
