@@ -1,5 +1,8 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 
+#include <cublas_v2.h>
+#include <cstdlib>
+
 #include "src/turbomind/core/allocator.h"
 #include "src/turbomind/core/context.h"
 #include "src/turbomind/core/core.h"
@@ -41,6 +44,7 @@ struct LlamaLinear::Impl {
         TM_CUDA_CHECK(cudaMemsetAsync(workspace_.barriers, 0, workspace_.barriers_size, st));
         TM_CUDA_CHECK(cudaMallocAsync(&workspace_.flags, sizeof(int), st));
 
+        TM_CHECK_EQ(cublasCreate(&torch_cublas_), CUBLAS_STATUS_SUCCESS);
         core::Context::stream().Sync();
     }
 
@@ -53,6 +57,10 @@ struct LlamaLinear::Impl {
         cudaFreeAsync(workspace_.tensormaps, st);
         cudaFreeAsync(workspace_.flags, st);
         workspace_ = {};
+        if (torch_cublas_) {
+            cublasDestroy(torch_cublas_);
+            torch_cublas_ = {};
+        }
     }
 
     std::tuple<Tensor, MatrixLayout, Tensor, MatrixLayout> GetOperandB(const LinearWeight& weight)
@@ -190,25 +198,64 @@ struct LlamaLinear::Impl {
             W_ptr  = output_scales.raw_data();
         }
 
-        auto ec = gemm_.Run(op,
-                            1.f,
-                            A.raw_data(),
-                            desc_A,
-                            U.data_or((void*)nullptr),
-                            desc_U,
-                            B.raw_data(),
-                            desc_B,
-                            V.data_or((void*)nullptr),
-                            desc_V,
-                            0.f,
-                            D.raw_data(),
-                            desc_D,
-                            D.raw_data(),
-                            desc_D,
-                            W_ptr,
-                            desc_W,
-                            workspace_,
-                            core::Context::stream().handle());
+        static const bool dflash_qkv_torch_layout = [] {
+            const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
+            return value && value[0] == '1';
+        }();
+        const bool direct_torch_qkv = dflash_qkv_torch_layout && !offsets && !indices && weight.input_dim == 5120
+                                       && weight.output_dim == 1536 && desc_A.type == kHalf && desc_B.type == kHalf
+                                       && desc_D.type == kHalf && desc_B.order == kColMajor;
+        int ec{};
+        if (direct_torch_qkv) {
+            const float alpha = 1.f;
+            const float beta  = 0.f;
+            const int   m     = desc_A.rows;
+            const int   n     = desc_B.cols;
+            const int   k     = desc_A.cols;
+            const auto  stream = core::Context::stream().handle();
+            TM_CHECK_EQ(cublasSetStream(torch_cublas_, stream), CUBLAS_STATUS_SUCCESS);
+            const auto status = cublasGemmEx(torch_cublas_,
+                                             CUBLAS_OP_T,
+                                             CUBLAS_OP_N,
+                                             n,
+                                             m,
+                                             k,
+                                             &alpha,
+                                             B.raw_data(),
+                                             CUDA_R_16F,
+                                             k,
+                                             A.raw_data(),
+                                             CUDA_R_16F,
+                                             k,
+                                             &beta,
+                                             D.raw_data(),
+                                             CUDA_R_16F,
+                                             n,
+                                             CUDA_R_32F,
+                                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+            ec = status == CUBLAS_STATUS_SUCCESS ? 0 : 1;
+        }
+        else {
+            ec = gemm_.Run(op,
+                           1.f,
+                           A.raw_data(),
+                           desc_A,
+                           U.data_or((void*)nullptr),
+                           desc_U,
+                           B.raw_data(),
+                           desc_B,
+                           V.data_or((void*)nullptr),
+                           desc_V,
+                           0.f,
+                           D.raw_data(),
+                           desc_D,
+                           D.raw_data(),
+                           desc_D,
+                           W_ptr,
+                           desc_W,
+                           workspace_,
+                           core::Context::stream().handle());
+        }
 
         if (ec) {
             TM_LOG_ERROR("{}: {}", __PRETTY_FUNCTION__, ec);
@@ -217,6 +264,7 @@ struct LlamaLinear::Impl {
 
     gemm::Gemm           gemm_;
     gemm::DispatchPolicy dispatch_policy_{gemm::DispatchPolicy::kDefault};
+    cublasHandle_t       torch_cublas_{};
 
     gemm::Workspace workspace_;
 };
