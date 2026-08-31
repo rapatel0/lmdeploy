@@ -767,6 +767,26 @@ if _TRACE_ROOT:
 
         _DFlashVerifyInput.merge_batch = _merge_verify_batch
 
+    # The pinned overlap scheduler can present the same audited request as both
+    # running_batch and last_batch while transitioning out of target verify.
+    # Merging those aliases duplicates one request into batch size two, which
+    # then overruns the batch-one selector graph buffers. Ignore only this exact
+    # same-request alias; distinct request batches retain production merging.
+    import sglang.srt.managers.schedule_batch as _schedule_batch
+
+    _orig_schedule_merge = _schedule_batch.ScheduleBatch.merge_batch
+
+    def _trace_safe_schedule_merge(self, other):
+        if isinstance(getattr(self, "spec_info", None), _DFlashVerifyInput):
+            left = {getattr(req, "rid", id(req)) for req in getattr(self, "reqs", ())}
+            right = {getattr(req, "rid", id(req)) for req in getattr(other, "reqs", ())}
+            if left and left == right:
+                print(f"SGLANG_DFLASH_SKIP_ALIAS_MERGE requests={sorted(map(str, left))}", flush=True)
+                return
+        return _orig_schedule_merge(self, other)
+
+    _schedule_batch.ScheduleBatch.merge_batch = _trace_safe_schedule_merge
+
     _orig_worker_init = _dw.DFlashWorkerV2.__init__
 
     def _traced_worker_init(self, *args, **kwargs):
@@ -800,8 +820,13 @@ if _TRACE_ROOT:
                 _draft_blocks_seen += 1
                 if _draft_blocks_seen >= _capture_block_index - 1:
                     _capture_enabled = True
-            if _armed() and _draft_blocks_seen >= _capture_block_index and _graph_refs and not _graph_flushed \
-                    and bool(getattr(output, "can_run_graph", False)):
+            if (
+                _armed()
+                and _draft_blocks_seen >= _capture_block_index
+                and _graph_refs
+                and not _graph_flushed
+                and bool(getattr(output, "can_run_graph", False))
+            ):
                 _graph_flushed = True
                 for name, tensor in _graph_refs.items():
                     _dump(name, tensor)
@@ -820,11 +845,17 @@ if _TRACE_ROOT:
 
     def _traced_worker_forward_generation(self, batch, on_publish=None):
         spec_info = getattr(batch, "spec_info", None)
-        if not isinstance(spec_info, _dw.DFlashDraftInputV2) and not batch.forward_mode.is_extend() \
-                and not batch.is_extend_in_batch:
+        if (
+            not isinstance(spec_info, _dw.DFlashDraftInputV2)
+            and not batch.forward_mode.is_extend()
+            and not batch.is_extend_in_batch
+        ):
             retained = getattr(self, "_parity_next_draft", None)
-            spec_info = retained if isinstance(retained, _dw.DFlashDraftInputV2) else \
-                _dw.DFlashDraftInputV2.create_idle_input(device=self.device)
+            spec_info = (
+                retained
+                if isinstance(retained, _dw.DFlashDraftInputV2)
+                else _dw.DFlashDraftInputV2.create_idle_input(device=self.device)
+            )
             batch.spec_info = spec_info
         bonus = getattr(spec_info, "bonus_tokens", None)
         if spec_info is not None and isinstance(bonus, torch.Tensor) and bonus.numel() == 0:
