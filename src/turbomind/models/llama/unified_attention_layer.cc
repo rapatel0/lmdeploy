@@ -1497,7 +1497,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                         TM_CHECK_EQ(p.flattened_kv_replay.ndim(), 4);
                         TM_CHECK_EQ(p.flattened_kv_replay.shape(0), local_kv_head_num);
                         TM_CHECK_EQ(p.flattened_kv_replay.shape(1), 2);
-                        TM_CHECK_EQ(p.flattened_kv_replay.shape(2), d.prefill.k_sum);
+                        TM_CHECK_LE(p.flattened_kv_replay.shape(2), 16 * 1024);
                         TM_CHECK_EQ(p.flattened_kv_replay.shape(3), size_per_head);
                         TM_CHECK_LE(p.flattened_kv_replay.size(), tmp_kv.size());
                         TM_CUDA_CHECK(cudaMemcpyAsync(tmp_kv.raw_data(),
@@ -1511,7 +1511,9 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                     }
                     if (use_dflash_tilelang_draft_attention) {
                         if constexpr (std::is_same_v<T, half>) {
-                            dispatchDFlashTileLangAttention(params, d.prefill.k_sum, tmp_kv.size());
+                            const int context_len =
+                                p.flattened_kv_replay ? p.flattened_kv_replay.shape(2) : d.prefill.k_sum;
+                            dispatchDFlashTileLangAttention(params, context_len, tmp_kv.size());
                         }
                         else {
                             TM_CHECK(false) << "TileLang draft attention requires FP16";

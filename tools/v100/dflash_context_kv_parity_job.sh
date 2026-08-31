@@ -53,8 +53,16 @@ K_REPLAY=$RESULTS/k_normalized_tp4.bin
 FLATTENED_KV_REPLAY=$RESULTS/flattened_kv_tp4.bin
 Q_PROJECTION_REPLAY=$RESULTS/q_projection_tp4.bin
 K_PROJECTION_REPLAY=$RESULTS/k_projection_tp4.bin
+read -r LIVE_TILELANG REPLAY_CONTEXT_LEN < <(python3 - "$SG" <<'PY'
+import glob, json, sys
+roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
+rows = {row['name']: row for row in map(json.loads, open(roots[0] + '/manifest.jsonl'))}
+record = rows.get('layer0.attention.tilelang.k')
+print(1 if record else 0, record['shape'][0] if record else 1000)
+PY
+)
 if [ "$REPLAY_EXACT_QK" = 1 ]; then
-    python3 - "$SG" "$Q_REPLAY" "$K_REPLAY" <<'PY'
+    python3 - "$SG" "$Q_REPLAY" "$K_REPLAY" "$LIVE_TILELANG" <<'PY'
 import glob, json, pathlib, sys
 
 def interleave_rope(payload, rows, width):
@@ -64,7 +72,7 @@ def interleave_rope(payload, rows, width):
 roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
 assert len(roots) == 4
 for name, output, expected in (
-    ('layer0.attention.q_rotated', sys.argv[2], 8 * 1024 * 2),
+    ('layer0.attention.tilelang.q' if int(sys.argv[4]) else 'layer0.attention.q_rotated', sys.argv[2], 8 * 1024 * 2),
     ('layer0.attention.k_normalized', sys.argv[3], 8 * 256 * 2),
 ):
     with open(output, 'wb') as stream:
@@ -73,9 +81,9 @@ for name, output, expected in (
             row = records[name]
             payload = pathlib.Path(root, row['file']).read_bytes()
             assert len(payload) == expected, (name, root, len(payload))
-            stream.write(payload if name.endswith('q_rotated') else interleave_rope(payload, 8, 256))
+            stream.write(payload if name.endswith(('q_rotated', 'tilelang.q')) else interleave_rope(payload, 8, 256))
 PY
-    python3 - "$SG" "$FLATTENED_KV_REPLAY" <<'PY'
+    python3 - "$SG" "$FLATTENED_KV_REPLAY" "$LIVE_TILELANG" <<'PY'
 import glob, json, numpy as np, pathlib, sys
 
 roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
@@ -83,8 +91,12 @@ assert len(roots) == 4
 with open(sys.argv[2], 'wb') as output:
     for root in roots:
         records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
-        cache_k = np.fromfile(pathlib.Path(root, records['context.prompt.layer0.cache_k']['file']), dtype='<f2').reshape(1000, 2, 128)
-        cache_v = np.fromfile(pathlib.Path(root, records['context.prompt.layer0.cache_v']['file']), dtype='<f2').reshape(1000, 2, 128)
+        if int(sys.argv[3]):
+            cache_k = np.fromfile(pathlib.Path(root, records['layer0.attention.tilelang.k']['file']), dtype='<f2').reshape(-1, 2, 128)
+            cache_v = np.fromfile(pathlib.Path(root, records['layer0.attention.tilelang.v']['file']), dtype='<f2').reshape(-1, 2, 128)
+        else:
+            cache_k = np.fromfile(pathlib.Path(root, records['context.prompt.layer0.cache_k']['file']), dtype='<f2').reshape(1000, 2, 128)
+            cache_v = np.fromfile(pathlib.Path(root, records['context.prompt.layer0.cache_v']['file']), dtype='<f2').reshape(1000, 2, 128)
         cache_k = cache_k.transpose(1, 0, 2).copy()
         cache_v = cache_v.transpose(1, 0, 2).copy()
         output.write(np.stack((cache_k, cache_v), axis=1).tobytes())
@@ -124,7 +136,7 @@ if [ "$REPLAY_EXACT_QK" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY"
         TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY"
         TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_FILE="$FLATTENED_KV_REPLAY"
-        TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_CONTEXT_LEN=1000)
+        TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_CONTEXT_LEN="$REPLAY_CONTEXT_LEN")
 fi
 if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE="$Q_PROJECTION_REPLAY"
@@ -199,12 +211,16 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
     assert draft_projection.shape[1] == draft_normalized.shape[1] == 1536
     sg_projection = load(sg_root, sg, 'layer0.attention.qkv_projection')
     flattened_storage = load(lm_root, lm, 'layer0.attention.flattened_kv').reshape(-1)
-    sg_prompt_k = load(sg_root, sg, 'context.prompt.layer0.cache_k')
-    sg_prompt_v = load(sg_root, sg, 'context.prompt.layer0.cache_v')
-    # DFlash proposals use frozen KV: all eight queries attend only to the
-    # materialized prompt context, excluding their own parallel K/V rows.
-    sg_flat_k = sg_prompt_k.transpose(1, 0, 2)
-    sg_flat_v = sg_prompt_v.transpose(1, 0, 2)
+    if 'layer0.attention.tilelang.k' in sg:
+        sg_flat_k = load(sg_root, sg, 'layer0.attention.tilelang.k').transpose(1, 0, 2)
+        sg_flat_v = load(sg_root, sg, 'layer0.attention.tilelang.v').transpose(1, 0, 2)
+        sg_attention_q = load(sg_root, sg, 'layer0.attention.tilelang.q').reshape(8, 1024)
+        sg_attention_output = load(sg_root, sg, 'layer0.attention.tilelang.output').reshape(8, 1024)
+    else:
+        sg_flat_k = load(sg_root, sg, 'context.prompt.layer0.cache_k').transpose(1, 0, 2)
+        sg_flat_v = load(sg_root, sg, 'context.prompt.layer0.cache_v').transpose(1, 0, 2)
+        sg_attention_q = load(sg_root, sg, 'layer0.attention.q_rotated')
+        sg_attention_output = load(sg_root, sg, 'layer0.attention.core_output')
     key_count = sg_flat_k.shape[1]
     flattened = flattened_storage[:2 * 2 * key_count * 128].reshape(2, 2, key_count, 128)
     pairs = {
@@ -213,14 +229,11 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
         'draft.q_projection': (draft_projection[:, :1024], reorder_rope(sg_projection[:, :1024])),
         'draft.k_projection': (draft_projection[:, 1024:1280], reorder_rope(sg_projection[:, 1024:1280])),
         'draft.v_projection': (draft_projection[:, 1280:1536], sg_projection[:, 1280:1536]),
-        'draft.q_attention': (draft_normalized[:, :1024], load(sg_root, sg, 'layer0.attention.q_rotated')),
+        'draft.q_attention': (draft_normalized[:, :1024], sg_attention_q),
         'draft.k_normalized': (draft_normalized[:, 1024:1280], reorder_rope(load(sg_root, sg, 'layer0.attention.k_normalized'))),
         'draft.cache_k': (flattened[:, 0, :key_count, :], sg_flat_k),
         'draft.cache_v': (flattened[:, 1, :key_count, :], sg_flat_v),
-        'draft.core_output': (
-            load(lm_root, lm, 'layer0.attention.core_output'),
-            load(sg_root, sg, 'layer0.attention.core_output'),
-        ),
+        'draft.core_output': (load(lm_root, lm, 'layer0.attention.core_output'), sg_attention_output),
     }
     for name, (left, right) in pairs.items():
         print('BOUNDARY', 'rank', rank, name, 'different/max/rms', stats(left, right))

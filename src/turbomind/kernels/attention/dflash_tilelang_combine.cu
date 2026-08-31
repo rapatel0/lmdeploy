@@ -98,6 +98,9 @@ __global__ void PackDFlashTileLangInputs(const half_t* __restrict__ q,
          page += blockDim.x * gridDim.x) {
         identity_pages[page] = page;
     }
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        identity_pages[1024] = context_len;
+    }
 }
 
 }  // namespace
@@ -146,7 +149,7 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
         packed_q,
         packed_v,
         params.split_cnt,
-        params.cu_k_len + 1,
+        params.split_cnt + 1024,
         params.cu_q_len,
         8,
         kSoftmaxScale);
@@ -156,7 +159,7 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
         packed_q,
         params.partial_ML,
         reinterpret_cast<const half_t*>(params.partial_O),
-        params.cu_k_len + 1,
+        params.split_cnt + 1024,
         params.cu_q_len);
     TM_CUDA_CHECK(cudaGetLastError());
 }
