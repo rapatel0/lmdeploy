@@ -605,8 +605,7 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
                                                          int        batch_size,
                                                          int        block_size,
                                                          bool       rebuild,
-                                                         bool       assert_exact,
-                                                         bool       prefill_priming)
+                                                         bool       assert_exact)
 {
     TM_CHECK_GE(phase, 0);
     TM_CHECK_LT(phase, (int)data_.size());
@@ -633,7 +632,7 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
         // but SGLang's DFlash attention is frozen-KV: all eight parallel
         // queries read only the context before that anchor. The corrected
         // contract is frontier-1. The legacy control remains frontier+block.
-        const int expected = committed_seq_lens[i] + (prefill_priming ? 0 : frontier_adjust);
+        const int expected = committed_seq_lens[i] + frontier_adjust;
         expected_k_sum += expected;
         expected_k_max = std::max(expected_k_max, expected);
         if (rebuild) {
@@ -651,20 +650,12 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
                      block_size,
                      expected_k_sum,
                      expected_k_max};
-        if (prefill_priming) {
-            Buffer_<int> q_offsets_host{batch_size + 1, kCPU};
-            for (int i = 0; i <= batch_size; ++i) {
-                q_offsets_host[i] = i * block_size;
-            }
-            Copy(q_offsets_host, d.q_offsets.slice(0, batch_size + 1));
-        }
     }
 
     if (assert_exact) {
         TM_CHECK_EQ((int)d.draft_k_lens_host.size(), batch_size);
         for (int i = 0; i < batch_size; ++i) {
-            TM_CHECK_EQ(d.draft_k_lens_host[i],
-                        committed_seq_lens[i] + (prefill_priming ? 0 : frontier_adjust))
+            TM_CHECK_EQ(d.draft_k_lens_host[i], committed_seq_lens[i] + frontier_adjust)
                 << "DFlash draft metadata row " << i << " does not match the post-rollback committed frontier";
         }
         TM_CHECK_EQ(d.decode.n, 0);

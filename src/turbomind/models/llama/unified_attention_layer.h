@@ -100,8 +100,7 @@ public:
                                      int        batch_size,
                                      int        block_size,
                                      bool       rebuild,
-                                     bool       assert_exact,
-                                     bool       prefill_priming = false);
+                                     bool       assert_exact);
 
     /// Check the live device cu_k_len spans after the proposal block advances
     /// them and before draft attention reads them.
