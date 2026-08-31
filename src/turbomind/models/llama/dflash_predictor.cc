@@ -1578,6 +1578,13 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         auto* attn_conv = TM_CHECK_NOTNULL(weights_.attention_conv(i));
         auto* mlp_conv  = TM_CHECK_NOTNULL(weights_.mlp_conv(i));
         TM_CHECK(layer->attention && layer->feed_forward);
+        if (i == 0 && ParityActive()) {
+            const auto* wo = TM_CHECK_NOTNULL(layer->attention->wo.get());
+            TM_LOG_INFO("[DFlash2] parity Wo descriptor input={} output={} order={}",
+                        wo->input_dim,
+                        wo->output_dim,
+                        static_cast<int>(wo->k_desc.order));
+        }
         LayerWorkspace* layer_workspace = workspace ? &workspace->layers.at(i) : nullptr;
 
         report_layer(i, ".input.hidden", hidden);
