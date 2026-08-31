@@ -663,6 +663,7 @@ if _TRACE_ROOT:
             layer.self_attn.register_forward_hook(
                 lambda _m, _a, out, i=index: _dump(f"layer{i}.attention.wo_reduced", out)
             )
+            layer.self_attn.o_proj._dflash_local_trace_name = f"layer{index}.attention.wo"
             layer.post_attention_layernorm.register_forward_hook(
                 lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.norm_output", out)
             )
@@ -673,12 +674,43 @@ if _TRACE_ROOT:
             layer.mlp.down_proj.register_forward_hook(
                 lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.down_reduced", out[0])
             )
+            layer.mlp.down_proj._dflash_local_trace_name = f"layer{index}.mlp.down"
             if layer.attention_conv is not None:
                 layer.attention_conv._dflash_trace_name = f"layer{index}.attention"
             if layer.mlp_conv is not None:
                 layer.mlp_conv._dflash_trace_name = f"layer{index}.mlp"
 
     _df.DFlashDraftModel.__init__ = _traced_init
+
+    # RowParallelLinear normally exposes only its post-all-reduce output. For
+    # trace-marked DFlash Wo/W2 modules, preserve the exact production local
+    # projection and collective while recording both sides of that boundary.
+    import sglang.srt.layers.linear as _linear
+    from sglang.srt.distributed.communication_op import tensor_model_parallel_all_reduce
+
+    _orig_row_parallel_forward = _linear.RowParallelLinear.forward
+
+    def _traced_row_parallel_forward(self, input_, skip_all_reduce=False, forward_batch=None):
+        name = getattr(self, "_dflash_local_trace_name", "")
+        if not (_armed() and name and self.reduce_results and self.tp_size > 1 and not skip_all_reduce):
+            return _orig_row_parallel_forward(
+                self,
+                input_,
+                skip_all_reduce=skip_all_reduce,
+                forward_batch=forward_batch,
+            )
+        output_parallel, output_bias = _orig_row_parallel_forward(
+            self,
+            input_,
+            skip_all_reduce=True,
+            forward_batch=forward_batch,
+        )
+        _dump(f"{name}_local", output_parallel)
+        output = tensor_model_parallel_all_reduce(output_parallel)
+        _dump(f"{name}_reduced", output)
+        return output, output_bias
+
+    _linear.RowParallelLinear.forward = _traced_row_parallel_forward
 
     _orig_project = _df.DFlashDraftModel.project_target_hidden
 
