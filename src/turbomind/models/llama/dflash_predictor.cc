@@ -1651,6 +1651,12 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                 params.q_replay = std::move(q_replay);
                 params.k_replay = std::move(k_replay);
             }
+            Tensor attention_replay{{token_num, q_width}, dtype_, kDEVICE};
+            if (replay_parity_tensor("TM_DFLASH_DRAFT_CORE_OUTPUT_REPLAY_FILE",
+                                     attention_replay,
+                                     draft_attention_core_replay_consumed_)) {
+                params.attention_replay = std::move(attention_replay);
+            }
             params.trace_context = this;
             params.trace_fn = [](const void* object, const char* name, const Tensor& value) {
                 static_cast<const DFlashPredictor*>(object)->CaptureParityTensor(name, value);

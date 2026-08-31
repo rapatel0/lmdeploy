@@ -1104,6 +1104,15 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
     };
 
     Tensor attn = [&]() -> Tensor { TM_DISPATCH_PRIMARY_DTYPES_RET(qkv.dtype(), invoke); }();
+    if (p.attention_replay) {
+        TM_CHECK_EQ(attn.dtype(), p.attention_replay.dtype());
+        TM_CHECK_EQ(attn.size(), p.attention_replay.size());
+        TM_CUDA_CHECK(cudaMemcpyAsync(attn.raw_data(),
+                                     p.attention_replay.raw_data(),
+                                     attn.byte_size(),
+                                     cudaMemcpyDeviceToDevice,
+                                     stream_));
+    }
     if (p.trace_fn && p.trace_qkv_post) {
         p.trace_fn(p.trace_context, p.trace_qkv_post, qkv);
     }
