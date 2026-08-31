@@ -200,7 +200,7 @@ struct LlamaLinear::Impl {
 
         static const bool dflash_qkv_torch_layout = [] {
             const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
-            return !value || value[0] != '0';
+            return value && value[0] == '1';
         }();
         const bool dflash_torch_fp16_shape = weight.input_dim == 5120 && weight.output_dim == 1536;
         const bool direct_torch_qkv = dflash_qkv_torch_layout && !offsets && !indices && dflash_torch_fp16_shape

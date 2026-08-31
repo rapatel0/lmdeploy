@@ -399,7 +399,7 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
 
     static const bool torch_qkv_layout = [] {
         const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
-        return !value || value[0] != '0';
+        return value && value[0] == '1';
     }();
     static const bool fused_context_kv_projection = [] {
         const char* value = std::getenv("TM_DFLASH_FUSED_CONTEXT_KV_PROJECTION");

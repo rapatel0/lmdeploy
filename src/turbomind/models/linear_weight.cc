@@ -175,7 +175,7 @@ void LinearWeight::prepare()
 
     static const bool dflash_qkv_torch_layout = [] {
         const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
-        return !value || value[0] != '0';
+        return value && value[0] == '1';
     }();
     // The five DFlash draft QKV matrices are the exact 5120x1536 shape.
     // Keep every other linear on its qualified TurboMind route.
