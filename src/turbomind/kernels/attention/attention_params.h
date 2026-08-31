@@ -81,8 +81,9 @@ struct AttentionParams {
 
     // DFlash fused context materialization keeps K normalization and RoPE in
     // FP32 and narrows only the final rotated K cache value.
-    const T* dflash_context_k_norm_weight{nullptr};
-    float    dflash_context_k_norm_eps{};
+    const T*     dflash_context_k_norm_weight{nullptr};
+    float        dflash_context_k_norm_eps{};
+    const float* dflash_context_rope_cache{nullptr};
 
     // log(n) attention
     bool use_logn_attn;

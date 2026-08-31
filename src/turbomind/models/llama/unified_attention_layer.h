@@ -62,6 +62,7 @@ public:
         bool              frozen_kv{false};
         Tensor            qkv_replay{};
         bool              fused_context_k_norm{false};
+        const float*      fused_context_rope_cache{};
         Tensor            q_projection_replay{};
         Tensor            k_projection_replay{};
         Tensor            q_replay{};

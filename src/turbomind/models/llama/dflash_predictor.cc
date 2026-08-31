@@ -428,9 +428,30 @@ DFlashPredictor::DFlashPredictor(const DFlashWeight&     weights,
                               1,
                               core::Context::stream().handle());
         TM_CHECK_EQ(cublasCreate(&fused_context_kv_cublas_), CUBLAS_STATUS_SUCCESS);
-        TM_LOG_INFO("[DFlash2] fused torch context-KV projection ready: {}x{}",
+
+        auto* first_layer = TM_CHECK_NOTNULL(weights_.layer(0));
+        auto* first_attn  = TM_CHECK_NOTNULL(first_layer->attention.get());
+        TM_CHECK_EQ(first_attn->head_dim, 128);
+        TM_CHECK_EQ(first_attn->rope.dim, 128);
+        const int rope_rows = engine.session_len + std::max(8, weights_.block_size);
+        Tensor    host_rope{{rope_rows, 128}, kFloat32, kCPU};
+        float*    rope_data = host_rope.data<float>();
+        for (int pos = 0; pos < rope_rows; ++pos) {
+            for (int i = 0; i < 64; ++i) {
+                const float exponent = (2.f * i) / 128.f;
+                const float inv_freq = 1.f / std::pow(first_attn->rope.base, exponent);
+                const float angle    = (float)pos * inv_freq;
+                rope_data[(ssize_t)pos * 128 + i]      = std::cos(angle);
+                rope_data[(ssize_t)pos * 128 + 64 + i] = std::sin(angle);
+            }
+        }
+        fused_context_rope_cache_ = {{rope_rows, 128}, kFloat32, kDEVICE};
+        Copy(host_rope, fused_context_rope_cache_);
+        core::Context::stream().Sync();
+        TM_LOG_INFO("[DFlash2] fused torch context-KV projection ready: {}x{} rope_cache={}x128",
                     fused_context_kv_weight_.shape(0),
-                    fused_context_kv_weight_.shape(1));
+                    fused_context_kv_weight_.shape(1),
+                    rope_rows);
     }
 
     static const bool persistent_workspace = [] {
@@ -903,8 +924,9 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
                                             context.shape(0),
                                             cudaMemcpyDeviceToDevice,
                                             core::Context::stream().handle()));
-            params.qkv_replay          = fused_qkv;
-            params.fused_context_k_norm = true;
+            params.qkv_replay               = fused_qkv;
+            params.fused_context_k_norm      = true;
+            params.fused_context_rope_cache  = fused_context_rope_cache_.data<float>();
         }
         const std::string trace_prefix = context.shape(0) == 1000 ?
                                              "context.prompt.layer" + std::to_string(i) :

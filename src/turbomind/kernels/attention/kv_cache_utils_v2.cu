@@ -221,6 +221,7 @@ __global__ void __launch_bounds__(128) ProcessDFlashContextKV(char**          bl
                                                               const half*     v,
                                                               const half*     norm_weight,
                                                               float           norm_eps,
+                                                              const float*    rope_cache,
                                                               const int*      cu_q_len,
                                                               const int*      cu_k_len,
                                                               const int*      cu_block_num,
@@ -271,10 +272,9 @@ __global__ void __launch_bounds__(128) ProcessDFlashContextKV(char**          bl
         PRAGMA_UNROLL
         for (int i = 0; i < 8; i += 2) {
             const int   di       = lane * 8 + i;
-            const float inv_freq = exp2f(di * rope_param.scale_factor);
-            const float angle    = ti * inv_freq;
-            const float sin_v    = sinf(angle);
-            const float cos_v    = cosf(angle);
+            const int   pair  = di / 2;
+            const float cos_v = rope_cache[(ssize_t)ti * 128 + pair];
+            const float sin_v = rope_cache[(ssize_t)ti * 128 + 64 + pair];
             const float first    = normalized[di];
             const float second   = normalized[di + 1];
             normalized[di]       = cos_v * first - sin_v * second;
@@ -306,6 +306,7 @@ void invokeProcessDFlashContextKV(const AttentionParams<half>& params)
     TM_CHECK(params.rope_param.type == RopeType::kDefault);
     TM_CHECK(params.rope_param.mrope_mode == MropeMode::kNone);
     TM_CHECK(params.dflash_context_k_norm_weight);
+    TM_CHECK(params.dflash_context_rope_cache);
     dim3 grid(params.max_q_len, params.num_kv_heads, params.batch_size);
     block::Layout block_layout{
         block::Config<half, half, 128, false>{params.num_kv_heads, params.block_iter_params.block_len}};
@@ -314,6 +315,7 @@ void invokeProcessDFlashContextKV(const AttentionParams<half>& params)
                                                             params.v,
                                                             params.dflash_context_k_norm_weight,
                                                             params.dflash_context_k_norm_eps,
+                                                            params.dflash_context_rope_cache,
                                                             params.cu_q_len,
                                                             params.cu_k_len,
                                                             params.block_iter_params.cu_block_nums,

@@ -167,6 +167,7 @@ private:
     mutable std::vector<std::unique_ptr<SelectorGraph>> selector_graphs_;
     mutable std::vector<std::unique_ptr<DraftGraph>> draft_graphs_;
     Tensor                                           fused_context_kv_weight_;
+    Tensor                                           fused_context_rope_cache_;
     cublasHandle_t                                   fused_context_kv_cublas_{};
     mutable std::unique_ptr<ParityTrace>             parity_trace_;
     mutable bool                         context_replay_consumed_{};
