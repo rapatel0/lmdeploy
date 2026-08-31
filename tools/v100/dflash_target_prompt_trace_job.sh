@@ -7,13 +7,14 @@ exec > >(tee -a "$RESULTS/console.log") 2>&1
 trap 'rc=$?; echo "$rc" >"$RESULTS/exit_code"; echo "artifacts in $RESULTS (exit $rc)"' EXIT
 rm -f /wheels/lmdeploy-*.whl
 bash /src/tools/v100/build_v100_fast.sh >"$RESULTS/build.log" 2>&1 || {
- grep -aE 'error:|Error [0-9]+' "$RESULTS/build.log" | head -80; exit 2;
+ grep -aE 'error:|Error [0-9]+' "$RESULTS/build.log" | head -80
+ exit 2
 }
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 pip install --no-deps --force-reinstall "$WHEEL" 2>&1 | tail -1
 unset TM_DFLASH_PARITY_DIR
 TM_DFLASH_TARGET_TRAJECTORY=1 TM_DFLASH_TARGET_PARITY_DIR="$RESULTS/trace" \
-python3 /job/bench_decode.py \
+ python3 /job/bench_decode.py \
  --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" --num-draft-tokens 7 \
  --speculative-algorithm dflash2 --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
  --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
