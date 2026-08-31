@@ -1702,6 +1702,12 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
             report_layer(i, ".mlp.tp_reduced_pre_scale", mlp_input.output);
         }
         invokeDFlashScaleRows(mlp_input.output, activation_scales, 1.f / kResidualScale, stream);
+        report_layer(i, ".mlp.scaled_w2_native", mlp_input.output);
+        if (i == 0) {
+            replay_parity_tensor("TM_DFLASH_LAYER0_MLP_W2_REPLAY_FILE",
+                                 mlp_input.output,
+                                 layer0_mlp_w2_replay_consumed_);
+        }
         report_layer(i, ".mlp.scaled_w2", mlp_input.output);
         Tensor mlp_finished = layer_workspace ? layer_workspace->mlp_conv_finished.slice(0, token_num) : Tensor{};
         Tensor mlp_output =
