@@ -1667,6 +1667,12 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         auto mlp_input =
             PrepareGroupedConv(hidden, *mlp_conv, std::move(mlp_conv_output), std::move(mlp_conv_delta));
         report_layer(i, ".mlp.conv_delta", mlp_input.delta);
+        report_layer(i, ".mlp.conv_side0_native", mlp_input.output);
+        if (i == 0) {
+            replay_parity_tensor("TM_DFLASH_LAYER0_MLP_CONV_INPUT_REPLAY_FILE",
+                                 mlp_input.output,
+                                 layer0_mlp_conv_input_replay_consumed_);
+        }
         report_layer(i, ".mlp.conv_side0", mlp_input.output);
 
         // Match SGLang's Laguna SM70 MLP exactly: shrink W13's input, restore

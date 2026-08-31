@@ -183,6 +183,7 @@ private:
     mutable bool                         draft_attention_k_replay_consumed_{};
     mutable bool                         draft_attention_output_replay_consumed_{};
     mutable bool                         layer0_mlp_input_replay_consumed_{};
+    mutable bool                         layer0_mlp_conv_input_replay_consumed_{};
 };
 
 }  // namespace turbomind
