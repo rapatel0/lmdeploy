@@ -171,6 +171,17 @@ void LinearWeight::prepare()
          && (output_dim == 1280 || output_dim == 1536 || output_dim == 5120 || output_dim == 8704))
         || (input_dim == 4352 && output_dim == 5120);
     const bool dflash_dense_wo_shape = input_dim == 1024 && output_dim == 5120;
+    if (dflash_qkv_torch_layout && dflash_dense_wo_shape) {
+        std::fprintf(stderr,
+                     "DFLASH_WO_LAYOUT_ELIGIBILITY sm=%d grouped=%d data=%d input=%d weight=%d ndim=%d\n",
+                     getSMVersion(),
+                     (int)is_grouped_,
+                     (int)data_type,
+                     (int)input_dtype(),
+                     (int)weight.dtype(),
+                     weight.ndim());
+        std::fflush(stderr);
+    }
     if (dflash_qkv_torch_layout && getSMVersion() == 70 && (!is_grouped_ || dflash_dense_wo_shape)
         && dflash_torch_fp16_shape
         && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
