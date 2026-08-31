@@ -81,6 +81,12 @@ DFlash2 is qualified only when all of the following hold on the exact audited 1,
   - Explicitly FP16-rounding `predecessor * hidden` produced the same 2.664 commit length and identical acceptance counts as FP32 intermediates.
   - Throughput was 61.14 versus 61.76 tok/s, within run variance. The experimental branch was removed; this is not the fidelity gap.
 
+- [x] **Calibrate selector transition-score weight.**
+  - A counter-ordered four-process confirmation selected transition scale `2.0`: mean commit length was `2.635` versus `2.619` at scale `1.0`, mean decode was `80.16` versus `79.50` tok/s, and scale `2.0` substantially reduced trajectory variance.
+  - A separate five-trial qualification measured commit length `2.607` versus `2.511` (+3.82%) and decode `79.26` versus `76.26` tok/s (+3.93%). Exact audited identity passed.
+  - A target-feedback per-slot policy regressed commit length to `2.339` and decode to `72.89` tok/s and was removed. Global scale `2.0` is now the default; `TM_DFLASH_SELECTOR_TRANSITION_SCALE=1` retains the prior control.
+  - Artifacts: `/results/20260831_015741-dflash-selector-scale-confirm-76df13fa618e`, `/results/20260831_022243-dflash-selector-oracle-b3ffee405d09`, and `/results/20260831_022745-dflash-selector-slot-scale-322b4de37213`.
+
 - [x] **Validate grouped-convolution FP16 operation boundaries.**
   - Explicit FP16 coefficient, product, and accumulation boundaries produced the same 2.664 commit length and identical counters as FP32 accumulation.
   - Throughput was 61.40 versus 60.90 tok/s; the FP16 arm passed audited identity. The branch was removed.

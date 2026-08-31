@@ -170,6 +170,7 @@ private:
     mutable bool                         context_norm_replay_consumed_{};
     mutable bool                         context_norm_row_replay_consumed_{};
     mutable int                          parity_blocks_seen_{};
+    mutable bool                         block_initial_norm_replay_consumed_{};
     mutable bool                         draft_attention_input_replay_consumed_{};
     mutable bool                         draft_attention_q_replay_consumed_{};
     mutable bool                         draft_attention_k_replay_consumed_{};

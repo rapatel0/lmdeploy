@@ -1373,6 +1373,8 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
     // The draft checkpoint's pre-norm boundaries are BF16. Preserve that
     // rounding while storing FP16 activations for V100 GEMMs.
     invokeDFlashRoundBFloat16(hidden, stream);
+    replay_parity_tensor(
+        "TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE", hidden, block_initial_norm_replay_consumed_);
     report_named("block.initial_norm", hidden);
 
     constexpr float kResidualScale = 256.f;

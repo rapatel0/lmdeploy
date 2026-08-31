@@ -229,6 +229,12 @@ This is a 31% acceptance gain and 30.7% throughput gain over the matched legacy 
 
 Explicitly FP16-rounding the selector's `predecessor * hidden` intermediate did not change the audited result: both arms committed 2.664 tokens/step with identical accepted-draft and full-accept counts. Decode measured 61.14 tok/s with the original FP32 intermediate and 61.76 tok/s with explicit narrowing, which is within run variance. This hypothesis is closed and the extra branch was removed.
 
+## Selector transition calibration
+
+Target-rank attribution showed that the verifier target remained inside the draft top-16 at about 71% of first mismatches, but a single transition scale could recover only a small fraction of those candidates. A counter-ordered confirmation nevertheless found scale `2.0` more stable and faster than the checkpoint-compatible scale `1.0`. A separate five-trial qualification measured commit length `2.607` versus `2.511` (+3.82%) and decode `79.26` versus `76.26` tok/s (+3.93%); exact audited identity passed. A target-derived per-slot scale policy regressed to commit length `2.339` and decode `72.89` tok/s, so it was removed. Scale `2.0` is the default, with `TM_DFLASH_SELECTOR_TRANSITION_SCALE=1` retaining the prior control.
+
+Artifacts: `/results/20260831_015741-dflash-selector-scale-confirm-76df13fa618e`, `/results/20260831_022243-dflash-selector-oracle-b3ffee405d09`, and `/results/20260831_022745-dflash-selector-slot-scale-322b4de37213`.
+
 ## Grouped-convolution rounding A/B
 
 Matching PyTorch's apparent FP16 operation boundaries inside grouped convolution did not change acceptance: both the original FP32-accumulation arm and the FP16-step arm committed 2.664 tokens/step with identical counters. Decode was 61.40 versus 60.90 tok/s, respectively. The FP16-step arm passed the audited 256-token K=0/K=7 identity gate. This hypothesis is closed and the experimental branch was removed.
