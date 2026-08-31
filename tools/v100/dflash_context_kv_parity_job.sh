@@ -24,6 +24,7 @@ assert len(roots) == 4, roots
 for name, shape, size in (
     ('target.full_context', [1000, 25600], 51200000),
     ('context.full_norm', [1000, 5120], 10240000),
+    ('layer0.attention.norm_output', [8, 5120], 81920),
 ):
     paths, hashes = [], []
     for root in roots:
@@ -38,13 +39,19 @@ for name, shape, size in (
     print(paths[0])
 PY
 )
-[ "${#REPLAY[@]}" -eq 2 ]
+[ "${#REPLAY[@]}" -eq 3 ]
 FULL_CONTEXT=${REPLAY[0]}
 FULL_NORM=${REPLAY[1]}
+INITIAL_NORM=${REPLAY[2]}
 Q_REPLAY=$RESULTS/q_normalized_tp4.bin
 K_REPLAY=$RESULTS/k_normalized_tp4.bin
 python3 - "$SG" "$Q_REPLAY" "$K_REPLAY" <<'PY'
 import glob, json, pathlib, sys
+
+def interleave_rope(payload, rows, width):
+    import numpy as np
+    value = np.frombuffer(payload, dtype='<f2').reshape(rows, width // 128, 2, 64)
+    return value.transpose(0, 1, 3, 2).copy().tobytes()
 roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
 assert len(roots) == 4
 for name, output, expected in (
@@ -57,14 +64,17 @@ for name, output, expected in (
             row = records[name]
             payload = pathlib.Path(root, row['file']).read_bytes()
             assert len(payload) == expected, (name, root, len(payload))
-            stream.write(payload)
+            stream.write(interleave_rope(payload, 8, 1024 if 'q_' in name else 256))
 PY
-printf 'full_context=%s\nfull_norm=%s\nq_replay=%s\nk_replay=%s\n' \
-    "$FULL_CONTEXT" "$FULL_NORM" "$Q_REPLAY" "$K_REPLAY"
+printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nq_replay=%s\nk_replay=%s\n' \
+    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$Q_REPLAY" "$K_REPLAY"
 
 mkdir -p "$RESULTS/parity"
 TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" \
     TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM" \
+    TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE="$INITIAL_NORM" \
+    TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY" \
+    TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY" \
     TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1 \
     TM_DFLASH_ASSERT_DRAFT_METADATA=1 \
     TM_DFLASH_REDUCE_BEFORE_CONV=1 \
@@ -78,6 +88,9 @@ TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" \
     --cache-max-entry-count 0.05 --json-out "$RESULTS/parity.json" 2>&1 | tee "$RESULTS/parity.log"
 [ "$(grep -c 'replaying parity target context rows=1000 ' "$RESULTS/parity.log")" -eq 4 ]
 [ "$(grep -c 'replaying normalized parity context rows=1000 ' "$RESULTS/parity.log")" -eq 4 ]
+[ "$(grep -c 'TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+[ "$(grep -c 'TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+[ "$(grep -c 'TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
 
 python3 /job/compare_dflash_parity.py \
     --lmdeploy "$RESULTS/parity/lmdeploy" --sglang "$SG" \
