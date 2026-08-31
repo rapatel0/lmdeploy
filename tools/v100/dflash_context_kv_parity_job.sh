@@ -43,8 +43,10 @@ PY
 FULL_CONTEXT=${REPLAY[0]}
 FULL_NORM=${REPLAY[1]}
 INITIAL_NORM=${REPLAY[2]}
+REPLAY_EXACT_QK=${REPLAY_EXACT_QK:-1}
 Q_REPLAY=$RESULTS/q_normalized_tp4.bin
 K_REPLAY=$RESULTS/k_normalized_tp4.bin
+if [ "$REPLAY_EXACT_QK" = 1 ]; then
 python3 - "$SG" "$Q_REPLAY" "$K_REPLAY" <<'PY'
 import glob, json, pathlib, sys
 
@@ -66,20 +68,24 @@ for name, output, expected in (
             assert len(payload) == expected, (name, root, len(payload))
             stream.write(interleave_rope(payload, 8, 1024 if 'q_' in name else 256))
 PY
-printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nq_replay=%s\nk_replay=%s\n' \
-    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$Q_REPLAY" "$K_REPLAY"
+fi
+printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nreplay_exact_qk=%s\n' \
+    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$REPLAY_EXACT_QK"
 
 mkdir -p "$RESULTS/parity"
-TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" \
-    TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM" \
-    TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE="$INITIAL_NORM" \
-    TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY" \
-    TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY" \
-    TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1 \
-    TM_DFLASH_ASSERT_DRAFT_METADATA=1 \
-    TM_DFLASH_REDUCE_BEFORE_CONV=1 \
-    TM_DFLASH_PARITY_DIR="$RESULTS/parity" \
-    python3 /job/bench_decode.py \
+RUN_ENV=(env
+    TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT"
+    TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM"
+    TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE="$INITIAL_NORM"
+    TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1
+    TM_DFLASH_ASSERT_DRAFT_METADATA=1
+    TM_DFLASH_REDUCE_BEFORE_CONV=1
+    TM_DFLASH_PARITY_DIR="$RESULTS/parity")
+if [ "$REPLAY_EXACT_QK" = 1 ]; then
+    RUN_ENV+=(TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY"
+             TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY")
+fi
+"${RUN_ENV[@]}" python3 /job/bench_decode.py \
     --model /models/Qwen3.8-27B-FP8 --tp 4 --num-draft-tokens 7 \
     --speculative-algorithm dflash2 --speculative-draft-model /models/Qwen3.8-27B-DFlash2 \
     --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
@@ -89,8 +95,10 @@ TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" \
 [ "$(grep -c 'replaying parity target context rows=1000 ' "$RESULTS/parity.log")" -eq 4 ]
 [ "$(grep -c 'replaying normalized parity context rows=1000 ' "$RESULTS/parity.log")" -eq 4 ]
 [ "$(grep -c 'TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
-[ "$(grep -c 'TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
-[ "$(grep -c 'TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+if [ "$REPLAY_EXACT_QK" = 1 ]; then
+    [ "$(grep -c 'TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+    [ "$(grep -c 'TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+fi
 
 python3 /job/compare_dflash_parity.py \
     --lmdeploy "$RESULTS/parity/lmdeploy" --sglang "$SG" \
