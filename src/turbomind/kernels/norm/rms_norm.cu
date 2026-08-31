@@ -138,7 +138,7 @@ void invokeRMSNorm(Tensor& out, const Tensor& x, const Tensor& w, float eps, boo
 
 namespace kernel {
 
-template<class T, class A, int vec_size, int max_dim, bool ZeroCentered>
+template<class T, class A, int vec_size, int max_dim, bool ZeroCentered, bool FullProduct>
 __global__ void QkRMSNorm(T*       qkv,
                           int      ld,
                           const T* q_weight,
@@ -150,7 +150,8 @@ __global__ void QkRMSNorm(T*       qkv,
                           int      q_block_num,
                           float    eps,
                           float    inv_dim,
-                          constant<ZeroCentered>)
+                          constant<ZeroCentered>,
+                          constant<FullProduct>)
 {
     static_assert((max_dim & (max_dim - 1)) == 0);
 
@@ -201,7 +202,20 @@ __global__ void QkRMSNorm(T*       qkv,
         Ldg(w, &weight[di]);
         PRAGMA_UNROLL
         for (int i = 0; i < vec_size; ++i) {
-            vec[i] = ApplyRMSnorm<ZeroCentered>(vec[i], sum, w[i]);
+            if constexpr (ZeroCentered) {
+                vec[i] = ApplyRMSnorm<true>(vec[i], sum, w[i]);
+            }
+            else if constexpr (FullProduct) {
+                // SGLang's fused QK norm retains both products in FP32 and
+                // narrows only the final result.  The generic helper narrows
+                // value*inv_rms before multiplying the weight, which creates
+                // a second FP16 rounding boundary and measurable attention
+                // drift for head_dim=128.
+                vec[i] = static_cast<T>(static_cast<float>(vec[i]) * sum * static_cast<float>(w[i]));
+            }
+            else {
+                vec[i] = ApplyRMSnorm<false>(vec[i], sum, w[i]);
+            }
         }
         Store(&qkv[di], vec);
     }
@@ -232,11 +246,15 @@ void invokeQkRMSNorm(Tensor&       qkv,
         const char* value = std::getenv("TM_DFLASH_QK_NORM_WARP32");
         return !value || value[0] != '0';
     }();
+    static const bool dflash_qk_full_product = [] {
+        const char* value = std::getenv("TM_DFLASH_QK_FULL_PRODUCT");
+        return value && value[0] == '1';
+    }();
 
     auto invoke = [&](auto t) {
         using T = decltype(t);
 
-        auto launch = [&](auto max_dim_c, auto vec_size_c, auto zero_centered_c) {
+        auto launch = [&](auto max_dim_c, auto vec_size_c, auto zero_centered_c, auto full_product_c) {
             constexpr int kMaxDim  = std::decay_t<decltype(max_dim_c)>::value;
             constexpr int vec_size = std::decay_t<decltype(vec_size_c)>::value;
             TM_CHECK_LE(head_dim, kMaxDim);
@@ -265,34 +283,47 @@ void invokeQkRMSNorm(Tensor&       qkv,
                                                      q_block_num,
                                                      eps,
                                                      1.f / head_dim,
-                                                     zero_centered_c);
+                                                     zero_centered_c,
+                                                     full_product_c);
         };
 
+        auto dispatch_product = [&](auto max_dim_c, auto vec_size_c, auto zero_centered_c) {
+            if (dflash_qk_full_product) {
+                launch(max_dim_c, vec_size_c, zero_centered_c, constant<true>{});
+            }
+            else {
+                launch(max_dim_c, vec_size_c, zero_centered_c, constant<false>{});
+            }
+        };
         const bool use_warp32 = dflash_qk_norm_warp32 && sizeof(T) == 2 && head_dim == 128;
         if (head_dim <= 128) {
             if (zero_centered) {
                 if (use_warp32) {
-                    launch(constant<128>{}, constant<4>{}, constant<true>{});
+                    dispatch_product(constant<128>{}, constant<4>{}, constant<true>{});
                 }
                 else {
-                    launch(constant<128>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<true>{});
+                    dispatch_product(
+                        constant<128>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<true>{});
                 }
             }
             else {
                 if (use_warp32) {
-                    launch(constant<128>{}, constant<4>{}, constant<false>{});
+                    dispatch_product(constant<128>{}, constant<4>{}, constant<false>{});
                 }
                 else {
-                    launch(constant<128>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<false>{});
+                    dispatch_product(
+                        constant<128>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<false>{});
                 }
             }
         }
         else {
             if (zero_centered) {
-                launch(constant<256>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<true>{});
+                dispatch_product(
+                    constant<256>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<true>{});
             }
             else {
-                launch(constant<256>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<false>{});
+                dispatch_product(
+                    constant<256>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<false>{});
             }
         }
     };
