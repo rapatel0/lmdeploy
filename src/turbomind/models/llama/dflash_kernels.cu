@@ -341,7 +341,8 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
                                          int           slots,
                                          int           top_k,
                                          int           rank,
-                                         float         transition_scale)
+                                         float         transition_scale,
+                                         bool          use_slot_scales)
 {
     const int batch = blockIdx.x;
     if (batch >= batch_size) {
@@ -354,6 +355,18 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
     }
     __syncthreads();
     for (int slot = 0; slot < slots; ++slot) {
+        float slot_scale = transition_scale;
+        if (use_slot_scales) {
+            switch (slot) {
+                case 0: slot_scale = 3.9f; break;
+                case 1: slot_scale = 4.0f; break;
+                case 2: slot_scale = 0.2f; break;
+                case 3: slot_scale = 3.4f; break;
+                case 4: slot_scale = 0.4f; break;
+                case 5: slot_scale = 0.3f; break;
+                case 6: slot_scale = 4.3f; break;
+            }
+        }
         const int candidate_index = threadIdx.x;
         if (candidate_index < top_k) {
             const int token = candidates[(batch * slots + slot) * top_k + candidate_index];
@@ -364,7 +377,7 @@ __global__ void DFlashGreedySelectorHalf(int*         output,
             // Preserve the former serial accumulation order exactly while
             // evaluating all 16 candidates concurrently.
             for (int i = 0; i < rank; ++i) {
-                score += transition_scale * __half2float(pred[i]) * __half2float(state[i])
+                score += slot_scale * __half2float(pred[i]) * __half2float(state[i])
                          * __half2float(succ[i]);
             }
             candidate_scores[candidate_index] = score;
@@ -660,6 +673,10 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
         return value && value[0] ? std::strtof(value, nullptr) : 1.f;
     }();
     TM_CHECK(std::isfinite(transition_scale));
+    static const bool use_slot_scales = [] {
+        const char* value = std::getenv("TM_DFLASH_SELECTOR_SLOT_SCALES");
+        return value && value[0] == '1';
+    }();
     if (trace_scores) {
         TM_CHECK_EQ(trace_scores->dtype(), kFloat32);
         TM_CHECK_EQ(trace_scores->size(), (ssize_t)batch_size * slots * top_k);
@@ -675,7 +692,8 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                                                      slots,
                                                                      top_k,
                                                                      rank,
-                                                                     transition_scale);
+                                                                     transition_scale,
+                                                                     use_slot_scales);
     }
     else {
         DFlashGreedySelectorHalf<false><<<batch_size, 32, 0, stream>>>(output.data(),
@@ -690,7 +708,8 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                                                       slots,
                                                                       top_k,
                                                                       rank,
-                                                                      transition_scale);
+                                                                      transition_scale,
+                                                                      use_slot_scales);
     }
     TM_CUDA_CHECK(cudaGetLastError());
 }
