@@ -170,9 +170,7 @@ void LinearWeight::prepare()
         || (input_dim == 5120
          && (output_dim == 1280 || output_dim == 1536 || output_dim == 5120 || output_dim == 8704))
         || (input_dim == 4352 && output_dim == 5120);
-    const bool dflash_dense_wo_shape = input_dim == 1024 && output_dim == 5120;
-    if (dflash_qkv_torch_layout && getSMVersion() == 70 && (!is_grouped_ || dflash_dense_wo_shape)
-        && dflash_torch_fp16_shape
+    if (dflash_qkv_torch_layout && getSMVersion() == 70 && !is_grouped_ && dflash_torch_fp16_shape
         && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
         // torch F.linear keeps [N,K] physical storage and asks cuBLAS for the
         // transposed logical operand. Match that route exactly for DFlash's
