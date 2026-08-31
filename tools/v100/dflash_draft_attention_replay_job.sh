@@ -28,7 +28,7 @@ root = pathlib.Path(sys.argv[1])
 directories = sorted(path for path in root.glob("rank-*-pid-*") if path.is_dir())
 assert len(directories) == 4, directories
 names = (
-    "target.post_layer_residual",
+    "target.full_context",
     "layer0.attention.conv_side0",
     "layer0.attention.wo_reduced",
 )
