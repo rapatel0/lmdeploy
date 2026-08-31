@@ -1129,3 +1129,51 @@ if _TRACE_ROOT:
 
     _tilelang_paged.paged_forward = _traced_tilelang_paged_forward
     _tilelang_package.paged_forward = _traced_tilelang_paged_forward
+
+    # The backend caches the package-level function after its first use. Wrap
+    # forward_extend as the authoritative fallback capture point.
+    from sglang.srt.layers.attention import flash_attn_v100_backend as _flash_v100
+
+    _orig_flash_v100_forward_extend = _flash_v100.FlashAttentionV100Backend.forward_extend
+
+    def _traced_flash_v100_forward_extend(self, q, k, v, layer, forward_batch, *args, **kwargs):
+        result = _orig_flash_v100_forward_extend(self, q, k, v, layer, forward_batch, *args, **kwargs)
+        if (
+            _armed()
+            and self.model_runner.is_draft_worker
+            and forward_batch.forward_mode.is_target_verify()
+            and layer.layer_id == 0
+            and tuple(q.shape[-1:]) == (1024,)
+            and "layer0.attention.tilelang.q" not in _seen
+        ):
+            try:
+                md = self.forward_metadata
+                q3 = q.reshape(q.shape[0], layer.tp_q_head_num, layer.head_dim).contiguous()
+                k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(layer.layer_id)
+                if k_cache.ndim == 3:
+                    k_cache = k_cache.view(-1, self.page_size, k_cache.shape[-2], k_cache.shape[-1])
+                    v_cache = v_cache.view(-1, self.page_size, v_cache.shape[-2], v_cache.shape[-1])
+                context_len = int(md.seq_lens[0].item())
+                page_size = int(k_cache.shape[1])
+                page_count = (context_len + page_size - 1) // page_size
+                pages = md.page_table[0, :page_count].to(torch.int64)
+                logical_k = k_cache.index_select(0, pages).reshape(-1, 2, 128)[:context_len]
+                logical_v = v_cache.index_select(0, pages).reshape(-1, 2, 128)[:context_len]
+                _dump("layer0.attention.tilelang.q", q3)
+                _dump("layer0.attention.tilelang.k", logical_k)
+                _dump("layer0.attention.tilelang.v", logical_v)
+                _dump("layer0.attention.tilelang.block_table", md.page_table)
+                _dump("layer0.attention.tilelang.seq_lens", md.seq_lens)
+                _dump("layer0.attention.tilelang.query_start_loc", md.query_start_loc)
+                _dump("layer0.attention.tilelang.prefix_kv_lens", md.prefix_kv_lens)
+                _dump("layer0.attention.tilelang.output", result.reshape_as(q3))
+                print(
+                    f"SGLANG_DFLASH_TILELANG_BACKEND_CAPTURE context={context_len} "
+                    f"q={tuple(q3.shape)} k={tuple(logical_k.shape)}",
+                    flush=True,
+                )
+            except (IndexError, RuntimeError, ValueError) as exc:
+                print(f"SGLANG_DFLASH_TILELANG_BACKEND_CAPTURE_FAIL {type(exc).__name__}: {exc}", flush=True)
+        return result
+
+    _flash_v100.FlashAttentionV100Backend.forward_extend = _traced_flash_v100_forward_extend
