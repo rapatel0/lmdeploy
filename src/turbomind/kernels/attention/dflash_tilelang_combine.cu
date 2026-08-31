@@ -82,7 +82,10 @@ __global__ void PackDFlashTileLangInputs(const half_t* __restrict__ q,
          index += blockDim.x * gridDim.x) {
         const int row = index / kQElementsPerRow;
         const int col = index % kQElementsPerRow;
-        packed_q[index] = q[row * q_stride + col];
+        const int head = col / 128;
+        const int dim = col % 128;
+        const int interleaved_dim = (dim % 64) * 2 + dim / 64;
+        packed_q[index] = q[row * q_stride + head * 128 + interleaved_dim];
     }
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < context_len * kKVElementsPerToken;
          index += blockDim.x * gridDim.x) {
@@ -90,8 +93,9 @@ __global__ void PackDFlashTileLangInputs(const half_t* __restrict__ q,
         const int rem = index % kKVElementsPerToken;
         const int head = rem / 128;
         const int dim = rem % 128;
+        const int interleaved_dim = (dim % 64) * 2 + dim / 64;
         const int head_stride = 2 * context_len * 128;
-        packed_k[index] = flattened_kv[head * head_stride + token * 128 + dim];
+        packed_k[index] = flattened_kv[head * head_stride + token * 128 + interleaved_dim];
         packed_v[index] = flattened_kv[head * head_stride + context_len * 128 + token * 128 + dim];
     }
     for (int page = blockIdx.x * blockDim.x + threadIdx.x; page < (context_len + 15) / 16;

@@ -64,7 +64,7 @@ def interleave_rope(payload, rows, width):
 roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
 assert len(roots) == 4
 for name, output, expected in (
-    ('layer0.attention.q_normalized', sys.argv[2], 8 * 1024 * 2),
+    ('layer0.attention.q_rotated', sys.argv[2], 8 * 1024 * 2),
     ('layer0.attention.k_normalized', sys.argv[3], 8 * 256 * 2),
 ):
     with open(output, 'wb') as stream:
@@ -213,7 +213,7 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
         'draft.q_projection': (draft_projection[:, :1024], reorder_rope(sg_projection[:, :1024])),
         'draft.k_projection': (draft_projection[:, 1024:1280], reorder_rope(sg_projection[:, 1024:1280])),
         'draft.v_projection': (draft_projection[:, 1280:1536], sg_projection[:, 1280:1536]),
-        'draft.q_normalized': (draft_normalized[:, :1024], reorder_rope(load(sg_root, sg, 'layer0.attention.q_normalized'))),
+        'draft.q_attention': (draft_normalized[:, :1024], reorder_rope(load(sg_root, sg, 'layer0.attention.q_rotated'))),
         'draft.k_normalized': (draft_normalized[:, 1024:1280], reorder_rope(load(sg_root, sg, 'layer0.attention.k_normalized'))),
         'draft.cache_k': (flattened[:, 0, :key_count, :], reorder_rope(sg_flat_k)),
         'draft.cache_v': (flattened[:, 1, :key_count, :], sg_flat_v),
