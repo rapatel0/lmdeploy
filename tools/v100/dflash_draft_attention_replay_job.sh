@@ -29,6 +29,7 @@ directories = sorted(path for path in root.glob("rank-*-pid-*") if path.is_dir()
 assert len(directories) == 4, directories
 names = (
     "target.full_context",
+    "layer0.attention.norm_output",
     "layer0.attention.conv_side0",
     "layer0.attention.wo_reduced",
 )
@@ -47,11 +48,13 @@ for name in names:
 print(*paths, sep="\n")
 PY
 )
-[ "${#REPLAY_FILES[@]}" -eq 3 ]
+[ "${#REPLAY_FILES[@]}" -eq 4 ]
 CONTEXT=${REPLAY_FILES[0]}
-ATTN_INPUT=${REPLAY_FILES[1]}
-ATTN_OUTPUT=${REPLAY_FILES[2]}
-printf 'context=%s\nattention_input=%s\nattention_output=%s\n' "$CONTEXT" "$ATTN_INPUT" "$ATTN_OUTPUT"
+BLOCK_NORM=${REPLAY_FILES[1]}
+ATTN_INPUT=${REPLAY_FILES[2]}
+ATTN_OUTPUT=${REPLAY_FILES[3]}
+printf 'context=%s\nblock_norm=%s\nattention_input=%s\nattention_output=%s\n' \
+    "$CONTEXT" "$BLOCK_NORM" "$ATTN_INPUT" "$ATTN_OUTPUT"
 
 common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
     --num-draft-tokens 7 --speculative-algorithm dflash2
@@ -63,10 +66,11 @@ common=(--model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}"
     --cache-max-entry-count 0.05)
 
 run_arm() {
-    local arm=$1 input_replay=$2 output_replay=$3
+    local arm=$1 norm_replay=$2 input_replay=$3 output_replay=$4
     mkdir -p "$RESULTS/$arm"
     TM_DFLASH_REDUCE_BEFORE_CONV=1 \
         TM_DFLASH_CONTEXT_REPLAY_FILE="$CONTEXT" \
+        TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE="$norm_replay" \
         TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE="$input_replay" \
         TM_DFLASH_DRAFT_ATTENTION_OUTPUT_REPLAY_FILE="$output_replay" \
         TM_DFLASH_PARITY_DIR="$RESULTS/$arm" \
@@ -77,11 +81,14 @@ run_arm() {
         --output "$RESULTS/$arm-compare.json" >"$RESULTS/$arm-compare.log"
 }
 
-run_arm control "" ""
-run_arm attention_input "$ATTN_INPUT" ""
-run_arm attention_output "" "$ATTN_OUTPUT"
+run_arm control "" "" ""
+run_arm attention_input "" "$ATTN_INPUT" ""
+run_arm attention_output "" "" "$ATTN_OUTPUT"
+run_arm block_norm_attention_output "$BLOCK_NORM" "" "$ATTN_OUTPUT"
 [ "$(grep -c 'TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE' "$RESULTS/attention_input.log")" -eq 4 ]
 [ "$(grep -c 'TM_DFLASH_DRAFT_ATTENTION_OUTPUT_REPLAY_FILE' "$RESULTS/attention_output.log")" -eq 4 ]
+[ "$(grep -c 'TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE' "$RESULTS/block_norm_attention_output.log")" -eq 4 ]
+[ "$(grep -c 'TM_DFLASH_DRAFT_ATTENTION_OUTPUT_REPLAY_FILE' "$RESULTS/block_norm_attention_output.log")" -eq 4 ]
 
 python3 - "$RESULTS" <<'PY'
 import json
@@ -97,7 +104,7 @@ names = (
     "layer0.mlp.conv_side1",
     "layer0.mlp.norm_output",
 )
-for arm in ("control", "attention_input", "attention_output"):
+for arm in ("control", "attention_input", "attention_output", "block_norm_attention_output"):
     report = json.loads((root / f"{arm}-compare.json").read_text())
     rows = {row["lmdeploy"]: row for row in report["comparisons"]}
     print(f"ARM {arm}")
