@@ -12,7 +12,6 @@
 #include "src/turbomind/kernels/core/layout.h"
 #include "src/turbomind/kernels/core/math.h"
 
-#include "arch.h"
 #include "attention_params.h"
 
 namespace turbomind {
