@@ -706,7 +706,11 @@ if _TRACE_ROOT:
             skip_all_reduce=True,
             forward_batch=forward_batch,
         )
-        _dump(f"{name}_local", output_parallel)
+        # The collective mutates output_parallel in place. Retain a distinct
+        # graph-owned allocation or the deferred trace flush would serialize
+        # the reduced result under both names.
+        local_trace = output_parallel.clone()
+        _dump(f"{name}_local", local_trace)
         output = tensor_model_parallel_all_reduce(output_parallel)
         _dump(f"{name}_reduced", output)
         return output, output_bias
