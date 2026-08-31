@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 
 namespace turbomind {
 
@@ -167,6 +168,43 @@ void LinearWeight::prepare()
         EnsureFloatDtype(weight, data_type);
         if (weight.dtype() == data_type) {
             k_desc.type = data_type;
+        }
+        prepared_ = true;
+        return;
+    }
+
+    static const bool dflash_qkv_torch_layout = [] {
+        const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
+        return value && value[0] == '1';
+    }();
+    if (dflash_qkv_torch_layout && getSMVersion() == 70 && !is_grouped_ && input_dim == 5120
+        && output_dim == 1536 && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
+        // torch F.linear keeps [N,K] physical storage and asks cuBLAS for the
+        // transposed logical operand. Match that route exactly for DFlash's
+        // local QKV matrix instead of packing checkpoint [K,N] storage for a
+        // native TurboMind kernel.
+        Tensor trans{{weight.shape(1), weight.shape(0)}, weight.dtype(), kDEVICE};
+        invokeTransposeAxis01(
+            (half*)trans.raw_data(), (half*)weight.raw_data(), weight.shape(0), weight.shape(1), 1, stream);
+        weight       = std::move(trans);
+        k_desc.type  = weight.dtype();
+        k_desc.order = gemm::kColMajor;
+        k_desc.rows  = input_dim;
+        k_desc.cols  = output_dim;
+        k_desc.ld    = input_dim;
+        k_desc.pack  = {};
+
+        int device = -1;
+        TM_CUDA_CHECK(cudaGetDevice(&device));
+        TM_CHECK(device >= 0 && device < 16);
+        static std::atomic<bool> logged[16]{};
+        if (!logged[device].exchange(true, std::memory_order_relaxed)) {
+            std::fprintf(stderr,
+                         "DFLASH_QKV_TORCH_LAYOUT_ACTIVE device=%d shape=%dx%d\n",
+                         device,
+                         input_dim,
+                         output_dim);
+            std::fflush(stderr);
         }
         prepared_ = true;
         return;
