@@ -327,99 +327,6 @@ __global__ void DFlashMergeTopK16Kernel(int*         ids,
     }
 }
 
-__global__ void DFlashViterbiSelectorHalf(int*         output,
-                                          const int*   anchors,
-                                          const int*   candidates,
-                                          const float* unary,
-                                          const __half* hidden,
-                                          const __half* predecessor,
-                                          const __half* successor,
-                                          int           batch_size,
-                                          int           slots,
-                                          int           top_k,
-                                          int           rank)
-{
-    const int batch = blockIdx.x;
-    if (batch >= batch_size) {
-        return;
-    }
-    __shared__ float edge_scores[16 * 16];
-    __shared__ float scores[16];
-    __shared__ float next_scores[16];
-    __shared__ int   backpointers[7 * 16];
-
-    // Slot zero has one fixed predecessor: the verifier anchor.
-    for (int candidate_index = threadIdx.x; candidate_index < top_k; candidate_index += blockDim.x) {
-        const int     token = candidates[(batch * slots) * top_k + candidate_index];
-        const __half* pred  = predecessor + anchors[batch] * rank;
-        const __half* state = hidden + (batch * slots) * rank;
-        const __half* succ  = successor + token * rank;
-        float score = unary[(batch * slots) * top_k + candidate_index];
-        for (int i = 0; i < rank; ++i) {
-            score += __half2float(pred[i]) * __half2float(state[i]) * __half2float(succ[i]);
-        }
-        scores[candidate_index] = score;
-        backpointers[candidate_index] = 0;
-    }
-    __syncthreads();
-
-    for (int slot = 1; slot < slots; ++slot) {
-        const int edge = threadIdx.x;
-        if (edge < top_k * top_k) {
-            const int pred_index = edge / top_k;
-            const int candidate_index = edge - pred_index * top_k;
-            const int pred_token = candidates[(batch * slots + slot - 1) * top_k + pred_index];
-            const int token = candidates[(batch * slots + slot) * top_k + candidate_index];
-            const __half* pred  = predecessor + pred_token * rank;
-            const __half* state = hidden + (batch * slots + slot) * rank;
-            const __half* succ  = successor + token * rank;
-            float score = scores[pred_index] + unary[(batch * slots + slot) * top_k + candidate_index];
-            for (int i = 0; i < rank; ++i) {
-                score += __half2float(pred[i]) * __half2float(state[i]) * __half2float(succ[i]);
-            }
-            edge_scores[edge] = score;
-        }
-        __syncthreads();
-        if (threadIdx.x < top_k) {
-            const int candidate_index = threadIdx.x;
-            float best_score = -CUDART_INF_F;
-            int best_pred = 0;
-            for (int pred_index = 0; pred_index < top_k; ++pred_index) {
-                const float score = edge_scores[pred_index * top_k + candidate_index];
-                if (score > best_score || (score == best_score && pred_index < best_pred)) {
-                    best_score = score;
-                    best_pred = pred_index;
-                }
-            }
-            next_scores[candidate_index] = best_score;
-            backpointers[slot * 16 + candidate_index] = best_pred;
-        }
-        __syncthreads();
-        if (threadIdx.x < top_k) {
-            scores[threadIdx.x] = next_scores[threadIdx.x];
-        }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0) {
-        float best_score = -CUDART_INF_F;
-        int best_index = 0;
-        for (int candidate_index = 0; candidate_index < top_k; ++candidate_index) {
-            const float score = scores[candidate_index];
-            if (score > best_score || (score == best_score && candidate_index < best_index)) {
-                best_score = score;
-                best_index = candidate_index;
-            }
-        }
-        for (int slot = slots - 1; slot >= 0; --slot) {
-            output[batch * slots + slot] = candidates[(batch * slots + slot) * top_k + best_index];
-            if (slot > 0) {
-                best_index = backpointers[slot * 16 + best_index];
-            }
-        }
-    }
-}
-
 template<bool TraceScores>
 __global__ void DFlashGreedySelectorHalf(int*         output,
                                          const int*   anchors,
@@ -743,7 +650,6 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
     TM_CHECK_EQ(output.size(), (ssize_t)batch_size * slots);
     TM_CHECK_EQ(candidate_ids.size(), (ssize_t)batch_size * slots * top_k);
     TM_CHECK_EQ(selector_hidden.shape(0), (ssize_t)batch_size * slots);
-    TM_CHECK_LE(slots, 7);
     TM_CHECK_EQ(predecessor_codebook.shape(1), rank);
     TM_CHECK_EQ(successor_codebook.shape(1), rank);
     if (trace_scores) {
@@ -763,24 +669,6 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                                                      rank);
     }
     else {
-        static const bool viterbi = [] {
-            const char* value = std::getenv("TM_DFLASH_VITERBI_SELECTOR");
-            return value && value[0] == '1';
-        }();
-        if (viterbi) {
-            DFlashViterbiSelectorHalf<<<batch_size, 256, 0, stream>>>(output.data(),
-                                                                     anchors.data(),
-                                                                     candidate_ids.data(),
-                                                                     unary_scores.data<float>(),
-                                                                     (const __half*)selector_hidden.raw_data(),
-                                                                     (const __half*)predecessor_codebook.raw_data(),
-                                                                     (const __half*)successor_codebook.raw_data(),
-                                                                     batch_size,
-                                                                     slots,
-                                                                     top_k,
-                                                                     rank);
-        }
-        else {
         DFlashGreedySelectorHalf<false><<<batch_size, 32, 0, stream>>>(output.data(),
                                                                       anchors.data(),
                                                                       candidate_ids.data(),
@@ -793,7 +681,6 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
                                                                       slots,
                                                                       top_k,
                                                                       rank);
-        }
     }
     TM_CUDA_CHECK(cudaGetLastError());
 }
