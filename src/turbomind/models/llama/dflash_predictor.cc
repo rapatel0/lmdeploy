@@ -687,7 +687,12 @@ Tensor DFlashPredictor::ProjectContext(const Tensor& target_hidden,
         const char* value = std::getenv("TM_DFLASH_CONTEXT_REPLAY_FULL_ONLY");
         return value && value[0] == '1';
     }();
-    const bool replay_full_prompt = target_hidden.shape(0) == 1000 && !context_replay_consumed_;
+    static const bool replay_frontier_only = [] {
+        const char* value = std::getenv("TM_DFLASH_CONTEXT_REPLAY_FRONTIER_ONLY");
+        return value && value[0] == '1';
+    }();
+    const bool replay_full_prompt = !replay_frontier_only && target_hidden.shape(0) == 1000
+                                    && !context_replay_consumed_;
     const bool replay_frontier = !replay_full_only && parity_context_armed && target_hidden.shape(0) == 1
                                  && !context_row_replay_consumed_;
     if (replay_path && replay_path[0] && (replay_full_prompt || replay_frontier)) {
