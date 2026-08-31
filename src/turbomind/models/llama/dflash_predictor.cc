@@ -793,14 +793,6 @@ void DFlashPredictor::MaterializeContextKV(int target_phase, const Tensor& conte
                                        Tensor{{context.shape(0), hidden_units_}, dtype_, kDEVICE};
         UnifiedAttentionLayer::ForwardParam params{
             target_phase, context, discarded, layer->attention.get(), attention_indices_[i], 1.f, true};
-        // SGLang's target verification block starts with the already-published
-        // anchor at the committed frontier. TurboMind's target metadata includes
-        // that anchor in history, so write the verifier's K/V block one slot to
-        // the left. Otherwise the next draft exposes a stale ordinary-decode row
-        // followed by verifier row 0 instead of verifier rows [0, commit_len).
-        if (context.shape(0) == weights_.block_size) {
-            params.kv_write_shift = -1;
-        }
         const std::string trace_prefix = context.shape(0) == 1000 ?
                                              "context.prompt.layer" + std::to_string(i) :
                                              "context.frontier.layer" + std::to_string(i);
