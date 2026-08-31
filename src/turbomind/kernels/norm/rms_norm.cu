@@ -1,5 +1,6 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 
+#include <cstdlib>
 #include <stdexcept>
 
 #include "cub/block/block_reduce.cuh"
@@ -227,16 +228,24 @@ void invokeQkRMSNorm(Tensor&       qkv,
     auto data   = qkv.raw_data();
     auto stride = qkv.stride(0);
 
+    static const bool dflash_qk_norm_warp32 = [] {
+        const char* value = std::getenv("TM_DFLASH_QK_NORM_WARP32");
+        return value && value[0] == '1';
+    }();
+
     auto invoke = [&](auto t) {
         using T = decltype(t);
 
-        auto launch = [&](auto max_dim_c, auto zero_centered_c) {
-            constexpr int kMaxDim = std::decay_t<decltype(max_dim_c)>::value;
+        auto launch = [&](auto max_dim_c, auto vec_size_c, auto zero_centered_c) {
+            constexpr int kMaxDim  = std::decay_t<decltype(max_dim_c)>::value;
+            constexpr int vec_size = std::decay_t<decltype(vec_size_c)>::value;
             TM_CHECK_LE(head_dim, kMaxDim);
 
-            constexpr int vec_size         = sizeof(uint4) / sizeof(T);
             constexpr int threads_per_head = kMaxDim / vec_size;
-            constexpr int block_dim        = 512;
+            // SGLang's head-dim-128 fused QK norm assigns one full warp to
+            // each head and four warps to a block. Preserve that reduction
+            // and per-lane accumulation order for the parity experiment.
+            constexpr int block_dim = vec_size == 4 ? 128 : 512;
 
             TM_CHECK(head_dim % vec_size == 0);
 
@@ -259,20 +268,31 @@ void invokeQkRMSNorm(Tensor&       qkv,
                                                      zero_centered_c);
         };
 
+        const bool use_warp32 = dflash_qk_norm_warp32 && sizeof(T) == 2 && head_dim == 128;
         if (head_dim <= 128) {
             if (zero_centered) {
-                launch(constant<128>{}, constant<true>{});
+                if (use_warp32) {
+                    launch(constant<128>{}, constant<4>{}, constant<true>{});
+                }
+                else {
+                    launch(constant<128>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<true>{});
+                }
             }
             else {
-                launch(constant<128>{}, constant<false>{});
+                if (use_warp32) {
+                    launch(constant<128>{}, constant<4>{}, constant<false>{});
+                }
+                else {
+                    launch(constant<128>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<false>{});
+                }
             }
         }
         else {
             if (zero_centered) {
-                launch(constant<256>{}, constant<true>{});
+                launch(constant<256>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<true>{});
             }
             else {
-                launch(constant<256>{}, constant<false>{});
+                launch(constant<256>{}, constant<sizeof(uint4) / sizeof(T)>{}, constant<false>{});
             }
         }
     };
