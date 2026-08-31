@@ -563,6 +563,36 @@ if _TRACE_ROOT:
             _dump("layer0.attention.q_rotated", output[0])
             _dump("layer0.attention.k_rotated", output[1])
 
+    def _trace_layer0_attention_pre(_module, args):
+        if not _armed():
+            return
+        _dump("layer0.attention.backend_q", args[0] if len(args) > 0 else None)
+        _dump("layer0.attention.backend_k", args[1] if len(args) > 1 else None)
+        _dump("layer0.attention.backend_v", args[2] if len(args) > 2 else None)
+        backend = _get_attn_backend()
+        for prefix, metadata in (
+            ("adapter", getattr(backend, "forward_metadata", None)),
+            ("triton", getattr(getattr(backend, "_triton", None), "forward_metadata", None)),
+        ):
+            if metadata is None:
+                continue
+            for field in (
+                "page_table",
+                "swa_page_table",
+                "seq_lens",
+                "prefix_kv_lens",
+                "query_start_loc",
+                "qo_indptr",
+                "kv_indptr",
+                "kv_indices",
+                "window_kv_indptr",
+                "window_kv_indices",
+                "window_kv_offsets",
+                "custom_mask",
+                "mask_indptr",
+            ):
+                _dump(f"layer0.attention.metadata.{prefix}.{field}", getattr(metadata, field, None))
+
     def _trace_layer0_attention_cache(module, _args, output):
         _dump("layer0.attention.core_output", output)
         try:
@@ -607,6 +637,7 @@ if _TRACE_ROOT:
                     lambda _m, _a, out: _dump("layer0.attention.k_normalized", out)
                 )
                 layer.self_attn.rotary_emb.register_forward_hook(_trace_layer0_rotary)
+                layer.self_attn.attn.register_forward_pre_hook(_trace_layer0_attention_pre)
                 layer.self_attn.attn.register_forward_hook(_trace_layer0_attention_cache)
             layer.register_forward_pre_hook(
                 lambda module, args, i=index: (
