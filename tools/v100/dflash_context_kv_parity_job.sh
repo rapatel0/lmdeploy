@@ -44,8 +44,11 @@ FULL_CONTEXT=${REPLAY[0]}
 FULL_NORM=${REPLAY[1]}
 INITIAL_NORM=${REPLAY[2]}
 REPLAY_EXACT_QK=${REPLAY_EXACT_QK:-1}
+REPLAY_PROJECTED_QK=${REPLAY_PROJECTED_QK:-0}
 Q_REPLAY=$RESULTS/q_normalized_tp4.bin
 K_REPLAY=$RESULTS/k_normalized_tp4.bin
+Q_PROJECTION_REPLAY=$RESULTS/q_projection_tp4.bin
+K_PROJECTION_REPLAY=$RESULTS/k_projection_tp4.bin
 if [ "$REPLAY_EXACT_QK" = 1 ]; then
 python3 - "$SG" "$Q_REPLAY" "$K_REPLAY" <<'PY'
 import glob, json, pathlib, sys
@@ -69,8 +72,26 @@ for name, output, expected in (
             stream.write(interleave_rope(payload, 8, 1024 if 'q_' in name else 256))
 PY
 fi
-printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nreplay_exact_qk=%s\n' \
-    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$REPLAY_EXACT_QK"
+if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
+python3 - "$SG" "$Q_PROJECTION_REPLAY" "$K_PROJECTION_REPLAY" <<'PY'
+import glob, json, numpy as np, pathlib, sys
+
+def interleave(value):
+    rows, width = value.shape
+    return value.reshape(rows, width // 128, 2, 64).transpose(0, 1, 3, 2).copy()
+roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
+assert len(roots) == 4
+with open(sys.argv[2], 'wb') as q_out, open(sys.argv[3], 'wb') as k_out:
+    for root in roots:
+        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        row = records['layer0.attention.qkv_projection']
+        value = np.fromfile(pathlib.Path(root, row['file']), dtype='<f2').reshape(8, 1536)
+        q_out.write(interleave(value[:, :1024]).tobytes())
+        k_out.write(interleave(value[:, 1024:1280]).tobytes())
+PY
+fi
+printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nreplay_exact_qk=%s\nreplay_projected_qk=%s\n' \
+    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$REPLAY_EXACT_QK" "$REPLAY_PROJECTED_QK"
 
 mkdir -p "$RESULTS/parity"
 RUN_ENV=(env
@@ -85,6 +106,10 @@ if [ "$REPLAY_EXACT_QK" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE="$Q_REPLAY"
              TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE="$K_REPLAY")
 fi
+if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
+    RUN_ENV+=(TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE="$Q_PROJECTION_REPLAY"
+             TM_DFLASH_DRAFT_K_PROJECTION_REPLAY_FILE="$K_PROJECTION_REPLAY")
+fi
 "${RUN_ENV[@]}" python3 /job/bench_decode.py \
     --model /models/Qwen3.8-27B-FP8 --tp 4 --num-draft-tokens 7 \
     --speculative-algorithm dflash2 --speculative-draft-model /models/Qwen3.8-27B-DFlash2 \
@@ -98,6 +123,10 @@ fi
 if [ "$REPLAY_EXACT_QK" = 1 ]; then
     [ "$(grep -c 'TM_DFLASH_DRAFT_Q_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
     [ "$(grep -c 'TM_DFLASH_DRAFT_K_NORM_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+fi
+if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
+    [ "$(grep -c 'TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+    [ "$(grep -c 'TM_DFLASH_DRAFT_K_PROJECTION_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
 fi
 
 python3 /job/compare_dflash_parity.py \

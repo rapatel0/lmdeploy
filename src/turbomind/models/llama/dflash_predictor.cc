@@ -1468,6 +1468,20 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
             const int q_width = layer->attention->head_num / layer->attention->tp_size * layer->attention->head_dim;
             const int k_width =
                 layer->attention->kv_head_num / layer->attention->tp_size * layer->attention->head_dim;
+            Tensor q_projection_replay{{token_num, q_width}, dtype_, kDEVICE};
+            Tensor k_projection_replay{{token_num, k_width}, dtype_, kDEVICE};
+            const bool replay_q_projection = replay_parity_tensor("TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE",
+                                                                  q_projection_replay,
+                                                                  draft_attention_q_projection_replay_consumed_);
+            const bool replay_k_projection = replay_parity_tensor("TM_DFLASH_DRAFT_K_PROJECTION_REPLAY_FILE",
+                                                                  k_projection_replay,
+                                                                  draft_attention_k_projection_replay_consumed_);
+            TM_CHECK_EQ(replay_q_projection, replay_k_projection);
+            if (replay_q_projection) {
+                params.q_projection_replay = std::move(q_projection_replay);
+                params.k_projection_replay = std::move(k_projection_replay);
+            }
+
             Tensor q_replay{{token_num, q_width}, dtype_, kDEVICE};
             Tensor k_replay{{token_num, k_width}, dtype_, kDEVICE};
             const bool replay_q = replay_parity_tensor(

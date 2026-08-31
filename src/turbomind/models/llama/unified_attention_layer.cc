@@ -1034,40 +1034,46 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
             p.trace_fn(p.trace_context, p.trace_qkv_projection, qkv);
         }
 
-        qk_norm(qkv, weights);
-        if (p.q_replay || p.k_replay) {
-            TM_CHECK(p.q_replay && p.k_replay);
+        auto replay_qk = [&](const Tensor& q, const Tensor& k) {
+            if (!(q || k)) {
+                return;
+            }
+            TM_CHECK(q && k);
             const int local_head_num    = weights.head_num / weights.tp_size;
             const int local_kv_head_num = weights.kv_head_num / weights.tp_size;
             const int q_width           = local_head_num * weights.head_dim;
             const int k_width           = local_kv_head_num * weights.head_dim;
-            TM_CHECK_EQ(p.q_replay.ndim(), 2);
-            TM_CHECK_EQ(p.k_replay.ndim(), 2);
-            TM_CHECK_EQ(p.q_replay.shape(0), qkv.shape(0));
-            TM_CHECK_EQ(p.k_replay.shape(0), qkv.shape(0));
-            TM_CHECK_EQ(p.q_replay.shape(1), q_width);
-            TM_CHECK_EQ(p.k_replay.shape(1), k_width);
-            TM_CHECK_EQ(p.q_replay.dtype(), qkv.dtype());
-            TM_CHECK_EQ(p.k_replay.dtype(), qkv.dtype());
+            TM_CHECK_EQ(q.ndim(), 2);
+            TM_CHECK_EQ(k.ndim(), 2);
+            TM_CHECK_EQ(q.shape(0), qkv.shape(0));
+            TM_CHECK_EQ(k.shape(0), qkv.shape(0));
+            TM_CHECK_EQ(q.shape(1), q_width);
+            TM_CHECK_EQ(k.shape(1), k_width);
+            TM_CHECK_EQ(q.dtype(), qkv.dtype());
+            TM_CHECK_EQ(k.dtype(), qkv.dtype());
             const size_t elem_bytes = byte_size(qkv.dtype(), 1);
             auto* qkv_bytes = static_cast<char*>(qkv.raw_data());
             TM_CUDA_CHECK(cudaMemcpy2DAsync(qkv_bytes,
                                             qkv.stride(0) * elem_bytes,
-                                            p.q_replay.raw_data(),
-                                            p.q_replay.stride(0) * elem_bytes,
+                                            q.raw_data(),
+                                            q.stride(0) * elem_bytes,
                                             q_width * elem_bytes,
                                             qkv.shape(0),
                                             cudaMemcpyDeviceToDevice,
                                             core::Context::stream().handle()));
             TM_CUDA_CHECK(cudaMemcpy2DAsync(qkv_bytes + q_width * elem_bytes,
                                             qkv.stride(0) * elem_bytes,
-                                            p.k_replay.raw_data(),
-                                            p.k_replay.stride(0) * elem_bytes,
+                                            k.raw_data(),
+                                            k.stride(0) * elem_bytes,
                                             k_width * elem_bytes,
                                             qkv.shape(0),
                                             cudaMemcpyDeviceToDevice,
                                             core::Context::stream().handle()));
-        }
+        };
+
+        replay_qk(p.q_projection_replay, p.k_projection_replay);
+        qk_norm(qkv, weights);
+        replay_qk(p.q_replay, p.k_replay);
         if (p.trace_fn && p.trace_qkv_pre) {
             p.trace_fn(p.trace_context, p.trace_qkv_pre, qkv);
         }
