@@ -1225,13 +1225,17 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
     const bool dflash_paged_q8_eligible = engine_param_.speculative_algorithm == "dflash2" && arch_ == 70 &&
                                           !is_mla && weights.causal && quant_policy_ == 0 && d.decode.n == 0 &&
                                           d.prefill.n == 1 && d.prefill.q_sum == dflash_block;
-    // Keep this specialization strict. The audited target has 6Q:1KV per TP
-    // rank and sixteen full-attention layers. Sliding and draft layers retain
-    // their existing paths.
-    const bool use_dflash_grouped_paged_q8 = enable_dflash_grouped_paged_q8 && dflash_paged_q8_eligible &&
-                                             dtype == kHalf && dflash_block == 8 && q_count == 8 &&
-                                             local_head_num == 6 && local_kv_head_num == 1 &&
-                                             size_per_head == 256 && weights.window_size == 0;
+    // Keep these specializations strict. The audited target uses local 6Q:1KV
+    // head-256 full attention; the five-layer draft uses local 8Q:2KV
+    // head-128 sliding attention. Both mirror SGLang's grouped native Q=8
+    // verifier geometry.
+    const bool dflash_grouped_target_q8 = local_head_num == 6 && local_kv_head_num == 1
+                                          && size_per_head == 256 && weights.window_size == 0;
+    const bool dflash_grouped_draft_q8 = p.frozen_kv && local_head_num == 8 && local_kv_head_num == 2
+                                         && size_per_head == 128 && weights.window_size == 2048;
+    const bool use_dflash_grouped_paged_q8 = enable_dflash_grouped_paged_q8 && dflash_paged_q8_eligible
+                                             && dtype == kHalf && dflash_block == 8 && q_count == 8
+                                             && (dflash_grouped_target_q8 || dflash_grouped_draft_q8);
     const bool use_dflash_paged_q8 = (enable_dflash_paged_q8 || use_dflash_grouped_paged_q8) &&
                                      dflash_paged_q8_eligible;
     const bool use_fixed_dflash_graph_geometry =
