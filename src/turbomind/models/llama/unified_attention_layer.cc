@@ -1258,7 +1258,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == 8 && d.prefill.k_sum <= 16 * 1024 &&
         dtype == kHalf && dflash_block == 8 && q_count == 8 && local_head_num == 8 && local_kv_head_num == 2 &&
         size_per_head == 128;
-    if (enable_dflash_tilelang_draft_attention && p.layer_id == 0 && d.prefill.q_sum == 8) {
+    if (enable_dflash_tilelang_draft_attention && d.prefill.q_sum == 8) {
         static bool logged_tilelang_selector = false;
         if (!logged_tilelang_selector) {
             logged_tilelang_selector = true;
