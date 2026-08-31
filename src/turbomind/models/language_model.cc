@@ -2428,6 +2428,7 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     NvtxScope scope("speculativeRollback");
     auto&     d   = data_.at(phase);
     const int bsz = (int)d.rows.size();
+    const int K   = engine_param_.num_draft_tokens;
 
     Buffer_<int> accepted{bsz, kCPU};
     Buffer_<int> bonus{bsz, kCPU};
