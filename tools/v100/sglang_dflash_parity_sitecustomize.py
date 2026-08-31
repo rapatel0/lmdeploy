@@ -569,13 +569,19 @@ if _TRACE_ROOT:
             from sglang.srt.model_executor.forward_context import get_attn_backend
 
             backend = get_attn_backend()
-            triton_backend = getattr(backend, "_triton", backend)
-            metadata = triton_backend.forward_metadata
-            live_indices = metadata.window_kv_indices.to(torch.long)
+            metadata = backend.forward_metadata
+            page_table = metadata.swa_page_table
+            if page_table is None:
+                page_table = metadata.page_table
+            pages = page_table[0].to(torch.long)
+            pages = pages[pages >= 0]
+            page_size = int(backend.page_size)
+            live_indices = (pages[:, None] * page_size + torch.arange(page_size, device=pages.device)).reshape(-1)
             cache_k, cache_v = backend.token_to_kv_pool.get_kv_buffer(module.layer_id)
+            _dump("layer0.attention.live_cache_pages", pages)
             _dump("layer0.attention.live_cache_indices", live_indices)
-            _dump("layer0.attention.live_cache_k", cache_k[live_indices])
-            _dump("layer0.attention.live_cache_v", cache_v[live_indices])
+            _dump("layer0.attention.live_cache_k", cache_k.reshape(-1, *cache_k.shape[-2:])[live_indices])
+            _dump("layer0.attention.live_cache_v", cache_v.reshape(-1, *cache_v.shape[-2:])[live_indices])
         except Exception as exc:
             print(f"SGLANG_DFLASH_LIVE_CACHE_CAPTURE_FAIL {type(exc).__name__}: {exc}", flush=True)
 
