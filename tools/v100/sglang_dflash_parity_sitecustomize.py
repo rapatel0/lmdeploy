@@ -754,6 +754,43 @@ if _TRACE_ROOT:
 
     _triton_backend.TritonAttnBackend.forward_extend = _traced_triton_extend
 
+    import sglang.srt.layers.radix_attention as _radix_attention
+    from sglang.srt.model_executor.forward_context import get_attn_backend as _get_attn_backend
+
+    _orig_unified_attention = _radix_attention.unified_attention_with_output
+
+    def _traced_unified_attention(query, key, value, output, save_kv_cache, layer_id, **kwargs):
+        if _armed() and layer_id == 0:
+            _dump("layer0.attention.backend_q", query)
+            _dump("layer0.attention.backend_k", key)
+            _dump("layer0.attention.backend_v", value)
+            backend = _get_attn_backend()
+            for prefix, metadata in (
+                ("adapter", getattr(backend, "forward_metadata", None)),
+                ("triton", getattr(getattr(backend, "_triton", None), "forward_metadata", None)),
+            ):
+                if metadata is None:
+                    continue
+                for field in (
+                    "page_table",
+                    "swa_page_table",
+                    "seq_lens",
+                    "prefix_kv_lens",
+                    "query_start_loc",
+                    "qo_indptr",
+                    "kv_indptr",
+                    "kv_indices",
+                    "window_kv_indptr",
+                    "window_kv_indices",
+                    "window_kv_offsets",
+                    "custom_mask",
+                    "mask_indptr",
+                ):
+                    _dump(f"layer0.attention.metadata.{prefix}.{field}", getattr(metadata, field, None))
+        return _orig_unified_attention(query, key, value, output, save_kv_cache, layer_id, **kwargs)
+
+    _radix_attention.unified_attention_with_output = _traced_unified_attention
+
     _orig_prepare = _df.DFlashGroupedConv.prepare
 
     def _traced_prepare(self, hidden_states):
