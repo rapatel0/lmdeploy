@@ -31,7 +31,8 @@ for order in "${orders[@]}"; do
             --json-out "$RESULTS/$arm.json" 2>&1 | tee "$RESULTS/$arm.log"
     done
 done
-BEST=$(python3 - "$RESULTS" <<'PY'
+BEST=$(
+    python3 - "$RESULTS" <<'PY'
 import json,pathlib,re,statistics,sys
 root=pathlib.Path(sys.argv[1]);pat=re.compile(r'final commit length ([0-9.]+), raw ([0-9.]+) over ([0-9]+)');groups={}
 for p in sorted(root.glob('r*_s*.log')):
