@@ -264,17 +264,17 @@ __global__ void __launch_bounds__(128) ProcessDFlashContextKV(char**          bl
     __syncthreads();
 
     if (lane < 16) {
-        Array<float, 8> values;
         PRAGMA_UNROLL
-        for (int i = 0; i < 8; ++i) {
-            values[i] = normalized[lane * 8 + i];
-        }
-        FastRoPE rope(rope_param, batch_idx, std::integral_constant<int, 8>{});
-        rope.init(lane * 8);
-        rope.apply(values, ti, qi);
-        PRAGMA_UNROLL
-        for (int i = 0; i < 8; ++i) {
-            normalized[lane * 8 + i] = values[i];
+        for (int i = 0; i < 8; i += 2) {
+            const int   di       = lane * 8 + i;
+            const float inv_freq = exp2f(di * rope_param.scale_factor);
+            const float angle    = ti * inv_freq;
+            const float sin_v    = sinf(angle);
+            const float cos_v    = cosf(angle);
+            const float first    = normalized[di];
+            const float second   = normalized[di + 1];
+            normalized[di]       = cos_v * first - sin_v * second;
+            normalized[di + 1]   = cos_v * second + sin_v * first;
         }
     }
     __syncthreads();
