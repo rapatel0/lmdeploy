@@ -5,6 +5,7 @@
 
 #include <cuda.h>
 #include <cstddef>
+#include <mutex>
 
 #include "dflash_tilelang_ptx.inc"
 
@@ -41,8 +42,21 @@ struct DFlashTileLangDriverKernels {
 
 DFlashTileLangDriverKernels& GetDFlashTileLangDriverKernels()
 {
-    static DFlashTileLangDriverKernels kernels;
-    return kernels;
+    constexpr int kMaxDevices = 32;
+    static std::mutex mutex;
+    static DFlashTileLangDriverKernels* per_device[kMaxDevices]{};
+    int device = -1;
+    TM_CUDA_CHECK(cudaGetDevice(&device));
+    TM_CHECK_GE(device, 0);
+    TM_CHECK_LT(device, kMaxDevices);
+    std::lock_guard<std::mutex> lock{mutex};
+    if (!per_device[device]) {
+        // Driver modules and function handles belong to the CUDA context in
+        // which they were loaded. TurboMind TP ranks share one process but use
+        // separate device contexts, so each device needs its own module pair.
+        per_device[device] = new DFlashTileLangDriverKernels{};
+    }
+    return *per_device[device];
 }
 
 __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
