@@ -105,6 +105,7 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
                         FragL&         frag_L,
                         int            offset_Q,
                         int            offset_K,
+                        int            min_step,
                         int            max_step,
                         int            tile_iter,
                         int            mask_iter_back,
@@ -184,7 +185,7 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
             });
 
             if constexpr (is_mask) {
-                ApplyMask<Causal>(frag_S, offset_Q, offset_K, max_step, window_size);
+                ApplyMask<Causal>(frag_S, offset_Q, offset_K, min_step, max_step, window_size);
             }
 
             Impl::Softmax<is_mask>(frag_S, frag_M, frag_L, frag_O, qk_scale);
@@ -233,6 +234,7 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
                         FragL&         frag_L,
                         int            offset_Q,
                         int            offset_K,
+                        int            min_step,
                         int            max_step,
                         int            tile_iter,
                         int            mask_iter_back,
@@ -290,7 +292,7 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
             prefetch_K(0);
 
             if constexpr (is_mask) {
-                ApplyMask<Causal>(frag_S, offset_Q, offset_K, max_step, window_size);
+                ApplyMask<Causal>(frag_S, offset_Q, offset_K, min_step, max_step, window_size);
             }
 
             Impl::Softmax<is_mask>(frag_S, frag_M, frag_L, frag_O, qk_scale);
@@ -340,6 +342,7 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
                         FragL&         frag_L,
                         int            offset_Q,
                         int            offset_K,
+                        int            min_step,
                         int            max_step,
                         int            tile_iter,
                         int            mask_iter_back,
@@ -385,7 +388,7 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
 
         auto loop = [&](auto is_residue, auto is_mask, auto is_last) {
             if constexpr (is_mask) {
-                ApplyMask<Causal>(frag_S, offset_Q, offset_K, max_step, window_size);
+                ApplyMask<Causal>(frag_S, offset_Q, offset_K, min_step, max_step, window_size);
             }
 
             Impl::Softmax<is_mask>(frag_S, frag_M, frag_L, frag_O, qk_scale);
@@ -464,6 +467,7 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
                         FragL&         frag_L,
                         int            offset_Q,
                         int            offset_K,
+                        int            min_step,
                         int            max_step,
                         int            tile_iter,
                         int            mask_iter_back,
@@ -514,7 +518,7 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
                 state_QK, frag_S, pipe_iter.r, [](int) {}, [] {});
 
             if constexpr (is_mask) {
-                ApplyMask<Causal>(frag_S, offset_Q, offset_K, max_step, window_size);
+                ApplyMask<Causal>(frag_S, offset_Q, offset_K, min_step, max_step, window_size);
             }
 
             Impl::Softmax<is_mask>(frag_S, frag_M, frag_L, frag_O, qk_scale);
@@ -555,11 +559,12 @@ struct Mainloop<Sm80_CpAsync<Stages>, Impl_> {
     }
 
     template<bool Causal>
-    __device__ void ApplyMask(FragS& frag_S, int offset_Q, int offset_K, int max_step, int window_size)
+    __device__ void
+    ApplyMask(FragS& frag_S, int offset_Q, int offset_K, int min_step, int max_step, int window_size)
     {
         Impl::ForeachS(frag_S, [&](int hi, int qi, int si, int ri, float& score) {
             const int local_k = offset_K + si;
-            bool      valid   = local_k < max_step;
+            bool      valid   = min_step <= local_k && local_k < max_step;
             if constexpr (Causal) {
                 const int w = (offset_Q + qi) - (local_k * cp_size_ + cp_rank_);
                 valid       = valid && 0 <= w && w < window_size;
