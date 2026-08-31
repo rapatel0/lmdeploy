@@ -3,7 +3,7 @@
 set -euo pipefail
 SRC_COMMIT="$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP 2>/dev/null)"
 RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-target-mlp-replay-${SRC_COMMIT:-unknown}
-BASE_REF="$(find /results -maxdepth 3 -type d -path '*-dflash-target-trajectory-*/parity/lmdeploy' -print | sort | tail -1)"
+BASE_REF="$(find /results -maxdepth 5 -type d -path '*-dflash-target-trajectory-*/parity/target-prompt/lmdeploy' -print | sort | tail -1)"
 SG_REF="$(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace/sglang' -print | sort | tail -1)"
 [ -n "${BASE_REF}" ] && [ -n "${SG_REF}" ] || {
     echo 'FAIL: missing same-input target traces' >&2
@@ -50,7 +50,7 @@ for arm in baseline replay; do
 done
 
 python3 /job/analyze_dflash_target_mlp_replay.py \
-    --baseline-trace "${BASE_REF}" --replay-trace "${RESULTS}/parity/lmdeploy" \
+    --baseline-trace "${BASE_REF}" --replay-trace "${RESULTS}/parity/target-prompt/lmdeploy" \
     --sglang "${SG_REF}" --benchmark-root "${RESULTS}" --output "${RESULTS}/analysis.json" |
     tee "${RESULTS}/analysis.log"
 
