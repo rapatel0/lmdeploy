@@ -116,7 +116,7 @@ struct Impl<MMA_884, T_, T_, CTA_H_, CTA_Q_, CTA_S_, WARP_H_, WARP_Q, WARP_S, He
 
     using ThreadMapKVp = void;
 
-    static constexpr bool kDeferReduceL = false;
+    static constexpr bool kDeferReduceL = true;
 
     __device__ static void Sync()
     {
