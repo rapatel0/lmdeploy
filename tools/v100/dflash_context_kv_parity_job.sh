@@ -25,6 +25,7 @@ for name, shape, size in (
     ('target.full_context', [1000, 25600], 51200000),
     ('context.full_norm', [1000, 5120], 10240000),
     ('layer0.attention.norm_output', [8, 5120], 81920),
+    ('layer0.attention.conv_side0', [8, 5120], 81920),
 ):
     paths, hashes = [], []
     for root in roots:
@@ -39,12 +40,14 @@ for name, shape, size in (
     print(paths[0])
 PY
 )
-[ "${#REPLAY[@]}" -eq 3 ]
+[ "${#REPLAY[@]}" -eq 4 ]
 FULL_CONTEXT=${REPLAY[0]}
 FULL_NORM=${REPLAY[1]}
 INITIAL_NORM=${REPLAY[2]}
+ATTENTION_INPUT=${REPLAY[3]}
 REPLAY_EXACT_QK=${REPLAY_EXACT_QK:-1}
 REPLAY_PROJECTED_QK=${REPLAY_PROJECTED_QK:-0}
+REPLAY_ATTENTION_INPUT=${REPLAY_ATTENTION_INPUT:-0}
 Q_REPLAY=$RESULTS/q_normalized_tp4.bin
 K_REPLAY=$RESULTS/k_normalized_tp4.bin
 Q_PROJECTION_REPLAY=$RESULTS/q_projection_tp4.bin
@@ -90,8 +93,8 @@ with open(sys.argv[2], 'wb') as q_out, open(sys.argv[3], 'wb') as k_out:
         k_out.write(interleave(value[:, 1024:1280]).tobytes())
 PY
 fi
-printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nreplay_exact_qk=%s\nreplay_projected_qk=%s\n' \
-    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$REPLAY_EXACT_QK" "$REPLAY_PROJECTED_QK"
+printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nattention_input=%s\nreplay_exact_qk=%s\nreplay_projected_qk=%s\nreplay_attention_input=%s\n' \
+    "$FULL_CONTEXT" "$FULL_NORM" "$INITIAL_NORM" "$ATTENTION_INPUT" "$REPLAY_EXACT_QK" "$REPLAY_PROJECTED_QK" "$REPLAY_ATTENTION_INPUT"
 
 mkdir -p "$RESULTS/parity"
 RUN_ENV=(env
@@ -110,6 +113,9 @@ if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
     RUN_ENV+=(TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE="$Q_PROJECTION_REPLAY"
              TM_DFLASH_DRAFT_K_PROJECTION_REPLAY_FILE="$K_PROJECTION_REPLAY")
 fi
+if [ "$REPLAY_ATTENTION_INPUT" = 1 ]; then
+    RUN_ENV+=(TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE="$ATTENTION_INPUT")
+fi
 "${RUN_ENV[@]}" python3 /job/bench_decode.py \
     --model /models/Qwen3.8-27B-FP8 --tp 4 --num-draft-tokens 7 \
     --speculative-algorithm dflash2 --speculative-draft-model /models/Qwen3.8-27B-DFlash2 \
@@ -127,6 +133,9 @@ fi
 if [ "$REPLAY_PROJECTED_QK" = 1 ]; then
     [ "$(grep -c 'TM_DFLASH_DRAFT_Q_PROJECTION_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
     [ "$(grep -c 'TM_DFLASH_DRAFT_K_PROJECTION_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+fi
+if [ "$REPLAY_ATTENTION_INPUT" = 1 ]; then
+    [ "$(grep -c 'TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
 fi
 
 python3 /job/compare_dflash_parity.py \
