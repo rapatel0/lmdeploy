@@ -177,9 +177,14 @@ void LinearWeight::prepare()
         const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
         return value && value[0] == '1';
     }();
-    // The five DFlash draft QKV matrices are the exact 5120x1536 shape.
-    // Keep every other linear on its qualified TurboMind route.
-    const bool dflash_torch_fp16_shape = input_dim == 5120 && output_dim == 1536;
+    // Match every dense DFlash projection that SGLang evaluates through FP16
+    // torch linear. Partial conversion is not a valid fidelity arm: changing
+    // QKV while leaving Wo/MLP/context projection on different accumulation
+    // routes destroys the BF16-trained model's coupled numerical trajectory.
+    const bool dflash_torch_fp16_shape = ((input_dim == 768 || input_dim == 1024) && output_dim == 5120)
+        || (input_dim == 5120
+            && (output_dim == 1280 || output_dim == 1536 || output_dim == 5120 || output_dim == 8704))
+        || (input_dim == 4352 && output_dim == 5120) || (input_dim == 25600 && output_dim == 5120);
     if (dflash_qkv_torch_layout && getSMVersion() == 70 && !is_grouped_ && dflash_torch_fp16_shape
         && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
         // torch F.linear keeps [N,K] physical storage and asks cuBLAS for the
