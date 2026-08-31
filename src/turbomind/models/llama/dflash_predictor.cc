@@ -1657,6 +1657,9 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
             replay_parity_tensor("TM_DFLASH_LAYER0_MLP_INPUT_REPLAY_FILE",
                                  attn_output,
                                  layer0_mlp_input_replay_consumed_);
+            replay_parity_tensor("TM_DFLASH_LAYER0_RESIDUAL_REPLAY_FILE",
+                                 residual,
+                                 layer0_residual_replay_consumed_);
         }
         report_layer(i, ".attention.norm_output", attn_output);
         report_layer(i, ".attention.residual_state", residual);
@@ -1712,6 +1715,12 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         Tensor mlp_finished = layer_workspace ? layer_workspace->mlp_conv_finished.slice(0, token_num) : Tensor{};
         Tensor mlp_output =
             FinishGroupedConv(mlp_input.output, mlp_input.delta, *mlp_conv, std::move(mlp_finished));
+        report_layer(i, ".mlp.conv_side1_native", mlp_output);
+        if (i == 0) {
+            replay_parity_tensor("TM_DFLASH_LAYER0_MLP_OUTPUT_REPLAY_FILE",
+                                 mlp_output,
+                                 layer0_mlp_output_replay_consumed_);
+        }
         report_layer(i, ".mlp.conv_side1", mlp_output);
 
         const NormWeight& output_norm =
