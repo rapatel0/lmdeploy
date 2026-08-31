@@ -1074,3 +1074,58 @@ if _TRACE_ROOT:
         return result
 
     _dw.DFlashWorkerV2.forward_batch_generation = _traced_worker_forward_generation
+
+    # Capture the exact TileLang verifier ABI rather than reconstructing its
+    # operands from higher-level RoPE/cache hooks.
+    from sglang.srt.layers.attention import tilelang_fa_v100 as _tilelang_package
+    from sglang.srt.layers.attention.tilelang_fa_v100 import _paged_adapter as _tilelang_paged
+
+    _orig_tilelang_paged_forward = _tilelang_paged.paged_forward
+
+    def _traced_tilelang_paged_forward(
+        q, k_cache, v_cache, block_table, seq_lens, query_start_loc, prefix_kv_lens, **kwargs
+    ):
+        result = _orig_tilelang_paged_forward(
+            q,
+            k_cache,
+            v_cache,
+            block_table,
+            seq_lens,
+            query_start_loc,
+            prefix_kv_lens,
+            **kwargs,
+        )
+        if (
+            _armed()
+            and q.ndim == 3
+            and tuple(q.shape[1:]) == (8, 128)
+            and k_cache.ndim == 4
+            and tuple(k_cache.shape[2:]) == (2, 128)
+            and "layer0.attention.tilelang.q" not in _seen
+        ):
+            try:
+                context_len = int(seq_lens[0].item())
+                page_size = int(k_cache.shape[1])
+                page_count = (context_len + page_size - 1) // page_size
+                pages = block_table[0, :page_count].to(torch.int64)
+                logical_k = k_cache.index_select(0, pages).reshape(-1, 2, 128)[:context_len]
+                logical_v = v_cache.index_select(0, pages).reshape(-1, 2, 128)[:context_len]
+                _dump("layer0.attention.tilelang.q", q)
+                _dump("layer0.attention.tilelang.k", logical_k)
+                _dump("layer0.attention.tilelang.v", logical_v)
+                _dump("layer0.attention.tilelang.block_table", block_table)
+                _dump("layer0.attention.tilelang.seq_lens", seq_lens)
+                _dump("layer0.attention.tilelang.query_start_loc", query_start_loc)
+                _dump("layer0.attention.tilelang.prefix_kv_lens", prefix_kv_lens)
+                _dump("layer0.attention.tilelang.output", result)
+                print(
+                    f"SGLANG_DFLASH_TILELANG_ABI_CAPTURE context={context_len} "
+                    f"q={tuple(q.shape)} k={tuple(logical_k.shape)}",
+                    flush=True,
+                )
+            except (IndexError, RuntimeError, ValueError) as exc:
+                print(f"SGLANG_DFLASH_TILELANG_ABI_CAPTURE_FAIL {type(exc).__name__}: {exc}", flush=True)
+        return result
+
+    _tilelang_paged.paged_forward = _traced_tilelang_paged_forward
+    _tilelang_package.paged_forward = _traced_tilelang_paged_forward

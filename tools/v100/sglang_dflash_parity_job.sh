@@ -138,6 +138,9 @@ required = {
     "block.ids", "block.embedding", "layer0.attention.conv_side0",
     "layer4.output.hidden", "selector.candidate_ids", "selector.unary_scores",
     "selector.score_lattice", "selector.selected_ids",
+    "layer0.attention.tilelang.q", "layer0.attention.tilelang.k",
+    "layer0.attention.tilelang.v", "layer0.attention.tilelang.output",
+    "layer0.attention.tilelang.seq_lens", "layer0.attention.tilelang.query_start_loc",
 }
 for directory in dirs:
     records = [json.loads(line) for line in (directory / "manifest.jsonl").read_text().splitlines()]
