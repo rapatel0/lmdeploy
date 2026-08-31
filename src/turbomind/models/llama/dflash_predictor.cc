@@ -1078,6 +1078,22 @@ Buffer_<int> DFlashPredictor::LastCandidateIds(int phase, int rows) const
     return workspaces_.at(phase).candidate_ids.slice(0, (ssize_t)rows * 16);
 }
 
+Tensor DFlashPredictor::LastUnaryScores(int phase, int rows) const
+{
+    TM_CHECK(persistent_workspace_);
+    TM_CHECK_GE(phase, 0);
+    TM_CHECK_LT(phase, (int)workspaces_.size());
+    return workspaces_.at(phase).unary_scores.slice(0, rows);
+}
+
+Tensor DFlashPredictor::LastSelectorScores(int phase, int batch_size) const
+{
+    TM_CHECK(persistent_workspace_);
+    TM_CHECK_GE(phase, 0);
+    TM_CHECK_LT(phase, (int)workspaces_.size());
+    return workspaces_.at(phase).selector_scores.slice(0, batch_size);
+}
+
 Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor&       block_hidden,
                                                 const Buffer_<int>& anchors,
                                                 int                 phase) const
@@ -1256,7 +1272,11 @@ Buffer_<int> DFlashPredictor::SelectCandidatesImpl(const Tensor&       block_hid
 
     Tensor selector_scores;
     Tensor* selector_scores_ptr = nullptr;
-    if (parity_trace_ && parity_trace_->active) {
+    static const bool selector_data_trace = [] {
+        const char* value = std::getenv("TM_DFLASH_TARGET_CANDIDATE_RANK");
+        return value && value[0] == '1';
+    }();
+    if ((parity_trace_ && parity_trace_->active) || selector_data_trace) {
         selector_scores = workspace ? workspace->selector_scores.slice(0, batch_size) :
                                       Tensor{{batch_size, slots, selector->top_k}, kFloat32, kDEVICE};
         selector_scores_ptr = &selector_scores;

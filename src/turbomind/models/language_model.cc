@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <sstream>
@@ -261,7 +262,9 @@ struct LanguageModel::Impl {
 
     /// At the first verifier mismatch, rank of the target token in that
     /// slot's draft top-16 (index 16 means absent). Diagnostic-only.
-    std::array<size_t, 17> dflash_target_candidate_rank_{};
+    std::array<size_t, 17>                 dflash_target_candidate_rank_{};
+    std::array<std::array<size_t, 61>, 7> dflash_scale_oracle_{};
+    std::array<size_t, 7>                  dflash_mismatch_slot_{};
 
     /// Bounded draft-vs-target alignment dumps in RejectDrafts.
     int reject_dumps_ = 0;
@@ -357,6 +360,15 @@ struct LanguageModel::Impl {
                 counts << dflash_target_candidate_rank_[i];
             }
             TM_LOG_INFO("DFLASH_TARGET_CANDIDATE_RANK total={} ranks_0_15_absent={}", ranked, counts.str());
+            for (size_t slot = 0; slot < dflash_scale_oracle_.size(); ++slot) {
+                const auto& grid = dflash_scale_oracle_[slot];
+                const auto best = std::max_element(grid.begin(), grid.end());
+                TM_LOG_INFO("DFLASH_SELECTOR_SCALE_ORACLE slot={} mismatches={} best_scale={:.1f} recoverable={}",
+                            slot,
+                            dflash_mismatch_slot_[slot],
+                            (double)std::distance(grid.begin(), best) / 10.,
+                            *best);
+            }
         }
     }
 
@@ -2437,10 +2449,17 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
         const char* value = std::getenv("TM_DFLASH_TARGET_CANDIDATE_RANK");
         return value && value[0] == '1';
     }();
-    std::optional<Buffer_<int>> candidate_ids;
+    std::optional<Buffer_<int>>   candidate_ids;
+    std::optional<Buffer_<float>> candidate_unary;
+    std::optional<Buffer_<float>> candidate_scores;
     if (candidate_rank_trace && dflash_predictor_) {
-        candidate_ids.emplace((ssize_t)bsz * K * 16, kCPU);
+        const ssize_t count = (ssize_t)bsz * K * 16;
+        candidate_ids.emplace(count, kCPU);
+        candidate_unary.emplace(count, kCPU);
+        candidate_scores.emplace(count, kCPU);
         Copy(dflash_predictor_->LastCandidateIds(phase, bsz * K), *candidate_ids);
+        Copy(dflash_predictor_->LastUnaryScores(phase, bsz * K).buffer(), *candidate_unary);
+        Copy(dflash_predictor_->LastSelectorScores(phase, bsz).buffer(), *candidate_scores);
     }
     Copy(env.at("num_accepted").buffer().slice(0, bsz), accepted);
     Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
@@ -2517,6 +2536,31 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
                 }
             }
             ++dflash_target_candidate_rank_[rank];
+            ++dflash_mismatch_slot_[n];
+            static const float configured_scale = [] {
+                const char* value = std::getenv("TM_DFLASH_SELECTOR_TRANSITION_SCALE");
+                return value && value[0] ? std::strtof(value, nullptr) : 1.f;
+            }();
+            if (configured_scale != 0.f) {
+                const float* unary = candidate_unary->data() + ((ssize_t)i * K + n) * 16;
+                const float* score = candidate_scores->data() + ((ssize_t)i * K + n) * 16;
+                for (int grid = 0; grid <= 60; ++grid) {
+                    const float scale = (float)grid / 10.f;
+                    float best_score = -std::numeric_limits<float>::infinity();
+                    int best_rank = 0;
+                    for (int candidate_rank = 0; candidate_rank < 16; ++candidate_rank) {
+                        const float transition = (score[candidate_rank] - unary[candidate_rank]) / configured_scale;
+                        const float value = unary[candidate_rank] + scale * transition;
+                        if (value > best_score || (value == best_score && candidate_rank < best_rank)) {
+                            best_score = value;
+                            best_rank = candidate_rank;
+                        }
+                    }
+                    if (slot[best_rank] == target) {
+                        ++dflash_scale_oracle_[n][grid];
+                    }
+                }
+            }
         }
 
         // `seq_len` still points at the tip from before this forward, because

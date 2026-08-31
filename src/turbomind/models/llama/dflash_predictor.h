@@ -85,6 +85,8 @@ public:
     /// Candidate top-16 lattice from the latest proposal in this phase.
     /// Available on the default persistent-workspace path for diagnostics.
     Buffer_<int> LastCandidateIds(int phase, int rows) const;
+    Tensor       LastUnaryScores(int phase, int rows) const;
+    Tensor       LastSelectorScores(int phase, int batch_size) const;
 
     /// Associate the next context projection with an eligible request.
     void ArmParityContext(uint64_t uid) const;
