@@ -220,6 +220,55 @@ __global__ void DFlashResidualRMSNormHalf(__half*       output,
     }
 }
 
+__global__ void DFlashResidualRMSNormExactHalf(__half*       output,
+                                               float*        residual,
+                                               const __half* reduced,
+                                               const __half* bias,
+                                               const __half* weight,
+                                               int           hidden,
+                                               float         eps,
+                                               bool          zero_centered,
+                                               float         reduced_scale)
+{
+    constexpr int kThreads = 512;
+    constexpr int kVec     = 8;
+    const int token = blockIdx.x;
+    float accum[kVec]{};
+    for (int base = threadIdx.x * kVec; base < hidden; base += kThreads * kVec) {
+#pragma unroll
+        for (int c = 0; c < kVec; ++c) {
+            const int channel = base + c;
+            if (channel < hidden) {
+                const int index = token * hidden + channel;
+                const float value = RoundBFloat16(
+                    residual[index] + __half2float(reduced[index]) * reduced_scale
+                    + (bias ? __half2float(bias[channel]) : 0.f));
+                residual[index] = value;
+                accum[c] += value * value;
+            }
+        }
+    }
+    float sum = 0.f;
+#pragma unroll
+    for (int c = 0; c < kVec; ++c) {
+        sum += accum[c];
+    }
+    using BlockReduce = cub::BlockReduce<float, kThreads>;
+    __shared__ typename BlockReduce::TempStorage reduce_storage;
+    __shared__ float inverse_rms;
+    sum = BlockReduce(reduce_storage).Sum(sum);
+    if (threadIdx.x == 0) {
+        inverse_rms = rsqrtf(sum / hidden + eps);
+    }
+    __syncthreads();
+    for (int channel = threadIdx.x; channel < hidden; channel += kThreads) {
+        const int index = token * hidden + channel;
+        const float gamma = RoundBFloat16(__half2float(weight[channel])) + (zero_centered ? 1.f : 0.f);
+        const float normalized = RoundBFloat16(residual[index] * inverse_rms * gamma);
+        output[index] = __float2half_rn(normalized);
+    }
+}
+
 __global__ void DFlashTopK16HalfLegacy(int* ids, float* scores, const __half* logits, int rows, int vocab, int token_id_offset, float multiplier, float softcap)
 {
     const int row = blockIdx.x;
@@ -638,15 +687,32 @@ void invokeDFlashResidualRMSNorm(Tensor&       output,
     TM_CHECK_EQ(output.size(), residual.size());
     TM_CHECK_EQ(output.size(), reduced.size());
     TM_CHECK_EQ(output.shape(1), weight.size());
-    DFlashResidualRMSNormHalf<<<output.shape(0), 256, 0, stream>>>((__half*)output.raw_data(),
-                                                                  residual.data<float>(),
-                                                                  (const __half*)reduced.raw_data(),
-                                                                  (const __half*)bias.data_or((void*)nullptr),
-                                                                  (const __half*)weight.raw_data(),
-                                                                  output.shape(1),
-                                                                  eps,
-                                                                  zero_centered,
-                                                                  reduced_scale);
+    static const bool full_product_rmsnorm = [] {
+        const char* value = std::getenv("TM_DFLASH_FULL_PRODUCT_RMSNORM");
+        return value && value[0] == '1';
+    }();
+    if (full_product_rmsnorm) {
+        DFlashResidualRMSNormExactHalf<<<output.shape(0), 512, 0, stream>>>((__half*)output.raw_data(),
+                                                                           residual.data<float>(),
+                                                                           (const __half*)reduced.raw_data(),
+                                                                           (const __half*)bias.data_or((void*)nullptr),
+                                                                           (const __half*)weight.raw_data(),
+                                                                           output.shape(1),
+                                                                           eps,
+                                                                           zero_centered,
+                                                                           reduced_scale);
+    }
+    else {
+        DFlashResidualRMSNormHalf<<<output.shape(0), 256, 0, stream>>>((__half*)output.raw_data(),
+                                                                      residual.data<float>(),
+                                                                      (const __half*)reduced.raw_data(),
+                                                                      (const __half*)bias.data_or((void*)nullptr),
+                                                                      (const __half*)weight.raw_data(),
+                                                                      output.shape(1),
+                                                                      eps,
+                                                                      zero_centered,
+                                                                      reduced_scale);
+    }
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
