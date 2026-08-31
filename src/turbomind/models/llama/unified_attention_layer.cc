@@ -1258,6 +1258,33 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == 8 && d.prefill.k_sum <= 16 * 1024 &&
         dtype == kHalf && dflash_block == 8 && q_count == 8 && local_head_num == 8 && local_kv_head_num == 2 &&
         size_per_head == 128;
+    if (enable_dflash_tilelang_draft_attention && p.layer_id == 0 && d.prefill.q_sum == 8) {
+        static bool logged_tilelang_selector = false;
+        if (!logged_tilelang_selector) {
+            logged_tilelang_selector = true;
+            TM_LOG_INFO("DFLASH_TILELANG_SELECTOR selected={} algorithm={} arch={} workspace={} frozen_kv={} "
+                        "is_mla={} causal={} quant={} decode_n={} prefill_n={} q_sum={} k_sum={} dtype={} "
+                        "block={} q_count={} heads={} kv_heads={} dim={}",
+                        use_dflash_tilelang_draft_attention,
+                        engine_param_.speculative_algorithm,
+                        arch_,
+                        use_dflash_workspace,
+                        p.frozen_kv,
+                        is_mla,
+                        weights.causal,
+                        quant_policy_,
+                        d.decode.n,
+                        d.prefill.n,
+                        d.prefill.q_sum,
+                        d.prefill.k_sum,
+                        (int)dtype,
+                        dflash_block,
+                        q_count,
+                        local_head_num,
+                        local_kv_head_num,
+                        size_per_head);
+        }
+    }
     const bool use_fixed_dflash_graph_geometry =
         use_dflash_paged_q8 && enable_dflash_draft_graph && p.use_dflash_workspace;
     const int dflash_graph_k_bound = weights.window_size > 0 ?
