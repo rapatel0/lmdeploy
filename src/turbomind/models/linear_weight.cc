@@ -177,12 +177,14 @@ void LinearWeight::prepare()
         const char* value = std::getenv("TM_DFLASH_QKV_TORCH_LAYOUT");
         return value && value[0] == '1';
     }();
-    if (dflash_qkv_torch_layout && getSMVersion() == 70 && !is_grouped_ && input_dim == 5120
-        && (output_dim == 1536 || output_dim == 8704) && data_type == kHalf && input_dtype() == kHalf
-        && weight.dtype() == kHalf) {
+    const bool dflash_torch_fp16_shape =
+        (input_dim == 5120 && (output_dim == 1536 || output_dim == 8704))
+        || (input_dim == 4352 && output_dim == 5120);
+    if (dflash_qkv_torch_layout && getSMVersion() == 70 && !is_grouped_ && dflash_torch_fp16_shape
+        && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
         // torch F.linear keeps [N,K] physical storage and asks cuBLAS for the
         // transposed logical operand. Match that route exactly for DFlash's
-        // local QKV matrix instead of packing checkpoint [K,N] storage for a
+        // local QKV/MLP matrix instead of packing checkpoint [K,N] storage for a
         // native TurboMind kernel.
         Tensor trans{{weight.shape(1), weight.shape(0)}, weight.dtype(), kDEVICE};
         invokeTransposeAxis01(
