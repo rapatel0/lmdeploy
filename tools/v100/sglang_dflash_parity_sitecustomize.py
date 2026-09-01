@@ -567,17 +567,20 @@ if _TRACE_ROOT:
             _dump(full_name, output)
         _dump(name, output, last_row=True)
 
-    def _trace_layer0_rotary(_module, _args, output):
+    def _trace_rotary(module, _args, output):
+        index = module._dflash_trace_index
         if isinstance(output, (tuple, list)) and len(output) >= 2:
-            _dump("layer0.attention.q_rotated", output[0])
-            _dump("layer0.attention.k_rotated", output[1])
+            _dump(f"layer{index}.attention.q_rotated", output[0])
+            _dump(f"layer{index}.attention.k_rotated", output[1])
 
-    def _trace_layer0_attention_pre(_module, args):
+    def _trace_attention_pre(module, args):
         if not _armed():
             return
-        _dump("layer0.attention.backend_q", args[0] if len(args) > 0 else None)
-        _dump("layer0.attention.backend_k", args[1] if len(args) > 1 else None)
-        _dump("layer0.attention.backend_v", args[2] if len(args) > 2 else None)
+        index = module._dflash_trace_index
+        prefix_name = f"layer{index}.attention"
+        _dump(f"{prefix_name}.backend_q", args[0] if len(args) > 0 else None)
+        _dump(f"{prefix_name}.backend_k", args[1] if len(args) > 1 else None)
+        _dump(f"{prefix_name}.backend_v", args[2] if len(args) > 2 else None)
         backend = _get_attn_backend()
         for prefix, metadata in (
             ("adapter", getattr(backend, "forward_metadata", None)),
@@ -600,10 +603,12 @@ if _TRACE_ROOT:
                 "custom_mask",
                 "mask_indptr",
             ):
-                _dump(f"layer0.attention.metadata.{prefix}.{field}", getattr(metadata, field, None))
+                _dump(f"{prefix_name}.metadata.{prefix}.{field}", getattr(metadata, field, None))
 
-    def _trace_layer0_attention_cache(module, _args, output):
-        _dump("layer0.attention.core_output", output)
+    def _trace_attention_cache(module, _args, output):
+        index = module._dflash_trace_index
+        prefix_name = f"layer{index}.attention"
+        _dump(f"{prefix_name}.core_output", output)
         try:
             if torch.cuda.is_current_stream_capturing():
                 return
@@ -619,12 +624,12 @@ if _TRACE_ROOT:
             page_size = int(backend.page_size)
             live_indices = (pages[:, None] * page_size + torch.arange(page_size, device=pages.device)).reshape(-1)
             cache_k, cache_v = backend.token_to_kv_pool.get_kv_buffer(module.layer_id)
-            _dump("layer0.attention.live_cache_pages", pages)
-            _dump("layer0.attention.live_cache_indices", live_indices)
-            _dump("layer0.attention.live_cache_k", cache_k.reshape(-1, *cache_k.shape[-2:])[live_indices])
-            _dump("layer0.attention.live_cache_v", cache_v.reshape(-1, *cache_v.shape[-2:])[live_indices])
+            _dump(f"{prefix_name}.live_cache_pages", pages)
+            _dump(f"{prefix_name}.live_cache_indices", live_indices)
+            _dump(f"{prefix_name}.live_cache_k", cache_k.reshape(-1, *cache_k.shape[-2:])[live_indices])
+            _dump(f"{prefix_name}.live_cache_v", cache_v.reshape(-1, *cache_v.shape[-2:])[live_indices])
         except Exception as exc:
-            print(f"SGLANG_DFLASH_LIVE_CACHE_CAPTURE_FAIL {type(exc).__name__}: {exc}", flush=True)
+            print(f"SGLANG_DFLASH_LIVE_CACHE_CAPTURE_FAIL layer={index} {type(exc).__name__}: {exc}", flush=True)
 
     def _traced_init(self, *args, **kwargs):
         _orig_init(self, *args, **kwargs)
@@ -635,19 +640,20 @@ if _TRACE_ROOT:
         self.norm.register_forward_hook(lambda _m, _a, out: _dump("block.final_norm", out))
         for index, layer in enumerate(self.layers):
             layer._dflash_trace_name = f"layer{index}"
-            if index == 0:
-                layer.self_attn.qkv_proj.register_forward_hook(
-                    lambda _m, _a, out: _dump("layer0.attention.qkv_projection", out)
-                )
-                layer.self_attn.q_norm.register_forward_hook(
-                    lambda _m, _a, out: _dump("layer0.attention.q_normalized", out)
-                )
-                layer.self_attn.k_norm.register_forward_hook(
-                    lambda _m, _a, out: _dump("layer0.attention.k_normalized", out)
-                )
-                layer.self_attn.rotary_emb.register_forward_hook(_trace_layer0_rotary)
-                layer.self_attn.attn.register_forward_pre_hook(_trace_layer0_attention_pre)
-                layer.self_attn.attn.register_forward_hook(_trace_layer0_attention_cache)
+            layer.self_attn.rotary_emb._dflash_trace_index = index
+            layer.self_attn.attn._dflash_trace_index = index
+            layer.self_attn.qkv_proj.register_forward_hook(
+                lambda _m, _a, out, i=index: _dump(f"layer{i}.attention.qkv_projection", out)
+            )
+            layer.self_attn.q_norm.register_forward_hook(
+                lambda _m, _a, out, i=index: _dump(f"layer{i}.attention.q_normalized", out)
+            )
+            layer.self_attn.k_norm.register_forward_hook(
+                lambda _m, _a, out, i=index: _dump(f"layer{i}.attention.k_normalized", out)
+            )
+            layer.self_attn.rotary_emb.register_forward_hook(_trace_rotary)
+            layer.self_attn.attn.register_forward_pre_hook(_trace_attention_pre)
+            layer.self_attn.attn.register_forward_hook(_trace_attention_cache)
             layer.register_forward_pre_hook(
                 lambda module, args, i=index: (
                     (
@@ -1180,15 +1186,18 @@ if _TRACE_ROOT:
 
     def _traced_flash_v100_forward_extend(self, q, k, v, layer, forward_batch, *args, **kwargs):
         result = _orig_flash_v100_forward_extend(self, q, k, v, layer, forward_batch, *args, **kwargs)
+        layer_index = _safe_int(getattr(layer, "layer_id", None), -1)
+        tilelang_q_name = f"layer{layer_index}.attention.tilelang.q"
         if (
             _armed()
             and self.model_runner.is_draft_worker
             and forward_batch.forward_mode.is_target_verify()
-            and layer.layer_id == 0
+            and 0 <= layer_index < 5
             and tuple(q.shape[-1:]) == (1024,)
-            and not getattr(self, "_parity_tilelang_policy_captured", False)
+            and tilelang_q_name not in _seen
         ):
             try:
+                prefix_name = f"layer{layer_index}.attention.tilelang"
                 md = self.forward_metadata
                 q3 = q.reshape(q.shape[0], layer.tp_q_head_num, layer.head_dim).contiguous()
                 k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(layer.layer_id)
@@ -1201,51 +1210,52 @@ if _TRACE_ROOT:
                 pages = md.page_table[0, :page_count].to(torch.int64)
                 logical_k = k_cache.index_select(0, pages).reshape(-1, 2, 128)[:context_len]
                 logical_v = v_cache.index_select(0, pages).reshape(-1, 2, 128)[:context_len]
-                _dump("layer0.attention.tilelang.q", q3)
-                _dump("layer0.attention.tilelang.k", logical_k)
-                _dump("layer0.attention.tilelang.v", logical_v)
-                _dump("layer0.attention.tilelang.block_table", md.page_table)
-                _dump("layer0.attention.tilelang.seq_lens", md.seq_lens)
-                _dump("layer0.attention.tilelang.query_start_loc", md.query_start_loc)
-                _dump("layer0.attention.tilelang.prefix_kv_lens", md.prefix_kv_lens)
-                _dump("layer0.attention.tilelang.output", result.reshape_as(q3))
-                resolved_causal, resolved_window = _flash_v100._get_native_paged_attention_params(layer, md.causal)
-                policy = {
-                    "backend": "flash_attn_v100",
-                    "forward_mode": str(forward_batch.forward_mode),
-                    "target_verify": bool(forward_batch.forward_mode.is_target_verify()),
-                    "layer_id": int(layer.layer_id),
-                    "attention_type": str(layer.attn_type),
-                    "metadata_causal": bool(md.causal),
-                    "resolved_causal": bool(resolved_causal),
-                    "resolved_window_size": int(resolved_window),
-                    "linear_verify": bool(self._uses_native_linear_verify(forward_batch.forward_mode)),
-                    "block_size": int(self.page_size),
-                    "softmax_scale": float(layer.scaling),
-                    "query_dtype": str(q3.dtype),
-                    "key_cache_dtype": str(k_cache.dtype),
-                    "value_cache_dtype": str(v_cache.dtype),
-                    "query_shape": list(q3.shape),
-                    "query_stride": list(q3.stride()),
-                    "key_cache_shape": list(k_cache.shape),
-                    "key_cache_stride": list(k_cache.stride()),
-                    "value_cache_shape": list(v_cache.shape),
-                    "value_cache_stride": list(v_cache.stride()),
-                    "page_table_shape": list(md.page_table.shape),
-                    "page_table_stride": list(md.page_table.stride()),
-                    "sequence_lengths": [int(value) for value in md.seq_lens.tolist()],
-                    "query_start_locations": [int(value) for value in md.query_start_loc.tolist()],
-                    "prefix_kv_lengths": [int(value) for value in md.prefix_kv_lens.tolist()],
-                }
-                _write_policy(policy)
-                self._parity_tilelang_policy_captured = True
-                print(
-                    f"SGLANG_DFLASH_TILELANG_BACKEND_CAPTURE context={context_len} "
-                    f"q={tuple(q3.shape)} k={tuple(logical_k.shape)} "
-                    f"causal={resolved_causal} attn_type={layer.attn_type} "
-                    f"linear_verify={policy['linear_verify']}",
-                    flush=True,
-                )
+                _dump(f"{prefix_name}.q", q3)
+                _dump(f"{prefix_name}.k", logical_k)
+                _dump(f"{prefix_name}.v", logical_v)
+                _dump(f"{prefix_name}.block_table", md.page_table)
+                _dump(f"{prefix_name}.seq_lens", md.seq_lens)
+                _dump(f"{prefix_name}.query_start_loc", md.query_start_loc)
+                _dump(f"{prefix_name}.prefix_kv_lens", md.prefix_kv_lens)
+                _dump(f"{prefix_name}.output", result.reshape_as(q3))
+                if layer_index == 0 and not getattr(self, "_parity_tilelang_policy_captured", False):
+                    resolved_causal, resolved_window = _flash_v100._get_native_paged_attention_params(layer, md.causal)
+                    policy = {
+                        "backend": "flash_attn_v100",
+                        "forward_mode": str(forward_batch.forward_mode),
+                        "target_verify": bool(forward_batch.forward_mode.is_target_verify()),
+                        "layer_id": layer_index,
+                        "attention_type": str(layer.attn_type),
+                        "metadata_causal": bool(md.causal),
+                        "resolved_causal": bool(resolved_causal),
+                        "resolved_window_size": int(resolved_window),
+                        "linear_verify": bool(self._uses_native_linear_verify(forward_batch.forward_mode)),
+                        "block_size": int(self.page_size),
+                        "softmax_scale": float(layer.scaling),
+                        "query_dtype": str(q3.dtype),
+                        "key_cache_dtype": str(k_cache.dtype),
+                        "value_cache_dtype": str(v_cache.dtype),
+                        "query_shape": list(q3.shape),
+                        "query_stride": list(q3.stride()),
+                        "key_cache_shape": list(k_cache.shape),
+                        "key_cache_stride": list(k_cache.stride()),
+                        "value_cache_shape": list(v_cache.shape),
+                        "value_cache_stride": list(v_cache.stride()),
+                        "page_table_shape": list(md.page_table.shape),
+                        "page_table_stride": list(md.page_table.stride()),
+                        "sequence_lengths": [int(value) for value in md.seq_lens.tolist()],
+                        "query_start_locations": [int(value) for value in md.query_start_loc.tolist()],
+                        "prefix_kv_lengths": [int(value) for value in md.prefix_kv_lens.tolist()],
+                    }
+                    _write_policy(policy)
+                    self._parity_tilelang_policy_captured = True
+                    print(
+                        f"SGLANG_DFLASH_TILELANG_BACKEND_CAPTURE context={context_len} "
+                        f"q={tuple(q3.shape)} k={tuple(logical_k.shape)} "
+                        f"causal={resolved_causal} attn_type={layer.attn_type} "
+                        f"linear_verify={policy['linear_verify']}",
+                        flush=True,
+                    )
             except (IndexError, RuntimeError, ValueError) as exc:
                 print(f"SGLANG_DFLASH_TILELANG_BACKEND_CAPTURE_FAIL {type(exc).__name__}: {exc}", flush=True)
         return result

@@ -30,6 +30,20 @@ REQUIRED = {
     "layer0.attention.tilelang.query_start_loc",
     "layer0.attention.tilelang.prefix_kv_lens",
 }
+for _layer in range(5):
+    REQUIRED.update(
+        {
+            f"layer{_layer}.attention.qkv_projection",
+            f"layer{_layer}.attention.q_normalized",
+            f"layer{_layer}.attention.k_normalized",
+            f"layer{_layer}.attention.q_rotated",
+            f"layer{_layer}.attention.k_rotated",
+            f"layer{_layer}.attention.tilelang.q",
+            f"layer{_layer}.attention.tilelang.k",
+            f"layer{_layer}.attention.tilelang.v",
+            f"layer{_layer}.attention.tilelang.output",
+        }
+    )
 
 
 def _integer_values(directory: pathlib.Path, record: dict) -> list[int]:
