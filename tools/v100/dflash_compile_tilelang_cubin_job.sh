@@ -29,3 +29,5 @@ nvcc -std=c++17 -arch=sm_70 -cubin -I"$INCLUDE" -I"$CUTLASS_INCLUDE" "$SOURCE/pa
 nvcc -std=c++17 -arch=sm_70 -cubin -I"$INCLUDE" -I"$CUTLASS_INCLUDE" "$SOURCE/combine.cu" -o "$OUT/combine.cubin"
 sha256sum "$OUT"/*.cubin
 ls -lh "$OUT"/*.cubin
+# Keep the pod alive briefly so the laptop-side launcher can copy the cubins.
+sleep 300
