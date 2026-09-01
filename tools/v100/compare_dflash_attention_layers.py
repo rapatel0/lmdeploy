@@ -129,9 +129,7 @@ def main() -> int:
             lm_flat_storage = load(lm_root, lm, f"{prefix}.flattened_kv").reshape(-1)
             needed = 2 * 2 * key_count * 128
             if lm_flat_storage.size < needed:
-                raise RuntimeError(
-                    f"rank {rank} layer {layer} flattened KV has {lm_flat_storage.size}, needs {needed}"
-                )
+                raise RuntimeError(f"rank {rank} layer {layer} flattened KV has {lm_flat_storage.size}, needs {needed}")
             lm_flat = lm_flat_storage[:needed].reshape(2, 2, key_count, 128)
 
             pairs = {
