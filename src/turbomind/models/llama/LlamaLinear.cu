@@ -169,7 +169,8 @@ struct LlamaLinear::Impl {
         auto&& [B, desc_B, V, desc_V] = GetOperandB(weight);
 
         const bool use_fp16_shadow = desc_A.rows > 0 && desc_A.rows <= 8 && !indices && !offsets
-                                     && weight.fp16_shadow_weight && desc_A.type == kHalf;
+                                     && weight.fp16_shadow_weight && desc_A.type == kHalf
+                                     && weight.output_dtype() == kHalf && weight.epilogue == Epilogue::kNone;
         if (use_fp16_shadow) {
             B          = weight.fp16_shadow_weight;
             desc_B     = weight.fp16_shadow_k_desc;
@@ -239,16 +240,19 @@ struct LlamaLinear::Impl {
                                       && desc_A.type == kHalf && desc_B.type == kHalf && desc_D.type == kHalf
                                       && desc_B.order == kColMajor;
         int ec{};
-        if (direct_torch_qkv) {
-            const float alpha = 1.f;
-            const float beta  = 0.f;
-            const int   m     = desc_A.rows;
-            const int   n     = desc_B.cols;
-            const int   k     = desc_A.cols;
+        if (use_fp16_shadow || direct_torch_qkv) {
+            const float alpha  = 1.f;
+            const float beta   = 0.f;
+            const int   m      = desc_A.rows;
+            const int   n      = desc_B.cols;
+            const int   k      = desc_A.cols;
             const auto  stream = core::Context::stream().handle();
             TM_CHECK_EQ(cublasSetStream(torch_cublas_, stream), CUBLAS_STATUS_SUCCESS);
+            // Row-major A/B/D are interpreted as column-major transposes, so
+            // D^T = B^T A^T uses NN. The existing direct Torch-layout operand
+            // is physically column-major KxN and therefore uses TN.
             const auto status = cublasGemmEx(torch_cublas_,
-                                             CUBLAS_OP_T,
+                                             use_fp16_shadow ? CUBLAS_OP_N : CUBLAS_OP_T,
                                              CUBLAS_OP_N,
                                              n,
                                              m,
@@ -256,7 +260,7 @@ struct LlamaLinear::Impl {
                                              &alpha,
                                              B.raw_data(),
                                              CUDA_R_16F,
-                                             k,
+                                             use_fp16_shadow ? n : k,
                                              A.raw_data(),
                                              CUDA_R_16F,
                                              k,
