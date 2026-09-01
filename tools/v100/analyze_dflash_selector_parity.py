@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Analyze aligned DFlash selector scores from two four-rank parity traces."""
+
 import argparse
 import glob
 import json
@@ -18,7 +19,7 @@ def records(root: str) -> dict[str, dict]:
 
 def load(root: str, rec: dict, name: str) -> np.ndarray:
     row = rec[name]
-    dtype = {"f16": "<f2", "f32": "<f4", "i32": "<i4"}[row["dtype"]]
+    dtype = {"f16": "<f2", "f32": "<f4", "i32": "<i4", "i64": "<i8"}[row["dtype"]]
     return np.fromfile(Path(root, row["file"]), dtype=dtype).reshape(row["shape"])
 
 
@@ -61,26 +62,30 @@ def main() -> None:
             for token in common:
                 aligned_lm.append(lm_map[token])
                 aligned_sg.append(sg_map[token])
-            rows.append({
-                "row": row,
-                "common": len(common),
-                "lm_only": sorted(lm_map.keys() - sg_map.keys()),
-                "sg_only": sorted(sg_map.keys() - lm_map.keys()),
-            })
+            rows.append(
+                {
+                    "row": row,
+                    "common": len(common),
+                    "lm_only": sorted(lm_map.keys() - sg_map.keys()),
+                    "sg_only": sorted(sg_map.keys() - lm_map.keys()),
+                }
+            )
         x, y = np.asarray(aligned_lm), np.asarray(aligned_sg)
         design = np.column_stack((x, np.ones_like(x)))
         slope, intercept = np.linalg.lstsq(design, y, rcond=None)[0]
-        reports.append({
-            "rank": rank,
-            "aligned": as_int(x.size),
-            "slope": as_float(slope),
-            "intercept": as_float(intercept),
-            "rms_raw": as_float(np.sqrt(np.mean((x - y) ** 2))),
-            "rms_fit": as_float(np.sqrt(np.mean((x * slope + intercept - y) ** 2))),
-            "mean_lm": as_float(x.mean()),
-            "mean_sg": as_float(y.mean()),
-            "rows": rows,
-        })
+        reports.append(
+            {
+                "rank": rank,
+                "aligned": as_int(x.size),
+                "slope": as_float(slope),
+                "intercept": as_float(intercept),
+                "rms_raw": as_float(np.sqrt(np.mean((x - y) ** 2))),
+                "rms_fit": as_float(np.sqrt(np.mean((x * slope + intercept - y) ** 2))),
+                "mean_lm": as_float(x.mean()),
+                "mean_sg": as_float(y.mean()),
+                "rows": rows,
+            }
+        )
     print(json.dumps({"reports": reports}, indent=2, sort_keys=True))
     print("DFLASH_SELECTOR_PARITY_ANALYSIS_PASS")
 
