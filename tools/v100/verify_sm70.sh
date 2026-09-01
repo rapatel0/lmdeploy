@@ -45,7 +45,15 @@ if [ -d "${TARGET}" ]; then
             < <(find "${TARGET}" -name '*.so' -o -name '*.so.*')
     fi
 elif [ -f "${TARGET}" ]; then
-    LIBS=("${TARGET}")
+    if [[ "${TARGET}" == *.whl ]]; then
+        echo "unpacking $(basename "${TARGET}")"
+        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+            "${TARGET}" "${WORK}/unpacked"
+        while IFS= read -r lib; do LIBS+=("${lib}"); done \
+            < <(find "${WORK}/unpacked" \( -name '*.so' -o -name '*.so.*' \) -type f)
+    else
+        LIBS=("${TARGET}")
+    fi
 else
     echo "FAIL: ${TARGET} not found" >&2
     exit 1
@@ -73,8 +81,12 @@ for lib in "${LIBS[@]}"; do
 
     has_elf=0
     has_ptx=0
-    [[ "${elf}" == *"sm_${SM}"* ]] && has_elf=1
-    [[ "${ptx}" == *"sm_${SM}"* ]] && has_ptx=1
+    if [[ "${elf}" == *"sm_${SM}"* ]]; then
+        has_elf=1
+    fi
+    if [[ "${ptx}" == *"sm_${SM}"* ]]; then
+        has_ptx=1
+    fi
 
     if [ "${has_elf}" -eq 1 ]; then
         FOUND_ELF=$((FOUND_ELF + 1))
