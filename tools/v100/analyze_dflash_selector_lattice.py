@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compare TurboMind's walked selector rows with SGLang's full lattice."""
+
 import argparse
 import glob
 import json
