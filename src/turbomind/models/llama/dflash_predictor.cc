@@ -1662,6 +1662,12 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         if (fused_context_rope_cache_) {
             params.fused_context_rope_cache = fused_context_rope_cache_.data<float>();
         }
+        const std::string attention_trace_prefix = "layer" + std::to_string(i) + ".attention";
+        const std::string qkv_projection_name = attention_trace_prefix + ".qkv_projection";
+        const std::string qkv_pre_name        = attention_trace_prefix + ".qkv_pre_process";
+        const std::string qkv_post_name       = attention_trace_prefix + ".qkv_post_process";
+        const std::string flattened_kv_name   = attention_trace_prefix + ".flattened_kv";
+        const std::string core_output_name    = attention_trace_prefix + ".core_output";
         if (i == 0 && ParityActive()) {
             const int q_width = layer->attention->head_num / layer->attention->tp_size * layer->attention->head_dim;
             const int k_width =
@@ -1714,15 +1720,17 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                                      draft_attention_core_replay_consumed_)) {
                 params.attention_replay = std::move(attention_replay);
             }
+        }
+        if (ParityActive()) {
             params.trace_context = this;
             params.trace_fn = [](const void* object, const char* name, const Tensor& value) {
                 static_cast<const DFlashPredictor*>(object)->CaptureParityTensor(name, value);
             };
-            params.trace_qkv_projection = "layer0.attention.qkv_projection";
-            params.trace_qkv_pre        = "layer0.attention.qkv_pre_process";
-            params.trace_qkv_post       = "layer0.attention.qkv_post_process";
-            params.trace_flattened_kv   = "layer0.attention.flattened_kv";
-            params.trace_attention      = "layer0.attention.core_output";
+            params.trace_qkv_projection = qkv_projection_name.c_str();
+            params.trace_qkv_pre        = qkv_pre_name.c_str();
+            params.trace_qkv_post       = qkv_post_name.c_str();
+            params.trace_flattened_kv   = flattened_kv_name.c_str();
+            params.trace_attention      = core_output_name.c_str();
         }
         attention_.Forward(std::move(params));
         report_layer(i, ".attention.wo_local", attn_output);
