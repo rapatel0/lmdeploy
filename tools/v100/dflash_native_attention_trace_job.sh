@@ -17,8 +17,8 @@ WHEEL=$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sor
 [ -n "$WHEEL" ]
 pip install --no-deps --force-reinstall "$WHEEL" 2>&1 | tail -1
 
-SG=${SGLANG_DFLASH_TRACE_ROOT:-/results/20260901_122037-sglang-dflash-parity-c08cfaef2435/trace/sglang}
-python3 /job/validate_sglang_dflash_trace.py "$SG" --block-index 1
+SG=${SGLANG_DFLASH_TRACE_ROOT:-/results/20260901_172521-sglang-dflash-parity-897236b6f62a/trace/sglang}
+python3 /job/validate_sglang_dflash_trace.py "$SG" --block-index 2 --expected-anchor 1144
 mapfile -t REPLAY < <(
     python3 - "$SG" <<'PY'
 import glob, hashlib, json, os, sys
