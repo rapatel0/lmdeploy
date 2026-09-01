@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Measure production acceptance for every Torch-compatible draft linear layout.
+# Measure production acceptance for draft reduction and context-rounding policies.
 set -euo pipefail
 SRC_COMMIT=$(sed -n 's/^commit=\(.\{12\}\).*/\1/p' /src/SOURCE_STAMP)
-RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-linear-layout-matrix-${SRC_COMMIT:-unknown}
+RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-policy-matrix-${SRC_COMMIT:-unknown}
 mkdir -p "$RESULTS"
 exec > >(tee -a "$RESULTS/console.log") 2>&1
 trap 'rc=$?; echo "$rc" >"$RESULTS/exit_code"; echo "artifacts in $RESULTS (exit $rc)"' EXIT
@@ -22,18 +22,16 @@ common=(
 )
 
 for bits in 000 100 010 001 110 101 011 111; do
-  q=${bits:0:1}
-  g=${bits:1:1}
-  w=${bits:2:1}
-  name="q${q}-g${g}-w${w}"
-  echo "DFLASH_LAYOUT_MATRIX_BEGIN $name"
+  reduce=${bits:0:1}; ordered=${bits:1:1}; bf16=${bits:2:1}
+  name="r${reduce}-o${ordered}-b${bf16}"
+  echo "DFLASH_POLICY_MATRIX_BEGIN $name"
   env \
     TM_DFLASH_TILELANG_DRAFT_ATTENTION=1 \
     TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1 \
     TM_DFLASH_ASSERT_DRAFT_METADATA=1 \
-    TM_DFLASH_QKV_TORCH_LAYOUT="$q" \
-    TM_DFLASH_GATE_UP_TORCH_LAYOUT="$g" \
-    TM_DFLASH_W2_TORCH_LAYOUT="$w" \
+    TM_DFLASH_REDUCE_BEFORE_CONV="$reduce" \
+    TM_DFLASH_RANK_ORDERED_ALLREDUCE="$ordered" \
+    TM_DFLASH_CONTEXT_BF16_ROUND="$bf16" \
     python3 /job/bench_decode.py "${common[@]}" --json-out "$RESULTS/$name.json" \
     2>&1 | tee "$RESULTS/$name.log"
 done
@@ -42,7 +40,7 @@ python3 - "$RESULTS" <<'PY'
 import json,re,sys
 from pathlib import Path
 root=Path(sys.argv[1]); rows=[]
-for path in sorted(root.glob('q*-g*-w*.log')):
+for path in sorted(root.glob('r*-o*-b*.log')):
     text=path.read_text(errors='replace')
     matches=re.findall(r'\[spec\] final commit length ([0-9.]+), raw ([0-9.]+) over (\d+) verification steps',text)
     assert matches,path
@@ -52,9 +50,9 @@ for path in sorted(root.glob('q*-g*-w*.log')):
                  'verification_steps':int(steps),'decode_tok_s':float(bench['mean_decode_tok_s'])})
 rows.sort(key=lambda x:(-x['commit_length'],-x['decode_tok_s']))
 (root/'summary.json').write_text(json.dumps(rows,indent=2)+'\n')
-for row in rows: print('DFLASH_LAYOUT_MATRIX_RESULT',json.dumps(row,sort_keys=True))
-print('DFLASH_LAYOUT_MATRIX_BEST',json.dumps(rows[0],sort_keys=True))
+for row in rows: print('DFLASH_POLICY_MATRIX_RESULT',json.dumps(row,sort_keys=True))
+print('DFLASH_POLICY_MATRIX_BEST',json.dumps(rows[0],sort_keys=True))
 PY
 
 touch "$RESULTS/completed"
-echo DFLASH_LINEAR_LAYOUT_MATRIX_COMPLETE
+echo DFLASH_POLICY_MATRIX_COMPLETE
