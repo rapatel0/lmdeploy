@@ -1,5 +1,9 @@
 {
   "artifacts": {
+    "combine.cubin": {
+      "bytes": 16608,
+      "sha256": "cba72ddd347950ab98d99d23b14939871f7aca5c3f044a684cf52ddac195e7c7"
+    },
     "combine.cu": {
       "bytes": 2581,
       "sha256": "f08140d20b0cac631490d542114dbbd1a8974c026e89f7c8aad01d48d23fda7c"
@@ -15,6 +19,10 @@
     "combine_host.cc": {
       "bytes": 113061,
       "sha256": "ab389689f5e8f5c1138e1321b50abe5448a57c7307a7ea6a3234a6a6c3c5f5f6"
+    },
+    "partial.cubin": {
+      "bytes": 80096,
+      "sha256": "8b465a2b903f72fd1181abc2fbb95a5e3b2245a42e21bff901166893cf9f85eb"
     },
     "partial.cu": {
       "bytes": 20186,

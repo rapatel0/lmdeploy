@@ -10,7 +10,7 @@
 #include <type_traits>
 #include <unordered_map>
 
-#include "dflash_tilelang_ptx.inc"
+#include "dflash_tilelang_cubin.inc"
 
 namespace turbomind {
 namespace {
@@ -35,8 +35,8 @@ struct DFlashTileLangDriverKernels {
 
     DFlashTileLangDriverKernels()
     {
-        CheckDriver(cuModuleLoadData(&partial_module, kDFlashTileLangPartialPtx));
-        CheckDriver(cuModuleLoadData(&combine_module, kDFlashTileLangCombinePtx));
+        CheckDriver(cuModuleLoadData(&partial_module, kDFlashTileLangPartialCubin));
+        CheckDriver(cuModuleLoadData(&combine_module, kDFlashTileLangCombineCubin));
         CheckDriver(cuModuleGetFunction(&partial, partial_module, "main_kernel"));
         CheckDriver(cuModuleGetFunction(&combine, combine_module, "main_kernel"));
         CheckDriver(cuFuncSetAttribute(partial, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, 59392));
