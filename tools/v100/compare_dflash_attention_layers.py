@@ -120,21 +120,31 @@ def main() -> int:
             sg_v = load(sg_root, sg, f"{prefix}.tilelang.v").reshape(-1, 2, 128)
             sg_output = load(sg_root, sg, f"{prefix}.tilelang.output").reshape(8, 1024)
             key_count = sg_k.shape[0]
-            lm_flat_storage = load(lm_root, lm, f"{prefix}.flattened_kv").reshape(-1)
-            needed = 2 * 2 * key_count * 128
-            if lm_flat_storage.size < needed:
-                raise RuntimeError(f"rank {rank} layer {layer} flattened KV has {lm_flat_storage.size}, needs {needed}")
-            lm_flat = lm_flat_storage[:needed].reshape(2, 2, key_count, 128)
+            lm_flat_storage = load(lm_root, lm, f"{prefix}.flattened_kv")
+            if lm_flat_storage.ndim != 4 or lm_flat_storage.shape[:2] != (2, 2):
+                raise RuntimeError(
+                    f"rank {rank} layer {layer} invalid flattened KV shape {lm_flat_storage.shape}"
+                )
+            if lm_flat_storage.shape[2] < key_count or lm_flat_storage.shape[3] != 128:
+                raise RuntimeError(
+                    f"rank {rank} layer {layer} flattened KV shape {lm_flat_storage.shape} "
+                    f"cannot provide {key_count} tokens"
+                )
+            lm_flat = lm_flat_storage[:, :, :key_count, :]
 
             pairs = {
                 "q_projection": (lm_projection[:, :1024], rope_interleaved(sg_projection[:, :1024])),
                 "k_projection": (lm_projection[:, 1024:1280], rope_interleaved(sg_projection[:, 1024:1280])),
                 "v_projection": (lm_projection[:, 1280:1536], sg_projection[:, 1280:1536]),
+                "lm_q_post_vs_pre": (lm_post[:, :1024], lm_projection[:, :1024]),
+                "lm_k_post_vs_pre": (lm_post[:, 1024:1280], lm_projection[:, 1024:1280]),
+                "lm_v_post_vs_pre": (lm_post[:, 1280:1536], lm_projection[:, 1280:1536]),
+                "sg_proposal_v_vs_projection": (sg_projection[:, 1280:1536], sg_v[-8:].reshape(8, 256)),
                 "q_rotated": (lm_post[:, :1024], sg_q),
                 "proposal_k": (lm_post[:, 1024:1280], sg_k[-8:].reshape(8, 256)),
                 "proposal_v": (lm_post[:, 1280:1536], sg_v[-8:].reshape(8, 256)),
-                "cache_k": (lm_flat[:, 0], sg_k.transpose(1, 0, 2)),
-                "cache_v": (lm_flat[:, 1], sg_v.transpose(1, 0, 2)),
+                "cache_k_prefix": (lm_flat[:, 0, :1000], sg_k[:1000].transpose(1, 0, 2)),
+                "cache_v_prefix": (lm_flat[:, 1, :1000], sg_v[:1000].transpose(1, 0, 2)),
                 "core_output": (load(lm_root, lm, f"{prefix}.core_output"), sg_output),
             }
             for boundary, (left, right) in pairs.items():
