@@ -135,4 +135,4 @@ echo "=== verify SM70 machine code ==="
 
 # A PTX-only build is not acceptable. Every retained CUDA library must contain
 # real SM70 machine code, so cuobjdump must report an sm_70 ELF section.
-bash "$(dirname "$0")/verify_sm70.sh" "${WHEEL_DIR}"
+bash /src/tools/v100/verify_sm70.sh "${WHEEL_DIR}"
