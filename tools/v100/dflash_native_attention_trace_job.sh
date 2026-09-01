@@ -59,12 +59,12 @@ env \
     TM_DFLASH_SELECTOR_LOGIT_SCALE=1 \
     TM_DFLASH_PARITY_DIR="$RESULTS/parity" \
     python3 /job/bench_decode.py \
-        --model /models/Qwen3.8-27B-FP8 --tp 4 --num-draft-tokens 7 \
-        --speculative-algorithm dflash2 --speculative-draft-model /models/Qwen3.8-27B-DFlash2 \
-        --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
-        --input-tokens 1000 --output-tokens 64 --trials 1 --sglang-corpus /sglang-corpus \
-        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-        --cache-max-entry-count 0.05 --json-out "$RESULTS/parity.json" 2>&1 | tee "$RESULTS/parity.log"
+    --model /models/Qwen3.8-27B-FP8 --tp 4 --num-draft-tokens 7 \
+    --speculative-algorithm dflash2 --speculative-draft-model /models/Qwen3.8-27B-DFlash2 \
+    --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
+    --input-tokens 1000 --output-tokens 64 --trials 1 --sglang-corpus /sglang-corpus \
+    --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
+    --cache-max-entry-count 0.05 --json-out "$RESULTS/parity.json" 2>&1 | tee "$RESULTS/parity.log"
 
 [ "$(grep -c 'replaying parity target context rows=1000 ' "$RESULTS/parity.log")" -eq 4 ]
 [ "$(grep -c 'replaying normalized parity context rows=1000 ' "$RESULTS/parity.log")" -eq 4 ]
