@@ -97,6 +97,37 @@ def attention_reference(q: np.ndarray, k: np.ndarray, v: np.ndarray, causal: boo
     return output
 
 
+def partial_attention_reference(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    q32 = q.reshape(8, 8, 128).astype(np.float32)
+    k32 = k.reshape(-1, 2, 128).astype(np.float32)
+    v32 = v.reshape(-1, 2, 128).astype(np.float32)
+    partial_o = np.zeros((40, 16, 8, 128), dtype=np.float32)
+    partial_lse = np.full((40, 16, 8), -(2**30), dtype=np.float32)
+    active_splits = min(40, max(1, (k32.shape[0] + 127) // 128))
+    split_len = (k32.shape[0] + active_splits - 1) // active_splits
+    for split_id in range(active_splits):
+        start = split_id * split_len
+        end = min(start + split_len, k32.shape[0])
+        for head in range(8):
+            kv_head = head // 4
+            scores = q32[:, head] @ k32[start:end, kv_head].T * np.float32(128.0**-0.5)
+            maximum = scores.max(axis=1, keepdims=True)
+            exponential = np.exp(scores - maximum)
+            denominator = exponential.sum(axis=1, keepdims=True)
+            partial_o[split_id, :8, head] = exponential @ v32[start:end, kv_head] / denominator
+            partial_lse[split_id, :8, head] = np.log2(denominator[:, 0]) + maximum[:, 0] * np.log2(np.e)
+    return partial_o, partial_lse
+
+
+def combine_partials(partial_o: np.ndarray, partial_lse: np.ndarray, key_count: int) -> np.ndarray:
+    active_splits = min(40, max(1, (key_count + 127) // 128))
+    lse = partial_lse[:active_splits, :8].astype(np.float32)
+    maximum = lse.max(axis=0, keepdims=True)
+    weight = np.exp2(lse - maximum)
+    weight /= weight.sum(axis=0, keepdims=True)
+    return np.sum(weight[..., None] * partial_o[:active_splits, :8].astype(np.float32), axis=0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lmdeploy", type=Path, required=True)
@@ -120,6 +151,10 @@ def main() -> int:
                 f"{prefix}.tilelang.packed_q",
                 f"{prefix}.tilelang.packed_k",
                 f"{prefix}.tilelang.packed_v",
+                f"{prefix}.tilelang.partial_o",
+                f"{prefix}.tilelang.partial_lse",
+                f"{prefix}.tilelang.cache_seqlens",
+                f"{prefix}.tilelang.query_start_loc",
             }
             required_sg = {
                 f"{prefix}.qkv_projection",
@@ -151,10 +186,20 @@ def main() -> int:
             lm_packed_q = load(lm_root, lm, f"{prefix}.tilelang.packed_q").reshape(8, 1024)
             lm_packed_k = load(lm_root, lm, f"{prefix}.tilelang.packed_k").reshape(key_count, 2, 128)
             lm_packed_v = load(lm_root, lm, f"{prefix}.tilelang.packed_v").reshape(key_count, 2, 128)
+            lm_partial_o = load(lm_root, lm, f"{prefix}.tilelang.partial_o").reshape(40, 16, 8, 128)
+            lm_partial_lse = load(lm_root, lm, f"{prefix}.tilelang.partial_lse").reshape(40, 16, 8)
+            cache_seqlens = load(lm_root, lm, f"{prefix}.tilelang.cache_seqlens").reshape(-1)
+            query_start_loc = load(lm_root, lm, f"{prefix}.tilelang.query_start_loc").reshape(-1)
+            if not np.array_equal(cache_seqlens, np.array([key_count], dtype=np.int32)):
+                raise AssertionError(f"rank {rank} layer {layer} cache_seqlens={cache_seqlens}")
+            if not np.array_equal(query_start_loc, np.array([0, 8], dtype=np.int32)):
+                raise AssertionError(f"rank {rank} layer {layer} query_start_loc={query_start_loc}")
             lm_core = load(lm_root, lm, f"{prefix}.core_output").reshape(8, 8, 128)
             sg_core = sg_output.reshape(8, 8, 128)
             noncausal_reference = attention_reference(sg_q, sg_k, sg_v, False)
             causal_reference = attention_reference(sg_q, sg_k, sg_v, True)
+            partial_o_reference, partial_lse_reference = partial_attention_reference(sg_q, sg_k, sg_v)
+            recombined_lm = combine_partials(lm_partial_o, lm_partial_lse, key_count)
 
             pairs = {
                 "q_projection": (lm_projection[:, :1024], rope_interleaved(sg_projection[:, :1024])),
@@ -170,6 +215,9 @@ def main() -> int:
                 "cache_k_prefix": (lm_packed_k[:1000], sg_k[:1000]),
                 "cache_v_prefix": (lm_packed_v[:1000], sg_v[:1000]),
                 "core_output": (lm_core, sg_core),
+                "partial_o_vs_reference": (lm_partial_o[:8, :8], partial_o_reference[:8, :8]),
+                "partial_lse_vs_reference": (lm_partial_lse[:8, :8], partial_lse_reference[:8, :8]),
+                "lm_core_vs_recombined_partials": (lm_core, recombined_lm),
                 "sg_core_vs_reference_noncausal": (sg_core, noncausal_reference),
                 "sg_core_vs_reference_causal": (sg_core, causal_reference),
                 "lm_core_vs_reference_noncausal": (lm_core, noncausal_reference),
