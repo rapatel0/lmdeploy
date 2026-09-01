@@ -74,6 +74,7 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
                                          int captured_context_len,
                                          int dynamic_context,
                                          RopeKernelParam rope_param,
+                                         const float* __restrict__ rope_cache,
                                          int q_position_shift,
                                          bool q_pre_rotated)
 {
@@ -91,10 +92,20 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
         value[0] = q[row * q_stride + col];
         value[1] = q[row * q_stride + col + 1];
         if (!q_pre_rotated) {
-            FastRoPE<2> rope(rope_param, 0, std::integral_constant<int, 2>{});
-            rope.init(head_pair * 2);
-            const int history_len = context_len - 8 + q_position_shift;
-            rope.apply(value, history_len + row, row);
+            const int position = context_len - 8 + q_position_shift + row;
+            if (rope_cache) {
+                const float cos_v = rope_cache[(int64_t)position * 128 + head_pair];
+                const float sin_v = rope_cache[(int64_t)position * 128 + 64 + head_pair];
+                const float first = __half2float(value[0]);
+                const float second = __half2float(value[1]);
+                value[0] = __float2half_rn(cos_v * first - sin_v * second);
+                value[1] = __float2half_rn(cos_v * second + sin_v * first);
+            }
+            else {
+                FastRoPE<2> rope(rope_param, 0, std::integral_constant<int, 2>{});
+                rope.init(head_pair * 2);
+                rope.apply(value, position, row);
+            }
         }
         packed_q[row * kQElementsPerRow + col] = value[0];
         packed_q[row * kQElementsPerRow + col + 1] = value[1];
@@ -113,9 +124,20 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
             Array<half, 2> value;
             value[0] = q[row * q_stride + k_offset];
             value[1] = q[row * q_stride + k_offset + 1];
-            FastRoPE<2> rope(rope_param, 0, std::integral_constant<int, 2>{});
-            rope.init(pair_dim);
-            rope.apply(value, token, row);
+            if (rope_cache) {
+                const int pair = pair_dim / 2;
+                const float cos_v = rope_cache[(int64_t)token * 128 + pair];
+                const float sin_v = rope_cache[(int64_t)token * 128 + 64 + pair];
+                const float first = __half2float(value[0]);
+                const float second = __half2float(value[1]);
+                value[0] = __float2half_rn(cos_v * first - sin_v * second);
+                value[1] = __float2half_rn(cos_v * second + sin_v * first);
+            }
+            else {
+                FastRoPE<2> rope(rope_param, 0, std::integral_constant<int, 2>{});
+                rope.init(pair_dim);
+                rope.apply(value, token, row);
+            }
             packed_k[index] = value[dim & 1];
             packed_v[index] = q[row * q_stride + kQElementsPerRow + 2 * 128 + head * 128 + dim];
         }
@@ -193,6 +215,7 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                                             context_len,
                                                             graph_replay_safe,
                                                             params.rope_param,
+                                                            params.dflash_context_rope_cache,
                                                             params.q_position_shift,
                                                             q_pre_rotated);
     TM_CUDA_CHECK(cudaGetLastError());
