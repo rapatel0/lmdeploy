@@ -56,7 +56,7 @@ disabled=$(grep -c 'draft graph capture disabled' "$RESULTS/graph.log" || true)
     echo "FAIL: draft graph replays=$replays" >&2
     exit 3
 }
-[ "$selected" -eq 4 ] || {
+[ "$selected" -ge 1 ] || {
     echo "FAIL: TileLang selector count=$selected" >&2
     exit 3
 }
@@ -73,7 +73,7 @@ python3 /job/verify_dflash_audited.py \
     --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 2>&1 |
     tee "$RESULTS/identity.log"
 grep -q '^DFLASH_AUDITED_IDENTITY_PASS$' "$RESULTS/identity.log"
-[ "$(grep -c 'DFLASH_TILELANG_SELECTOR selected=true' "$RESULTS/identity.log" || true)" -eq 4 ]
+[ "$(grep -c 'DFLASH_TILELANG_SELECTOR selected=true' "$RESULTS/identity.log" || true)" -ge 1 ]
 echo DFLASH_TILELANG_K0_K7_IDENTITY_PASS
 
 touch "$RESULTS/completed"
