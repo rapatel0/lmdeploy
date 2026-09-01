@@ -66,10 +66,10 @@ for lib in "${LIBS[@]}"; do
 
     # cuobjdump exits non-zero on a library with no device code. That is not
     # an error, because many libraries are host-only.
-    if ! elf="$(cuobjdump -lelf "${lib}" 2>/dev/null)"; then
+    if ! elf="$(cuobjdump -lelf "${lib}" 2>&1)"; then
         continue
     fi
-    ptx="$(cuobjdump -lptx "${lib}" 2>/dev/null || true)"
+    ptx="$(cuobjdump -lptx "${lib}" 2>&1 || true)"
 
     has_elf=0
     has_ptx=0
