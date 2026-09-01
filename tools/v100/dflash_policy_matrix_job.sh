@@ -22,7 +22,9 @@ common=(
 )
 
 for bits in 000 100 010 001 110 101 011 111; do
-  reduce=${bits:0:1}; ordered=${bits:1:1}; bf16=${bits:2:1}
+  reduce=${bits:0:1}
+  ordered=${bits:1:1}
+  bf16=${bits:2:1}
   name="r${reduce}-o${ordered}-b${bf16}"
   echo "DFLASH_POLICY_MATRIX_BEGIN $name"
   env \
