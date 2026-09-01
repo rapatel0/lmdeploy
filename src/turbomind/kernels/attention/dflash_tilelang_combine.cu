@@ -99,15 +99,31 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
         packed_q[row * kQElementsPerRow + col] = value[0];
         packed_q[row * kQElementsPerRow + col + 1] = value[1];
     }
+    const int history_len = context_len - 8;
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < context_len * kKVElementsPerToken;
          index += blockDim.x * gridDim.x) {
         const int token = index / kKVElementsPerToken;
         const int rem = index % kKVElementsPerToken;
         const int head = rem / 128;
         const int dim = rem % 128;
-        packed_k[index] = flattened_kv[head * flattened_head_stride + token * 128 + dim];
-        packed_v[index] =
-            flattened_kv[head * flattened_head_stride + flattened_value_offset + token * 128 + dim];
+        if (!q_pre_rotated && token >= history_len) {
+            const int row = token - history_len;
+            const int pair_dim = dim & ~1;
+            const int k_offset = kQElementsPerRow + head * 128 + pair_dim;
+            Array<half, 2> value;
+            value[0] = q[row * q_stride + k_offset];
+            value[1] = q[row * q_stride + k_offset + 1];
+            FastRoPE<2> rope(rope_param, 0, std::integral_constant<int, 2>{});
+            rope.init(pair_dim);
+            rope.apply(value, token, row);
+            packed_k[index] = value[dim & 1];
+            packed_v[index] = q[row * q_stride + kQElementsPerRow + 2 * 128 + head * 128 + dim];
+        }
+        else {
+            packed_k[index] = flattened_kv[head * flattened_head_stride + token * 128 + dim];
+            packed_v[index] =
+                flattened_kv[head * flattened_head_stride + flattened_value_offset + token * 128 + dim];
+        }
     }
     for (int page = blockIdx.x * blockDim.x + threadIdx.x; page < (context_len + 15) / 16;
          page += blockDim.x * gridDim.x) {

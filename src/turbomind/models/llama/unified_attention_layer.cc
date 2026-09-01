@@ -1567,7 +1567,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         auto params = CreateParams(
             offset, d.prefill, use_dflash_tilelang_draft_attention ? 40 : (use_dflash_grouped_paged_q8 ? 8 : 1), pf_stream);
         if constexpr (sizeof(T) == 2) {
-            if (!p.frozen_kv) {
+            if (!p.frozen_kv && !use_dflash_tilelang_draft_attention) {
                 invokeProcessKV_v2_(params);
                 TM_CUDA_CHECK(cudaGetLastError());
             }
