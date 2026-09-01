@@ -1,11 +1,13 @@
 // Generated from SGLang's Apache-2.0 TileLang SM70 DFlash verifier.
 // Specialization: B1, Q8, H8/HKV2, D128, FP16 KV, noncausal, 40 split slots.
 #include "attention.h"
+#include "rotary_embedding.h"
 #include "src/turbomind/utils/cuda_utils.h"
 
 #include <cuda.h>
 #include <cstddef>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
 
 #include "dflash_tilelang_ptx.inc"
@@ -70,16 +72,32 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
                                          int* __restrict__ identity_pages,
                                          const int* __restrict__ cu_k_len,
                                          int captured_context_len,
-                                         int dynamic_context)
+                                         int dynamic_context,
+                                         RopeKernelParam rope_param,
+                                         int q_position_shift,
+                                         bool q_pre_rotated)
 {
     constexpr int kQElementsPerRow = 8 * 128;
+    constexpr int kQPairsPerRow = kQElementsPerRow / 2;
     constexpr int kKVElementsPerToken = 2 * 128;
     const int context_len = dynamic_context ? cu_k_len[1] - cu_k_len[0] : captured_context_len;
-    for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < 8 * kQElementsPerRow;
+    for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < 8 * kQPairsPerRow;
          index += blockDim.x * gridDim.x) {
-        const int row = index / kQElementsPerRow;
-        const int col = index % kQElementsPerRow;
-        packed_q[index] = q[row * q_stride + col];
+        const int row = index / kQPairsPerRow;
+        const int pair = index % kQPairsPerRow;
+        const int head_pair = pair % 64;
+        const int col = pair * 2;
+        Array<half, 2> value;
+        value[0] = q[row * q_stride + col];
+        value[1] = q[row * q_stride + col + 1];
+        if (!q_pre_rotated) {
+            FastRoPE<2> rope(rope_param, 0, std::integral_constant<int, 2>{});
+            rope.init(head_pair * 2);
+            const int history_len = context_len - 8 + q_position_shift;
+            rope.apply(value, history_len + row, row);
+        }
+        packed_q[row * kQElementsPerRow + col] = value[0];
+        packed_q[row * kQElementsPerRow + col + 1] = value[1];
     }
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < context_len * kKVElementsPerToken;
          index += blockDim.x * gridDim.x) {
@@ -112,7 +130,8 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                       half*                        packed_workspace,
                                       std::size_t                  packed_workspace_elements,
                                       int*                         metadata_workspace,
-                                      bool                         graph_replay_safe)
+                                      bool                         graph_replay_safe,
+                                      bool                         q_pre_rotated)
 {
     constexpr int kMaxContext = 16 * 1024;
     constexpr int kPartialSmem = 59392;
@@ -156,7 +175,10 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                                             metadata_workspace,
                                                             params.cu_k_len,
                                                             context_len,
-                                                            graph_replay_safe);
+                                                            graph_replay_safe,
+                                                            params.rope_param,
+                                                            params.q_position_shift,
+                                                            q_pre_rotated);
     TM_CUDA_CHECK(cudaGetLastError());
 
     auto& kernels = GetDFlashTileLangDriverKernels(false);
