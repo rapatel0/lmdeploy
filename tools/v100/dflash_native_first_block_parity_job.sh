@@ -30,10 +30,10 @@ for root in pathlib.Path('/results').glob('*-sglang-dflash-parity-*/trace/sglang
             if len(names)!=len(set(names)): raise ValueError('duplicates')
             records={row['name']:row for row in rows}
             block=records['block.ids']
-            if block.get('draft_block_index')!=block.get('capture_block_index'): raise ValueError('uncorrelated')
+            if block.get('draft_block_index')!=1 or block.get('capture_block_index')!=1: raise ValueError('not first correlated block')
             import numpy as np
             ids=np.fromfile(directory/block['file'],dtype='<i8').tolist()
-            if ids!=[1144]+[248070]*7: raise ValueError(f'wrong block {ids}')
+            if ids!=[1596]+[248070]*7: raise ValueError(f'wrong block {ids}')
         matches.append(root)
     except (KeyError,OSError,ValueError,json.JSONDecodeError):
         continue
