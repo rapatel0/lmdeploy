@@ -1847,8 +1847,11 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             Buffer_<int>    block_anchors = dflash_anchor_ids_.slice(0, d.rows.size());
             std::vector<int> host_anchors(d.rows.size());
             for (size_t i = 0; i < d.rows.size(); ++i) {
-                TM_CHECK_GT(d.seq_lens[i], 0);
-                host_anchors[i] = d.rows[i]->token_ids[d.seq_lens[i] - 1];
+                TM_CHECK_GE(d.seq_lens[i], 2);
+                // The scheduled sequence length already reserves the current
+                // target output slot. SGLang's DFlash block starts from the
+                // committed input immediately before that slot.
+                host_anchors[i] = d.rows[i]->token_ids[d.seq_lens[i] - 2];
             }
             TM_CUDA_CHECK(cudaMemcpyAsync(block_anchors.data(),
                                           host_anchors.data(),
