@@ -236,8 +236,19 @@ for rank, (lm_root, sg_root) in enumerate(zip(lm_roots, sg_roots)):
         'draft.cache_v': (flattened[:, 1, :key_count, :], sg_flat_v),
         'draft.core_output': (load(lm_root, lm, 'layer0.attention.core_output'), sg_attention_output),
     }
+    exact_names = {
+        'draft.q_attention',
+        'draft.k_normalized',
+        'draft.cache_k',
+        'draft.cache_v',
+        'draft.core_output',
+    }
     for name, (left, right) in pairs.items():
-        print('BOUNDARY', 'rank', rank, name, 'different/max/rms', stats(left, right))
+        result = stats(left, right)
+        print('BOUNDARY', 'rank', rank, name, 'different/max/rms', result)
+        if name in exact_names:
+            assert result == (0, 0.0, 0.0), f'rank {rank} exact boundary mismatch: {name} {result}'
+print('DFLASH_CONTEXT_KV_EXACT_BOUNDARIES_PASS')
 PY
 
 touch "$RESULTS/completed"
