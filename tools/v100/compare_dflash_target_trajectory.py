@@ -75,8 +75,10 @@ def load(directory: Path) -> tuple[np.ndarray, np.ndarray | None, dict[str, obje
         metadata["input_ids_sha256"] = hashlib.sha256(ids[:1000].tobytes(order="C")).hexdigest()
         try:
             metadata["input_rows"] = int(ids.size)
-        except (TypeError, ValueError) as error:
-            raise RuntimeError(f"invalid target input row count in {directory}") from error
+            if ids.size >= 1000:
+                metadata["input_token_id"] = int(ids[999])
+        except (TypeError, ValueError, IndexError) as error:
+            raise RuntimeError(f"invalid target input metadata in {directory}") from error
     return value, dtype_codes, metadata
 
 
@@ -95,15 +97,26 @@ def main() -> int:
     for rank in range(4):
         lm, _, lm_metadata = load(lm_dirs[rank])
         sg, sg_dtype_codes, sg_metadata = load(sg_dirs[rank])
-        expected = {"position": 999, "token_id": 198}
-        for key, value in expected.items():
-            if lm_metadata.get(key) != value or sg_metadata.get(key) != value:
-                raise RuntimeError(
-                    f"rank {rank} target alignment mismatch for {key}: "
-                    f"lm={lm_metadata.get(key)} sg={sg_metadata.get(key)} expected={value}"
-                )
+        if lm_metadata.get("position") != 999 or sg_metadata.get("position") != 999:
+            raise RuntimeError(
+                f"rank {rank} target position mismatch: "
+                f"lm={lm_metadata.get('position')} sg={sg_metadata.get('position')} expected=999"
+            )
         if lm_metadata.get("input_ids_sha256") != sg_metadata.get("input_ids_sha256"):
             raise RuntimeError(f"rank {rank} target prompt input hash mismatch")
+        # Early SGLang trajectory captures wrote token_id=-1 before the capture
+        # hook could observe the final prompt token. The audited input_ids record
+        # is authoritative: require row 999 to be token 198 in both runtimes.
+        if lm_metadata.get("input_token_id") != 198 or sg_metadata.get("input_token_id") != 198:
+            raise RuntimeError(
+                f"rank {rank} target token mismatch: "
+                f"lm={lm_metadata.get('input_token_id')} sg={sg_metadata.get('input_token_id')} expected=198"
+            )
+        if lm_metadata.get("token_id") not in (198, -1) or sg_metadata.get("token_id") not in (198, -1):
+            raise RuntimeError(
+                f"rank {rank} invalid trajectory token metadata: "
+                f"lm={lm_metadata.get('token_id')} sg={sg_metadata.get('token_id')}"
+            )
         for index, name in enumerate(names):
             lhs = lm[index].astype(np.float32)
             rhs = sg[index].astype(np.float32)

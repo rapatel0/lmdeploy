@@ -74,6 +74,9 @@ done < <(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace
     echo 'FAIL: no SGLang target prompt-feature trace exists' >&2
     exit 4
 }
+python3 /job/compare_dflash_target_trajectory.py \
+    --lmdeploy "${RESULTS}/parity/target-prompt/lmdeploy" --sglang "${SG_REF}" \
+    --output "${RESULTS}/target_trajectory.json" | tee "${RESULTS}/target_trajectory.log"
 python3 /job/compare_dflash_target_features.py \
     --lmdeploy "${RESULTS}/parity/target-prompt/lmdeploy" --sglang "${SG_REF}" \
     --output "${RESULTS}/target_features.json" | tee "${RESULTS}/target_features.log"
