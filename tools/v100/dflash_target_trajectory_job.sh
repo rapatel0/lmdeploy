@@ -64,8 +64,8 @@ PY
 
 SG_REF=""
 while IFS= read -r candidate; do
-    if grep -q 'target.prompt_features' "${candidate}"/rank-*/manifest.jsonl 2>/dev/null \
-        && grep -q 'target.next_token_logits' "${candidate}"/rank-*/manifest.jsonl 2>/dev/null; then
+    if grep -q 'target.prompt_features' "${candidate}"/rank-*/manifest.jsonl 2>/dev/null &&
+        grep -q 'target.next_token_logits' "${candidate}"/rank-*/manifest.jsonl 2>/dev/null; then
         SG_REF="${candidate}"
         break
     fi

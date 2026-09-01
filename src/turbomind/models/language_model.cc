@@ -477,7 +477,16 @@ struct LanguageModel::Impl {
             // with no error at all.
             const int expected = 1 + d.num_drafts[i];
             if (!d.autoregres[i] && c->input_len != expected) {
-                return false;
+                static const bool dflash_draft_after_prefill = [] {
+                    const char* value = std::getenv("TM_DFLASH_DRAFT_AFTER_PREFILL");
+                    return value && value[0] == '1';
+                }();
+                const bool completed_dflash_prefill = dflash_predictor_ && dflash_draft_after_prefill
+                                                      && d.num_drafts[i] == 0 && c->input_len > 1
+                                                      && c->history_len + c->input_len == c->prompt_len;
+                if (!completed_dflash_prefill) {
+                    return false;
+                }
             }
         }
         return true;
@@ -1954,6 +1963,26 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
         const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
         return value && value[0] == '1';
     }();
+    static const bool dflash_draft_after_prefill = [] {
+        const char* value = std::getenv("TM_DFLASH_DRAFT_AFTER_PREFILL");
+        return value && value[0] == '1';
+    }();
+    std::vector<int> prefill_tips;
+    if (dflash_draft_after_prefill) {
+        bool completed_prefill = true;
+        for (int i = 0; i < bsz; ++i) {
+            completed_prefill = completed_prefill && !d.autoregres[i] && d.num_drafts[i] == 0
+                                && d.rows[i]->input_len > 1
+                                && d.rows[i]->history_len + d.rows[i]->input_len == d.rows[i]->prompt_len;
+        }
+        if (completed_prefill) {
+            prefill_tips.resize(bsz);
+            for (int i = 0; i < bsz; ++i) {
+                prefill_tips[i] = d.seq_lens[i] + 1;
+            }
+            tips = &prefill_tips;
+        }
+    }
     // The proposal block contains the freshly generated anchor as row zero.
     // The published frontier already counts that token, so the block's cache
     // base is frontier-1. Build the exact cumulative offsets from the same
