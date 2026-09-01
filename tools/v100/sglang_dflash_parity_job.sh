@@ -153,20 +153,22 @@ python3 /job/validate_sglang_dflash_trace.py \
     "${RESULTS}/trace/sglang" \
     --block-index "${SGLANG_DFLASH_PARITY_BLOCK_INDEX:-1}"
 
-LM_PARITY_REF=${LM_DFLASH_PARITY_REF:-}
-if [ -z "${LM_PARITY_REF}" ]; then
-    while IFS= read -r candidate; do
-        LM_PARITY_REF=${candidate}
-    done < <(find /results -maxdepth 4 -type d -path '*/parity/lmdeploy' | sort)
+if [ "${SGLANG_PARITY_TRACE_ONLY:-0}" != 1 ]; then
+    LM_PARITY_REF=${LM_DFLASH_PARITY_REF:-}
+    if [ -z "${LM_PARITY_REF}" ]; then
+        while IFS= read -r candidate; do
+            LM_PARITY_REF=${candidate}
+        done < <(find /results -maxdepth 4 -type d -path '*/parity/lmdeploy' | sort)
+    fi
+    [ -d "${LM_PARITY_REF}" ] || {
+        echo "FAIL: LMDeploy parity reference not found: ${LM_PARITY_REF}" >&2
+        exit 4
+    }
+    python3 /job/compare_dflash_parity.py \
+        --lmdeploy "${LM_PARITY_REF}" \
+        --sglang "${RESULTS}/trace/sglang" \
+        --output "${RESULTS}/cross_runtime_parity.json"
 fi
-[ -d "${LM_PARITY_REF}" ] || {
-    echo "FAIL: LMDeploy parity reference not found: ${LM_PARITY_REF}" >&2
-    exit 4
-}
-python3 /job/compare_dflash_parity.py \
-    --lmdeploy "${LM_PARITY_REF}" \
-    --sglang "${RESULTS}/trace/sglang" \
-    --output "${RESULTS}/cross_runtime_parity.json"
 
 if [ -n "${LM_DFLASH_TARGET_TRAJECTORY_REF:-}" ]; then
     python3 /job/compare_dflash_target_trajectory.py \
