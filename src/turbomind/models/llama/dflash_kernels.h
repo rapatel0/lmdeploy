@@ -13,6 +13,11 @@ void invokeBuildDFlashBlock(Buffer_<int>&       output,
                             int                 mask_token_id,
                             cudaStream_t        stream);
 
+void invokeGatherDFlashInputAnchors(Buffer_<int>&       output,
+                                    const Buffer_<int>& input_ids,
+                                    const Buffer_<int>& q_offsets,
+                                    cudaStream_t        stream);
+
 void invokeGatherDFlashPredictions(Tensor& output, const Tensor& block_hidden, int block_size, cudaStream_t stream);
 
 void invokeDFlashCastToFloat(Tensor& output, const Tensor& input, cudaStream_t stream);

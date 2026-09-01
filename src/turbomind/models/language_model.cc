@@ -103,6 +103,7 @@ struct LanguageModel::Impl {
     State sequence_length_;  // length of known tokens
     // immutable state
     Buffer_<int> autoreg_ids_;
+    Buffer_<int> dflash_anchor_ids_;
     // Buffer_<int> autoreg_ids_offsets_;
 
     // Symmetric buffer for holding global hidden states or logits
@@ -540,7 +541,8 @@ LanguageModel::Impl::Impl(
     finished_buf_        = {engine.max_batch_size, kCPUpinned};
     finished_     = {{engine.max_batch_size}, kBool, kDEVICE};
 
-    autoreg_ids_ = {engine.max_batch_size, kDEVICE};
+    autoreg_ids_      = {engine.max_batch_size, kDEVICE};
+    dflash_anchor_ids_ = {engine.max_batch_size, kDEVICE};
     // autoreg_ids_offsets_ = {engine.max_batch_size + 1, kCPU};
     // std::fill_n(autoreg_ids_offsets_.data(), autoreg_ids_offsets_.size(), 0);
 
@@ -1962,6 +1964,23 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     }
 
     auto anchors = autoreg_ids_.slice(0, bsz);
+    static const bool sglang_input_anchor = [] {
+        const char* value = std::getenv("TM_DFLASH_SGLANG_INPUT_ANCHOR");
+        return value && value[0] == '1';
+    }();
+    if (sglang_input_anchor) {
+        auto stable_anchors = dflash_anchor_ids_.slice(0, bsz);
+        if (after_rollback) {
+            core::Copy(anchors, stable_anchors);
+        }
+        else {
+            invokeGatherDFlashInputAnchors(stable_anchors,
+                                           env.at("input_ids").buffer().view<int>(),
+                                           env.at("q_offsets").buffer().view<int>(),
+                                           core::Context::stream().handle());
+        }
+        anchors = std::move(stable_anchors);
+    }
     if (bsz == 1 && K == 7) {
         dflash_predictor_->BeginParityBlock(anchors, d.uids[0], (*tips)[0], d.input_lens[0]);
     }
