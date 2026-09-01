@@ -676,7 +676,10 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
         const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
         return value && value[0] == '1';
     }();
-    const bool tilelang_full_block = UseDFlashTileLangDraftAttention();
+    static const bool tilelang_full_block = [] {
+        const char* value = std::getenv("TM_DFLASH_TILELANG_DRAFT_ATTENTION");
+        return value && value[0] == '1';
+    }();
     const int  frontier_adjust = tilelang_full_block ? block_size - 1 :
                                  anchor_inclusive_frontier ? -1 : block_size;
     int       expected_k_sum{};
