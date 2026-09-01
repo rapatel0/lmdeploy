@@ -121,44 +121,19 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
             packed_q[row * kQElementsPerRow + src_col + 1] = value[1];
         }
     }
-    const int history_len = context_len - 8;
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < context_len * kKVElementsPerToken;
          index += blockDim.x * gridDim.x) {
         const int token = index / kKVElementsPerToken;
         const int rem = index % kKVElementsPerToken;
         const int head = rem / 128;
         const int dim = rem % 128;
-        if (!q_pre_rotated && token >= history_len) {
-            const int row = token - history_len;
-            const int pair = dim % 64;
-            const int component = dim / 64;
-            const int pair_dim = pair * 2;
-            const int k_offset = kQElementsPerRow + head * 128 + pair_dim;
-            Array<half, 2> value;
-            value[0] = q[row * q_stride + k_offset];
-            value[1] = q[row * q_stride + k_offset + 1];
-            if (rope_cache) {
-                const float cos_v = rope_cache[(int64_t)token * 128 + pair];
-                const float sin_v = rope_cache[(int64_t)token * 128 + 64 + pair];
-                const float first = __half2float(value[0]);
-                const float second = __half2float(value[1]);
-                value[0] = __float2half_rn(cos_v * first - sin_v * second);
-                value[1] = __float2half_rn(cos_v * second + sin_v * first);
-            }
-            else {
-                FastRoPE<2> rope(rope_param, 0, std::integral_constant<int, 2>{});
-                rope.init(pair_dim);
-                rope.apply(value, token, row);
-            }
-            packed_k[index] = value[component];
-            packed_v[index] = q[row * q_stride + kQElementsPerRow + 2 * 128 + head * 128 + dim];
-        }
-        else {
-            const int source_k_dim = kv_prepacked ? dim : (dim % 64) * 2 + dim / 64;
-            packed_k[index] = flattened_kv[head * flattened_head_stride + token * 128 + source_k_dim];
-            packed_v[index] =
-                flattened_kv[head * flattened_head_stride + flattened_value_offset + token * 128 + dim];
-        }
+        // SGLang's linear verifier reads the complete logical K/V span from its
+        // published cache. In particular, the final eight rows are not the
+        // current layer's backend K/V arguments. Preserve that frozen-cache
+        // contract instead of substituting this layer's QKV projection rows.
+        const int source_k_dim = kv_prepacked ? dim : (dim % 64) * 2 + dim / 64;
+        packed_k[index] = flattened_kv[head * flattened_head_stride + token * 128 + source_k_dim];
+        packed_v[index] = flattened_kv[head * flattened_head_stride + flattened_value_offset + token * 128 + dim];
     }
     for (int page = blockIdx.x * blockDim.x + threadIdx.x; page < (context_len + 15) / 16;
          page += blockDim.x * gridDim.x) {
