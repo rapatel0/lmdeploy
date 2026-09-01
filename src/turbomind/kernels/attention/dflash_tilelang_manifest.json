@@ -1,0 +1,56 @@
+{
+  "artifacts": {
+    "combine.cu": {
+      "bytes": 2581,
+      "sha256": "f08140d20b0cac631490d542114dbbd1a8974c026e89f7c8aad01d48d23fda7c"
+    },
+    "combine.ptx": {
+      "bytes": 20781,
+      "sha256": "7cdc4af4fad3a9ff45ae3464ba228a68a3e1ff0169306eb52c7887f5c1587edb"
+    },
+    "combine.sass": {
+      "bytes": 190454,
+      "sha256": "9529d9bd7ac6eda7e9edbe724cbf0dd266c902fea06cc627515b5b3183ce0093"
+    },
+    "combine_host.cc": {
+      "bytes": 113061,
+      "sha256": "ab389689f5e8f5c1138e1321b50abe5448a57c7307a7ea6a3234a6a6c3c5f5f6"
+    },
+    "partial.cu": {
+      "bytes": 20186,
+      "sha256": "3a838be27afc2a27662f6f08c865039fe0f0095cb004391a5e885b12827c5a66"
+    },
+    "partial.ptx": {
+      "bytes": 147609,
+      "sha256": "264dd573cc34ec33619dcf1f7c48f142f38cb78dc31f4009b5ba9a8a8a709494"
+    },
+    "partial.sass": {
+      "bytes": 1309467,
+      "sha256": "ad19a18a4caec0f21306be28503915c611f313b74669912e8e81bdbc1ccbf666"
+    },
+    "partial_host.cc": {
+      "bytes": 216913,
+      "sha256": "cb030707f6c46040d6f265514fff44827c3e2ddd415cc57bbaffae64894a8f9a"
+    }
+  },
+  "cuda_toolchain": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Fri_Feb_21_20:23:50_PST_2025\nCuda compilation tools, release 12.8, V12.8.93\nBuild cuda_12.8.r12.8/compiler.35583870_0",
+  "schema": 1,
+  "shape": {
+    "batch": 1,
+    "causal": false,
+    "head_dim": 128,
+    "kv_heads": 2,
+    "max_blocks": 1024,
+    "max_splits": 40,
+    "num_pages": 1024,
+    "page_size": 16,
+    "query_heads": 8,
+    "query_tokens": 8,
+    "tokens_per_split": 128
+  },
+  "source_commit": "921b602e39cf15608269a9e33a097e8443f367f2",
+  "source_repository": "https://github.com/rapatel0/Tilelang-FA-V100",
+  "source_sha256": "d71043c0ead507e12f19d8fc6056f2e57122c06d8d2feccec914fa751e3ad40e",
+  "tilelang_runtime_patch": null,
+  "tilelang_version": "0.1.8"
+}

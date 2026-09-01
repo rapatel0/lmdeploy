@@ -1,11 +1,17 @@
-// Generated from SGLang's Apache-2.0 TileLang SM70 DFlash verifier.
-// Specialization: B1, Q8, H8/HKV2, D128, FP16 KV, noncausal, 40 split slots.
-#include "tilelang_compat/instruction/mma_sm70.h"
-#include "tilelang_compat/reduce.h"
+#include <tl_templates/cuda/instruction/mma_sm70.h>
 #include <math_constants.h>
+#include <tl_templates/cuda/gemm.h>
+#include <tl_templates/cuda/copy.h>
+#include <tl_templates/cuda/reduce.h>
+#include <tl_templates/cuda/ldsm.h>
+#include <tl_templates/cuda/threadblock_swizzle.h>
+#include <tl_templates/cuda/debug.h>
+#ifdef ENABLE_BF16
+#include <tl_templates/cuda/cuda_bf16_fallbacks.cuh>
+#endif
 
-extern "C" __global__ void dflash_tilelang_partial_kernel(const half_t* __restrict__ K_cache, float* __restrict__ Partial_LSE, half_t* __restrict__ Partial_O, const half_t* __restrict__ Q, const half_t* __restrict__ V_cache, const int* __restrict__ block_table, const int* __restrict__ cache_seqlens, const int* __restrict__ query_start_loc, int nt, float sm_scale);
-extern "C" __global__ void __launch_bounds__(256, 1) dflash_tilelang_partial_kernel(const half_t* __restrict__ K_cache, float* __restrict__ Partial_LSE, half_t* __restrict__ Partial_O, const half_t* __restrict__ Q, const half_t* __restrict__ V_cache, const int* __restrict__ block_table, const int* __restrict__ cache_seqlens, const int* __restrict__ query_start_loc, int nt, float sm_scale) {
+extern "C" __global__ void main_kernel(const half_t* __restrict__ K_cache, float* __restrict__ Partial_LSE, half_t* __restrict__ Partial_O, const half_t* __restrict__ Q, const half_t* __restrict__ V_cache, const int* __restrict__ block_table, const int* __restrict__ cache_seqlens, const int* __restrict__ query_start_loc, int nt, float sm_scale);
+extern "C" __global__ void __launch_bounds__(256, 1) main_kernel(const half_t* __restrict__ K_cache, float* __restrict__ Partial_LSE, half_t* __restrict__ Partial_O, const half_t* __restrict__ Q, const half_t* __restrict__ V_cache, const int* __restrict__ block_table, const int* __restrict__ cache_seqlens, const int* __restrict__ query_start_loc, int nt, float sm_scale) {
   extern __shared__ __align__(1024) uchar buf_dyn_shmem[];
   float acc_o[32];
   float m_i[2];
@@ -26,7 +32,6 @@ extern "C" __global__ void __launch_bounds__(256, 1) dflash_tilelang_partial_ker
   int q_len = (query_start_loc[1] - q_start);
   float scale_log2 = (sm_scale * 0x1.71547652b82fep+0f/*1.442695e+00*/);
   if ((((int)blockIdx.y) < 1) || (((int)blockIdx.y) < ((total_kv + 127) >> 7))) {
-    __syncthreads();
     #pragma unroll
     for (int i = 0; i < 8; ++i) {
       half_t broadcast_var = half_t(0x0p+0f/*0.000000e+00*/);

@@ -249,6 +249,8 @@ struct AttentionData {
         Tensor qkv;
         Tensor attention;
         Tensor flattened_kv;
+        Tensor tilelang_packed_kv;
+        Tensor tilelang_metadata;
         int    max_tokens{};
         int    max_k_sum{};
         int    qkv_width{};
@@ -496,6 +498,50 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
         split_cnt_  = Tensor_<int>({workspace_tokens}, kDEVICE);
 
         Clear(split_cnt_.buffer());
+    }
+
+    const char* persistent_workspace = std::getenv("TM_DFLASH_PERSISTENT_WORKSPACE");
+    if (engine_param_.speculative_algorithm == "dflash2" && (!persistent_workspace || persistent_workspace[0] != '0')) {
+        const auto& w = *weights[0];
+        TM_CHECK(w.w_qkv && w.w_qkv->output_dim);
+        TM_CHECK(!w.is_mla());
+        const int draft_block = std::max(1,
+                                         engine_param_.speculative_dflash_block_size > 0 ?
+                                             engine_param_.speculative_dflash_block_size :
+                                             engine_param_.num_draft_tokens + 1);
+        const int local_heads = w.head_num / w.tp_size;
+        const int local_kv_heads = w.kv_head_num / w.tp_size;
+        const int max_k_sum = engine_param_.session_len + draft_block;
+        const int tilelang_max_k_sum = std::min(max_k_sum, 16 * 1024);
+        if (engine_param_.data_type == kHalf && draft_block == 8 && local_heads == 8 && local_kv_heads == 2
+            && w.head_dim == 128) {
+            for (auto& data : data_) {
+                auto& workspace = data->dflash_workspace;
+                workspace.qkv = {{draft_block, w.w_qkv->output_dim}, engine_param_.data_type, kDEVICE};
+                workspace.attention = {
+                    {draft_block, local_heads * w.head_dim}, engine_param_.data_type, kDEVICE};
+                workspace.flattened_kv = {
+                    {local_kv_heads, 2, max_k_sum + MAX_CTA_S, w.head_dim}, engine_param_.data_type, kDEVICE};
+                workspace.tilelang_packed_kv = {
+                    {2, tilelang_max_k_sum, local_kv_heads, w.head_dim}, engine_param_.data_type, kDEVICE};
+                workspace.tilelang_metadata = {{1025}, kInt32, kDEVICE};
+                workspace.max_tokens = draft_block;
+                workspace.max_k_sum = max_k_sum;
+                workspace.qkv_width = w.w_qkv->output_dim;
+                workspace.attention_width = local_heads * w.head_dim;
+                workspace.local_kv_heads = local_kv_heads;
+                workspace.head_dim = w.head_dim;
+                workspace.initialized = true;
+            }
+        }
+    }
+
+    const char* tilelang_draft_attention = std::getenv("TM_DFLASH_TILELANG_DRAFT_ATTENTION");
+    if (arch_ == 70 && engine_param_.speculative_algorithm == "dflash2" && tilelang_draft_attention
+        && tilelang_draft_attention[0] == '1') {
+        // Driver module loading is not graph-capture safe. Resolve both PTX
+        // modules while constructing the layer, before any graph warm-up.
+        prepareDFlashTileLangAttention();
     }
 }
 
@@ -981,6 +1027,14 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
                                        weights.head_dim},
                                       engine_param_.data_type,
                                       kDEVICE};
+            // Keep the generated verifier's packed [K, V] arena separate
+            // from FlattenKV. Aliasing the two requires twice the configured
+            // session capacity and overflows near the context limit.
+            workspace.tilelang_packed_kv = {{2, std::min(max_k_sum, 16 * 1024), local_kv_heads, weights.head_dim},
+                                                engine_param_.data_type,
+                                                kDEVICE};
+            // Identity page table (1024 entries) followed by cache_seqlens[0].
+            workspace.tilelang_metadata = {{1025}, kInt32, kDEVICE};
             workspace.max_tokens = max_tokens;
             workspace.max_k_sum = max_k_sum;
             workspace.qkv_width = qkv_width;
@@ -1003,11 +1057,14 @@ void UnifiedAttentionLayer::Forward(ForwardParam p)
         if (trace_workspace && !workspace.traced) {
             workspace.traced = true;
             TM_LOG_INFO("[DFlash2] attention workspace phase={} qkv={} attention={} flattened_kv={} "
-                        "max_tokens={} max_k_sum={} qkv_width={} attention_width={} kv_heads={} head_dim={}",
+                        "tilelang_packed_kv={} tilelang_metadata={} max_tokens={} max_k_sum={} qkv_width={} "
+                        "attention_width={} kv_heads={} head_dim={}",
                         p.phase,
                         (uintptr_t)workspace.qkv.raw_data(),
                         (uintptr_t)workspace.attention.raw_data(),
                         (uintptr_t)workspace.flattened_kv.raw_data(),
+                        (uintptr_t)workspace.tilelang_packed_kv.raw_data(),
+                        (uintptr_t)workspace.tilelang_metadata.raw_data(),
                         workspace.max_tokens,
                         workspace.max_k_sum,
                         workspace.qkv_width,
@@ -1545,11 +1602,14 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                             // ordinary autoregressive attention weights are marked causal.
                             auto tilelang_params = params;
                             tilelang_params.causal = false;
-                            dispatchDFlashTileLangAttention(tilelang_params, context_len, tmp_kv.size());
+                            auto& tilelang_workspace = d.dflash_workspace;
+                            dispatchDFlashTileLangAttention(tilelang_params,
+                                                           context_len,
+                                                           tilelang_workspace.tilelang_packed_kv.data<half>(),
+                                                           tilelang_workspace.tilelang_packed_kv.size(),
+                                                           tilelang_workspace.tilelang_metadata.data<int>());
                             if (p.trace_fn) {
-                                const std::size_t flattened_elements =
-                                    std::size_t{2} * local_kv_head_num * context_len * size_per_head;
-                                auto* packed_k = tmp_kv.data<half>() + flattened_elements;
+                                auto* packed_k = tilelang_workspace.tilelang_packed_kv.data<half>();
                                 auto* packed_v = packed_k + context_len * local_kv_head_num * size_per_head;
                                 Tensor packed_k_view{(void*)packed_k,
                                                      Layout{{context_len, local_kv_head_num, size_per_head}},
@@ -1563,10 +1623,15 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                     (void*)tilelang_params.partial_O, Layout{{40, 16, 8, 128}}, kHalf, kDEVICE};
                                 Tensor partial_lse_view{
                                     (void*)tilelang_params.partial_ML, Layout{{40, 16, 8}}, kFloat32, kDEVICE};
-                                Tensor block_table_view{
-                                    (void*)tilelang_params.split_cnt, Layout{{1, 1024}}, kInt32, kDEVICE};
+                                Tensor block_table_view{tilelang_workspace.tilelang_metadata.raw_data(),
+                                                        Layout{{1, 1024}},
+                                                        kInt32,
+                                                        kDEVICE};
                                 Tensor cache_seqlens_view{
-                                    (void*)(tilelang_params.split_cnt + 1024), Layout{{1}}, kInt32, kDEVICE};
+                                    (void*)(tilelang_workspace.tilelang_metadata.data<int>() + 1024),
+                                    Layout{{1}},
+                                    kInt32,
+                                    kDEVICE};
                                 Tensor query_start_loc_view{
                                     (void*)tilelang_params.cu_q_len, Layout{{2}}, kInt32, kDEVICE};
                                 p.trace_fn(p.trace_context, "layer0.attention.tilelang.packed_k", packed_k_view);

@@ -6,6 +6,7 @@
 #include <cuda.h>
 #include <cstddef>
 #include <mutex>
+#include <unordered_map>
 
 #include "dflash_tilelang_ptx.inc"
 
@@ -40,23 +41,22 @@ struct DFlashTileLangDriverKernels {
     }
 };
 
-DFlashTileLangDriverKernels& GetDFlashTileLangDriverKernels()
+DFlashTileLangDriverKernels& GetDFlashTileLangDriverKernels(bool allow_load)
 {
-    constexpr int kMaxDevices = 32;
     static std::mutex mutex;
-    static DFlashTileLangDriverKernels* per_device[kMaxDevices]{};
-    int device = -1;
-    TM_CUDA_CHECK(cudaGetDevice(&device));
-    TM_CHECK_GE(device, 0);
-    TM_CHECK_LT(device, kMaxDevices);
+    static std::unordered_map<CUcontext, DFlashTileLangDriverKernels*> per_context;
+    CUcontext context{};
+    CheckDriver(cuCtxGetCurrent(&context));
+    TM_CHECK(context) << "TileLang verifier requires an active CUDA context";
     std::lock_guard<std::mutex> lock{mutex};
-    if (!per_device[device]) {
-        // Driver modules and function handles belong to the CUDA context in
-        // which they were loaded. TurboMind TP ranks share one process but use
-        // separate device contexts, so each device needs its own module pair.
-        per_device[device] = new DFlashTileLangDriverKernels{};
+    auto it = per_context.find(context);
+    if (it == per_context.end()) {
+        TM_CHECK(allow_load) << "TileLang verifier modules were not prepared before graph execution";
+        // The CUDA context owns module lifetime. Intentionally retain this
+        // pair until process teardown instead of unloading after ctx destroy.
+        it = per_context.emplace(context, new DFlashTileLangDriverKernels{}).first;
     }
-    return *per_device[device];
+    return *it->second;
 }
 
 __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
@@ -97,9 +97,16 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
 
 }  // namespace
 
+void prepareDFlashTileLangAttention()
+{
+    (void)GetDFlashTileLangDriverKernels(true);
+}
+
 void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
-                                      int context_len,
-                                      std::size_t workspace_elements)
+                                      int                          context_len,
+                                      half*                        packed_workspace,
+                                      std::size_t                  packed_workspace_elements,
+                                      int*                         metadata_workspace)
 {
     constexpr int kMaxContext = 16 * 1024;
     constexpr int kPartialSmem = 59392;
@@ -114,29 +121,31 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
     TM_CHECK_GT(context_len, 0);
     TM_CHECK_LE(context_len, kMaxContext);
 
-    auto* workspace = reinterpret_cast<half*>(const_cast<void*>(params.linear_iter_params.kv_cache));
-    const std::size_t flattened_elements = std::size_t{2} * params.num_kv_heads * context_len * 128;
+    auto* flattened_kv = reinterpret_cast<const half*>(params.linear_iter_params.kv_cache);
     const std::size_t packed_elements = std::size_t{2} * context_len * params.num_kv_heads * 128;
-    TM_CHECK_LE(flattened_elements + packed_elements, workspace_elements);
-    auto* packed_k = workspace + flattened_elements;
+    TM_CHECK(flattened_kv);
+    TM_CHECK(packed_workspace);
+    TM_CHECK(metadata_workspace);
+    TM_CHECK_LE(packed_elements, packed_workspace_elements);
+    auto* packed_k = packed_workspace;
     auto* packed_v = packed_k + context_len * params.num_kv_heads * 128;
     auto* packed_q = reinterpret_cast<half*>(params.out);
 
     PackDFlashTileLangInputs<<<32, 256, 0, params.stream>>>(reinterpret_cast<const half*>(params.q),
                                                             params.stride,
-                                                            workspace,
+                                                            flattened_kv,
                                                             packed_q,
                                                             packed_k,
                                                             packed_v,
-                                                            params.split_cnt,
+                                                            metadata_workspace,
                                                             context_len);
     TM_CUDA_CHECK(cudaGetLastError());
 
-    auto& kernels = GetDFlashTileLangDriverKernels();
+    auto& kernels = GetDFlashTileLangDriverKernels(false);
     auto* partial_lse = params.partial_ML;
     auto* partial_o = reinterpret_cast<half*>(params.partial_O);
-    auto* block_table = params.split_cnt;
-    auto* cache_seqlens = params.split_cnt + 1024;
+    auto* block_table = metadata_workspace;
+    auto* cache_seqlens = metadata_workspace + 1024;
     auto* query_start_loc = params.cu_q_len;
     int nt = 8;
     float softmax_scale = kSoftmaxScale;

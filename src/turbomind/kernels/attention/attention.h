@@ -19,8 +19,12 @@ void dispatchPagedAttention(const AttentionParams<T>& params);
 template<typename T>
 void dispatchGroupedPagedAttention(const AttentionParams<T>& params);
 
+void prepareDFlashTileLangAttention();
+
 void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                       int                          context_len,
-                                      std::size_t                  workspace_elements);
+                                      half*                        packed_workspace,
+                                      std::size_t                  packed_workspace_elements,
+                                      int*                         metadata_workspace);
 
 }  // namespace turbomind
