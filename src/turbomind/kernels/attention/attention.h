@@ -25,6 +25,7 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                       int                          context_len,
                                       half*                        packed_workspace,
                                       std::size_t                  packed_workspace_elements,
-                                      int*                         metadata_workspace);
+                                      int*                         metadata_workspace,
+                                      bool                         graph_replay_safe);
 
 }  // namespace turbomind

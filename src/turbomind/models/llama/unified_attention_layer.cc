@@ -1620,7 +1620,8 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                                            context_len,
                                                            tilelang_workspace.tilelang_packed_kv.data<half>(),
                                                            tilelang_workspace.tilelang_packed_kv.size(),
-                                                           tilelang_workspace.tilelang_metadata.data<int>());
+                                                           tilelang_workspace.tilelang_metadata.data<int>(),
+                                                           use_fixed_dflash_graph_geometry);
                             if (p.trace_fn) {
                                 auto* packed_k = tilelang_workspace.tilelang_packed_kv.data<half>();
                                 auto* packed_v = packed_k + tilelang_workspace.tilelang_packed_kv.size() / 2;

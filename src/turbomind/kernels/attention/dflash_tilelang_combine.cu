@@ -111,7 +111,8 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                       int                          context_len,
                                       half*                        packed_workspace,
                                       std::size_t                  packed_workspace_elements,
-                                      int*                         metadata_workspace)
+                                      int*                         metadata_workspace,
+                                      bool                         graph_replay_safe)
 {
     constexpr int kMaxContext = 16 * 1024;
     constexpr int kPartialSmem = 59392;
@@ -140,19 +141,22 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
     auto* packed_v = packed_k + packed_capacity * elements_per_token;
     auto* packed_q = reinterpret_cast<half*>(params.out);
 
-    const int dynamic_context = params.linear_iter_params.key_to_val != context_len * 128;
+    const int flattened_head_stride =
+        graph_replay_safe ? params.linear_iter_params.stride_h : 2 * context_len * 128;
+    const int flattened_value_offset =
+        graph_replay_safe ? params.linear_iter_params.key_to_val : context_len * 128;
     PackDFlashTileLangInputs<<<32, 256, 0, params.stream>>>(reinterpret_cast<const half*>(params.q),
                                                             params.stride,
                                                             flattened_kv,
-                                                            params.linear_iter_params.stride_h,
-                                                            params.linear_iter_params.key_to_val,
+                                                            flattened_head_stride,
+                                                            flattened_value_offset,
                                                             packed_q,
                                                             packed_k,
                                                             packed_v,
                                                             metadata_workspace,
                                                             params.cu_k_len,
                                                             context_len,
-                                                            dynamic_context);
+                                                            graph_replay_safe);
     TM_CUDA_CHECK(cudaGetLastError());
 
     auto& kernels = GetDFlashTileLangDriverKernels(false);
