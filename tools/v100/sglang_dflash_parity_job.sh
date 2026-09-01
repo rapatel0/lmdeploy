@@ -22,7 +22,7 @@ mkdir -p /tmp/dflash-parity-site
 cp /job/sglang_dflash_parity_sitecustomize.py /tmp/dflash-parity-site/sitecustomize.py
 
 if [ "${SGLANG_PARITY_PRODUCTION_CONFIG:-0}" = 1 ]; then
-    if [ "${SGLANG_PARITY_DISABLE_CUDA_GRAPH:-0}" = 1 ]; then
+    if [ "${SGLANG_PARITY_DISABLE_CUDA_GRAPH:-1}" = 1 ]; then
         graph_args=(--disable-cuda-graph)
     else
         graph_args=(--cuda-graph-max-bs 8 --cuda-graph-bs 1 2 4 8)
@@ -35,7 +35,7 @@ if [ "${SGLANG_PARITY_PRODUCTION_CONFIG:-0}" = 1 ]; then
         --max-mamba-cache-size 40
         --enable-nccl-nvls
     )
-elif [ "${SGLANG_PARITY_DISABLE_CUDA_GRAPH:-0}" = 1 ]; then
+elif [ "${SGLANG_PARITY_DISABLE_CUDA_GRAPH:-1}" = 1 ]; then
     graph_args=(--disable-cuda-graph)
     runtime_args=(--kv-cache-dtype fp8_e5m2 --context-length 16384 --max-total-tokens 16384 --max-running-requests 1)
 else
