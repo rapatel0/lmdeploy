@@ -140,8 +140,10 @@ required = {
     "selector.score_lattice", "selector.selected_ids",
     "layer0.attention.tilelang.q", "layer0.attention.tilelang.k",
     "layer0.attention.tilelang.v", "layer0.attention.tilelang.output",
-    "layer0.attention.tilelang.seq_lens", "layer0.attention.tilelang.query_start_loc",
+    "layer0.attention.tilelang.block_table", "layer0.attention.tilelang.seq_lens",
+    "layer0.attention.tilelang.query_start_loc", "layer0.attention.tilelang.prefix_kv_lens",
 }
+policies = []
 for directory in dirs:
     records = [json.loads(line) for line in (directory / "manifest.jsonl").read_text().splitlines()]
     names = {record["name"] for record in records}
@@ -158,9 +160,35 @@ for directory in dirs:
     else:
         assert block_ids[0] != 248070 and block_ids[1:] == [248070] * 7, \
             f"invalid proposal block IDs in {directory}: {block_ids}"
+    def int_values(name):
+        record = by_name[name]
+        payload = (directory / record["file"]).read_bytes()
+        fmt = {"i32": "i", "i64": "q"}[record["dtype"]]
+        width = struct.calcsize(fmt)
+        assert len(payload) % width == 0
+        return list(struct.unpack("<" + fmt * (len(payload) // width), payload))
+
+    assert int_values("layer0.attention.tilelang.seq_lens") == [1008]
+    assert int_values("layer0.attention.tilelang.query_start_loc") == [0, 8]
+    assert int_values("layer0.attention.tilelang.prefix_kv_lens") == [1000]
+    policy_path = directory / "tilelang_policy.json"
+    assert policy_path.is_file(), f"missing TileLang policy audit in {directory}"
+    policy = json.loads(policy_path.read_text())
+    assert policy["backend"] == "flash_attn_v100"
+    assert policy["target_verify"] is True
+    assert policy["linear_verify"] is True
+    assert policy["layer_id"] == 0
+    assert policy["query_shape"] == [8, 8, 128]
+    assert policy["sequence_lengths"] == [1008]
+    assert policy["query_start_locations"] == [0, 8]
+    assert policy["prefix_kv_lengths"] == [1000]
+    policies.append(policy)
     for record in records:
         data = directory / record["file"]
         assert data.stat().st_size == record["bytes"]
+canonical = {json.dumps(policy, sort_keys=True) for policy in policies}
+assert len(canonical) == 1, f"TileLang policy differs across TP ranks: {policies}"
+print(f"SGLANG_DFLASH_TILELANG_POLICY_PASS {canonical.pop()}")
 print(f"SGLANG_DFLASH_PARITY_TRACE_PASS ranks={len(dirs)}")
 PY
 

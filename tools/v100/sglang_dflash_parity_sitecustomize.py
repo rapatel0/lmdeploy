@@ -73,6 +73,15 @@ if _TRACE_ROOT:
             return next((item for item in value if isinstance(item, torch.Tensor)), None)
         return None
 
+    def _write_policy(record: dict) -> None:
+        rank = _tp_rank()
+        out = Path(_TRACE_ROOT) / "sglang" / f"rank-{rank}-pid-{os.getpid()}"
+        out.mkdir(parents=True, exist_ok=True)
+        policy = out / "tilelang_policy.json"
+        temporary = out / "tilelang_policy.json.tmp"
+        temporary.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+        temporary.replace(policy)
+
     def _dump(name: str, value, *, last_row: bool = False) -> None:
         global _ordinal
         if name in _seen:
@@ -1054,17 +1063,25 @@ if _TRACE_ROOT:
             )
             batch.spec_info = spec_info
         bonus = getattr(spec_info, "bonus_tokens", None)
-        if spec_info is not None and isinstance(bonus, torch.Tensor) and bonus.numel() == 0:
+        if (
+            spec_info is not None
+            and isinstance(bonus, torch.Tensor)
+            and _request_armed()
+            and not getattr(self, "_parity_anchor_forced", False)
+        ):
             batch_size = len(batch.seq_lens)
-            # For tensor parity, always force the already-audited LMDeploy
-            # anchor so both runtimes execute the identical draft block. The
-            # SGLang target produces 1596 for this prompt, which is useful
-            # evidence but cannot seed a same-input draft comparison.
+            # Force the audited LMDeploy anchor even when SGLang supplies a
+            # nonempty target bonus. The old empty-only condition retained 559
+            # and produced a trace that the strict audit rejected.
             try:
                 anchor = int(os.environ.get("SGLANG_PARITY_ANCHOR_ID", "1144"))
             except ValueError as exc:
                 raise RuntimeError("invalid SGLANG_PARITY_ANCHOR_ID") from exc
-            spec_info.bonus_tokens = torch.full((batch_size,), anchor, dtype=torch.int64, device=batch.seq_lens.device)
+            spec_info.bonus_tokens = torch.full(
+                (batch_size,), anchor, dtype=torch.int64, device=batch.seq_lens.device
+            )
+            self._parity_anchor_forced = True
+            print(f"SGLANG_DFLASH_PARITY_ANCHOR_FORCED token_id={anchor}", flush=True)
         result = _orig_worker_forward_generation(self, batch, on_publish=on_publish)
         next_draft = getattr(result, "next_draft_input", None)
         next_bonus = getattr(next_draft, "bonus_tokens", None)
@@ -1120,7 +1137,9 @@ if _TRACE_ROOT:
                 _dump("layer0.attention.tilelang.output", result)
                 print(
                     f"SGLANG_DFLASH_TILELANG_ABI_CAPTURE context={context_len} "
-                    f"q={tuple(q.shape)} k={tuple(logical_k.shape)}",
+                    f"q={tuple(q.shape)} k={tuple(logical_k.shape)} "
+                    f"causal={kwargs.get('causal')} linear_verify={kwargs.get('linear_verify')} "
+                    f"block_size={kwargs.get('block_size')}",
                     flush=True,
                 )
             except (IndexError, RuntimeError, ValueError) as exc:
@@ -1167,9 +1186,39 @@ if _TRACE_ROOT:
                 _dump("layer0.attention.tilelang.query_start_loc", md.query_start_loc)
                 _dump("layer0.attention.tilelang.prefix_kv_lens", md.prefix_kv_lens)
                 _dump("layer0.attention.tilelang.output", result.reshape_as(q3))
+                resolved_causal, resolved_window = _flash_v100._get_native_paged_attention_params(
+                    layer, md.causal
+                )
+                policy = {
+                    "backend": "flash_attn_v100",
+                    "forward_mode": str(forward_batch.forward_mode),
+                    "target_verify": bool(forward_batch.forward_mode.is_target_verify()),
+                    "layer_id": int(layer.layer_id),
+                    "attention_type": str(layer.attn_type),
+                    "metadata_causal": bool(md.causal),
+                    "resolved_causal": bool(resolved_causal),
+                    "resolved_window_size": int(resolved_window),
+                    "linear_verify": bool(
+                        self._uses_native_linear_verify(forward_batch.forward_mode)
+                    ),
+                    "query_shape": list(q3.shape),
+                    "key_cache_shape": list(k_cache.shape),
+                    "value_cache_shape": list(v_cache.shape),
+                    "page_table_shape": list(md.page_table.shape),
+                    "sequence_lengths": [int(value) for value in md.seq_lens.tolist()],
+                    "query_start_locations": [
+                        int(value) for value in md.query_start_loc.tolist()
+                    ],
+                    "prefix_kv_lengths": [
+                        int(value) for value in md.prefix_kv_lens.tolist()
+                    ],
+                }
+                _write_policy(policy)
                 print(
                     f"SGLANG_DFLASH_TILELANG_BACKEND_CAPTURE context={context_len} "
-                    f"q={tuple(q3.shape)} k={tuple(logical_k.shape)}",
+                    f"q={tuple(q3.shape)} k={tuple(logical_k.shape)} "
+                    f"causal={resolved_causal} attn_type={layer.attn_type} "
+                    f"linear_verify={policy['linear_verify']}",
                     flush=True,
                 )
             except (IndexError, RuntimeError, ValueError) as exc:
