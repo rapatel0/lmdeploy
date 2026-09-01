@@ -1654,9 +1654,6 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                                                    false,
                                                    true};
         params.frozen_kv = anchor_inclusive_frontier;
-        if (fused_context_rope_cache_) {
-            params.fused_context_rope_cache = fused_context_rope_cache_.data<float>();
-        }
         if (i == 0 && ParityActive()) {
             const int q_width = layer->attention->head_num / layer->attention->tp_size * layer->attention->head_dim;
             const int k_width =
