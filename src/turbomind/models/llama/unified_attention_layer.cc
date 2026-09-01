@@ -676,15 +676,17 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
         const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
         return value && value[0] == '1';
     }();
-    const int frontier_adjust = anchor_inclusive_frontier ? -1 : block_size;
+    const bool tilelang_full_block = UseDFlashTileLangDraftAttention();
+    const int  frontier_adjust = tilelang_full_block ? block_size - 1 :
+                                 anchor_inclusive_frontier ? -1 : block_size;
     int       expected_k_sum{};
     int       expected_k_max{};
     for (int i = 0; i < batch_size; ++i) {
         TM_CHECK_GE(committed_seq_lens[i] + frontier_adjust, 0);
-        // The DFlash block includes the freshly generated anchor as row zero,
-        // but SGLang's DFlash attention is frozen-KV: all eight parallel
-        // queries read only the context before that anchor. The corrected
-        // contract is frontier-1. The legacy control remains frontier+block.
+        // committed_seq_lens includes the freshly generated anchor. The audited
+        // TileLang verifier uses the preceding frozen prefix plus all eight
+        // proposal rows, hence frontier + block - 1. The fallback frozen-prefix
+        // contract remains frontier - 1; its legacy control is frontier + block.
         const int expected = committed_seq_lens[i] + frontier_adjust;
         expected_k_sum += expected;
         expected_k_max = std::max(expected_k_max, expected);
