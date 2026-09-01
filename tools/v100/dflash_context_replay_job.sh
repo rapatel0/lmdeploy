@@ -8,26 +8,55 @@ RESULTS=/results/$(date +%Y%m%d_%H%M%S)-dflash-context-replay-${SRC_COMMIT}
 mkdir -p "${RESULTS}"
 exec > >(tee -a "${RESULTS}/console.log") 2>&1
 finish() {
-        rc=$?
-        echo "${rc}" >"${RESULTS}/exit_code"
-        [ -f "${RESULTS}/completed" ] || echo KILLED >"${RESULTS}/incomplete"
-        echo "artifacts in ${RESULTS} (exit ${rc})"
+    rc=$?
+    echo "${rc}" >"${RESULTS}/exit_code"
+    [ -f "${RESULTS}/completed" ] || echo KILLED >"${RESULTS}/incomplete"
+    echo "artifacts in ${RESULTS} (exit ${rc})"
 }
 trap finish EXIT
 
 cat /src/SOURCE_STAMP
 bash /src/tools/v100/build_v100_fast.sh >"${RESULTS}/build.log" 2>&1 || {
-        grep -aE 'error:|Error [0-9]+' "${RESULTS}/build.log" | head -80
-        exit 2
+    grep -aE 'error:|Error [0-9]+' "${RESULTS}/build.log" | head -80
+    exit 2
 }
 WHEEL="$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
 pip install --no-deps --force-reinstall "${WHEEL}" 2>&1 | tail -1
 cd /
 export TM_LOG_LEVEL=INFO
 
-SGLANG_ROOT="${SGLANG_PARITY_ROOT:-/results/20260829_032508-sglang-dflash-parity-b753831db680/trace/sglang}"
+SGLANG_ROOT="${SGLANG_PARITY_ROOT:-}"
+if [ -z "${SGLANG_ROOT}" ]; then
+    SGLANG_ROOT="$(
+        python3 - <<'PY'
+import json
+import pathlib
+
+for root in sorted(pathlib.Path("/results").glob("*-sglang-dflash-parity-*/trace/sglang"), reverse=True):
+    directories = sorted(path for path in root.glob("rank-*-pid-*") if path.is_dir())
+    if len(directories) != 4:
+        continue
+    try:
+        names = []
+        for directory in directories:
+            records = [json.loads(line) for line in (directory / "manifest.jsonl").read_text().splitlines()]
+            names.append({record["name"] for record in records})
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        continue
+    required = {"target.post_layer_residual", "context.fc", "context.norm", "block.ids", "block.positions"}
+    if all(required <= rank_names for rank_names in names):
+        print(root)
+        break
+PY
+    )"
+fi
+[ -n "${SGLANG_ROOT}" ] || {
+    echo "FAIL: no complete TP4 SGLang DFlash parity trace exists" >&2
+    exit 4
+}
+echo "SGLang parity root: ${SGLANG_ROOT}"
 REPLAY_FILE="$(
-        python3 - "${SGLANG_ROOT}" <<'PY'
+    python3 - "${SGLANG_ROOT}" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -71,35 +100,35 @@ PY
 echo "SGLang context replay file: ${REPLAY_FILE}"
 
 run_trace() {
-        local arm=$1
-        local replay=$2
-        mkdir -p "${RESULTS}/${arm}"
-        if [ -n "${replay}" ]; then
-                TM_DFLASH_CONTEXT_REPLAY_FILE="${replay}" \
-                        TM_DFLASH_PARITY_DIR="${RESULTS}/${arm}" \
-                        python3 /job/bench_decode.py \
-                        --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
-                        --num-draft-tokens 7 --speculative-algorithm dflash2 \
-                        --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
-                        --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
-                        --input-tokens 1000 --output-tokens 64 --trials 1 \
-                        --sglang-corpus /sglang-corpus \
-                        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-                        --cache-max-entry-count 0.05 --json-out "${RESULTS}/${arm}.json" \
-                        2>&1 | tee "${RESULTS}/${arm}.log"
-        else
-                TM_DFLASH_PARITY_DIR="${RESULTS}/${arm}" \
-                        python3 /job/bench_decode.py \
-                        --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
-                        --num-draft-tokens 7 --speculative-algorithm dflash2 \
-                        --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
-                        --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
-                        --input-tokens 1000 --output-tokens 64 --trials 1 \
-                        --sglang-corpus /sglang-corpus \
-                        --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
-                        --cache-max-entry-count 0.05 --json-out "${RESULTS}/${arm}.json" \
-                        2>&1 | tee "${RESULTS}/${arm}.log"
-        fi
+    local arm=$1
+    local replay=$2
+    mkdir -p "${RESULTS}/${arm}"
+    if [ -n "${replay}" ]; then
+        TM_DFLASH_CONTEXT_REPLAY_FILE="${replay}" \
+            TM_DFLASH_PARITY_DIR="${RESULTS}/${arm}" \
+            python3 /job/bench_decode.py \
+            --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
+            --num-draft-tokens 7 --speculative-algorithm dflash2 \
+            --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
+            --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
+            --input-tokens 1000 --output-tokens 64 --trials 1 \
+            --sglang-corpus /sglang-corpus \
+            --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
+            --cache-max-entry-count 0.05 --json-out "${RESULTS}/${arm}.json" \
+            2>&1 | tee "${RESULTS}/${arm}.log"
+    else
+        TM_DFLASH_PARITY_DIR="${RESULTS}/${arm}" \
+            python3 /job/bench_decode.py \
+            --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}" --tp "${TP:-4}" \
+            --num-draft-tokens 7 --speculative-algorithm dflash2 \
+            --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}" \
+            --speculative-dflash-block-size 8 --speculative-draft-window 2048 \
+            --input-tokens 1000 --output-tokens 64 --trials 1 \
+            --sglang-corpus /sglang-corpus \
+            --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01 \
+            --cache-max-entry-count 0.05 --json-out "${RESULTS}/${arm}.json" \
+            2>&1 | tee "${RESULTS}/${arm}.log"
+    fi
 }
 
 run_trace native ""
@@ -143,11 +172,11 @@ print("DFLASH_CONTEXT_REPLAY_TP4_TRACE_PASS")
 PY
 
 python3 /job/compare_dflash_parity.py \
-        --lmdeploy "${RESULTS}/native/lmdeploy" --sglang "${SGLANG_ROOT}" \
-        --output "${RESULTS}/native_compare.json" | tee "${RESULTS}/native_compare.log"
+    --lmdeploy "${RESULTS}/native/lmdeploy" --sglang "${SGLANG_ROOT}" \
+    --output "${RESULTS}/native_compare.json" | tee "${RESULTS}/native_compare.log"
 python3 /job/compare_dflash_parity.py \
-        --lmdeploy "${RESULTS}/replay/lmdeploy" --sglang "${SGLANG_ROOT}" \
-        --output "${RESULTS}/replay_compare.json" | tee "${RESULTS}/replay_compare.log"
+    --lmdeploy "${RESULTS}/replay/lmdeploy" --sglang "${SGLANG_ROOT}" \
+    --output "${RESULTS}/replay_compare.json" | tee "${RESULTS}/replay_compare.log"
 
 python3 - "${RESULTS}" <<'PY'
 import json

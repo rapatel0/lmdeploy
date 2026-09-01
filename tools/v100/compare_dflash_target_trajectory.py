@@ -118,9 +118,7 @@ def main() -> int:
         ):
             sg_token = 198
         if lm_token != 198 or sg_token != 198:
-            raise RuntimeError(
-                f"rank {rank} target token mismatch: lm={lm_token} sg={sg_token} expected=198"
-            )
+            raise RuntimeError(f"rank {rank} target token mismatch: lm={lm_token} sg={sg_token} expected=198")
         if lm_metadata.get("token_id") not in (198, -1) or sg_metadata.get("token_id") not in (198, -1):
             raise RuntimeError(
                 f"rank {rank} invalid trajectory token metadata: "
