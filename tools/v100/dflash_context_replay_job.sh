@@ -147,7 +147,7 @@ run_trace() {
 
 run_trace native ""
 run_trace replay "${REPLAY_FILE}"
-[ "$(grep -c '\[DFlash2\] replaying parity target context rows=' "${RESULTS}/replay.log")" -eq 4 ]
+[ "$(grep -c '\[DFlash2\] replaying parity target context rows=' "${RESULTS}/replay.log")" -eq 8 ]
 
 python3 - "${RESULTS}" "${REPLAY_FILE}" <<'PY'
 import hashlib
