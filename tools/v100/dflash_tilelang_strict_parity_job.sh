@@ -67,7 +67,7 @@ with open(sys.argv[2], 'wb') as hidden_out, open(sys.argv[3], 'wb') as anchor_ou
         records = {}
         for row in rows:
             records.setdefault(row['name'], row)
-        hidden = records['layer4.output.hidden']
+        hidden = records['block.final_norm']
         assert hidden['dtype'] == 'f16' and hidden['shape'] == [8, 5120], hidden
         payload = pathlib.Path(root, hidden['file']).read_bytes()
         assert len(payload) == 8 * 5120 * 2
@@ -163,6 +163,7 @@ printf 'full_context=%s\nfull_norm=%s\ninitial_norm=%s\nattention_input=%s\nflat
 mkdir -p "$RESULTS/parity"
 RUN_ENV=(env
     TM_DFLASH_TILELANG_DRAFT_ATTENTION=1
+    TM_DFLASH_LOCAL_TOPK=0
     TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT"
     TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM"
     TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE="$INITIAL_NORM"
