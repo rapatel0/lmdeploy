@@ -139,11 +139,17 @@ def main() -> None:
                     different = int(np.count_nonzero(left.reshape(-1) != right.reshape(-1)))
                 except (TypeError, ValueError) as exc:
                     raise RuntimeError(f"failed to compare ID tensors {lm_name} and {sg_name}") from exc
+                left_flat = left.reshape(-1)
+                right_flat = right.reshape(-1)
+                mismatch_indices = np.flatnonzero(left_flat != right_flat)[:32]
                 row = {
                     "lmdeploy": lm_name,
                     "sglang": sg_name,
                     "status": "match" if equal else "mismatch",
                     "different": different,
+                    "mismatch_indices": mismatch_indices.tolist(),
+                    "lm_values": left_flat[mismatch_indices].tolist(),
+                    "sg_values": right_flat[mismatch_indices].tolist(),
                 }
             else:
                 stats = compare_numeric(left, right)
