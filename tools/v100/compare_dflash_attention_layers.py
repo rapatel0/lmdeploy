@@ -214,6 +214,8 @@ def main() -> int:
                 "proposal_v": (lm_packed_v[-8:], sg_v[-8:]),
                 "sg_cached_proposal_k_vs_backend": (sg_k[-8:], sg_backend_k),
                 "sg_cached_proposal_v_vs_backend": (sg_v[-8:], sg_backend_v),
+                "sg_cached_proposal_k_vs_zero": (sg_k[-8:], np.zeros_like(sg_k[-8:])),
+                "sg_cached_proposal_v_vs_zero": (sg_v[-8:], np.zeros_like(sg_v[-8:])),
                 "cache_k_prefix": (lm_packed_k[:1000], sg_k[:1000]),
                 "cache_v_prefix": (lm_packed_v[:1000], sg_v[:1000]),
                 "core_output": (lm_core, sg_core),

@@ -127,13 +127,20 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
         const int rem = index % kKVElementsPerToken;
         const int head = rem / 128;
         const int dim = rem % 128;
-        // SGLang's linear verifier reads the complete logical K/V span from its
-        // published cache. In particular, the final eight rows are not the
-        // current layer's backend K/V arguments. Preserve that frozen-cache
-        // contract instead of substituting this layer's QKV projection rows.
-        const int source_k_dim = kv_prepacked ? dim : (dim % 64) * 2 + dim / 64;
-        packed_k[index] = flattened_kv[head * flattened_head_stride + token * 128 + source_k_dim];
-        packed_v[index] = flattened_kv[head * flattened_head_stride + flattened_value_offset + token * 128 + dim];
+        // SGLang's linear verifier exposes the eight proposal positions in the
+        // logical key span but does not publish this layer's proposal K/V into
+        // those cache slots. They remain the allocator's zero-filled frontier.
+        // Match that frozen-cache contract instead of substituting current QKV.
+        if (token >= context_len - 8) {
+            packed_k[index] = half{};
+            packed_v[index] = half{};
+        }
+        else {
+            const int source_k_dim = kv_prepacked ? dim : (dim % 64) * 2 + dim / 64;
+            packed_k[index] = flattened_kv[head * flattened_head_stride + token * 128 + source_k_dim];
+            packed_v[index] =
+                flattened_kv[head * flattened_head_stride + flattened_value_offset + token * 128 + dim];
+        }
     }
     for (int page = blockIdx.x * blockDim.x + threadIdx.x; page < (context_len + 15) / 16;
          page += blockDim.x * gridDim.x) {
