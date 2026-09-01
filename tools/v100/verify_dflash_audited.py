@@ -26,6 +26,7 @@ def run(
         model_format="fp8",
         tp=tp,
         max_batch_size=1,
+        session_len=16 * 1024,
         cache_max_entry_count=0.05,
         enable_prefix_caching=False,
         async_=0,
