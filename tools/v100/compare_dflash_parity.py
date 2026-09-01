@@ -106,6 +106,7 @@ def main() -> None:
         [
             ("selector.candidate_ids", "selector.candidate_ids", "ids"),
             ("selector.unary_scores", "selector.unary_scores", "numeric"),
+            ("selector.scores", "selector.scores", "numeric"),
             ("selector.selected_ids", "selector.selected_ids", "ids"),
         ]
     )

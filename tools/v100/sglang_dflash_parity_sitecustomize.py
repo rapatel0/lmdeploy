@@ -923,6 +923,9 @@ if _TRACE_ROOT:
     _orig_sample = _df.CandidateSelector.sample_path
 
     def _traced_sample(self, **kwargs):
+        scores = kwargs.get("scores")
+        if scores is not None:
+            _dump("selector.scores", scores)
         tokens, q_rows = _orig_sample(self, **kwargs)
         _dump("selector.selected_ids", tokens)
         _dump("selector.realized_probabilities", q_rows)
