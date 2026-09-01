@@ -206,6 +206,10 @@ struct LlamaLinear::Impl {
             const char* value = std::getenv("TM_DFLASH_GATE_UP_TORCH_LAYOUT");
             return value && value[0] == '1';
         }();
+        static const bool dflash_context_fc_torch_layout = [] {
+            const char* value = std::getenv("TM_DFLASH_CONTEXT_FC_TORCH_LAYOUT");
+            return value && value[0] == '1';
+        }();
         const bool dflash_torch_fp16_shape =
             ((weight.input_dim == 768 || weight.input_dim == 1024) && weight.output_dim == 5120)
             || (weight.input_dim == 5120
@@ -215,7 +219,9 @@ struct LlamaLinear::Impl {
             || (weight.input_dim == 25600 && weight.output_dim == 5120);
         const bool use_dflash_torch_layout = dflash_qkv_torch_layout
                                              || (dflash_gate_up_torch_layout && weight.input_dim == 5120
-                                                 && weight.output_dim == 8704);
+                                                 && weight.output_dim == 8704)
+                                             || (dflash_context_fc_torch_layout && weight.input_dim == 25600
+                                                 && weight.output_dim == 5120);
         const bool direct_torch_qkv = use_dflash_torch_layout && !offsets && !indices && dflash_torch_fp16_shape
                                       && desc_A.type == kHalf && desc_B.type == kHalf && desc_D.type == kHalf
                                       && desc_B.order == kColMajor;
