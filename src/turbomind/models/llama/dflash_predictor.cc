@@ -1046,13 +1046,8 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
     Buffer_<int> block_ids = persistent_workspace_ ?
                                  workspaces_.at(phase).block_ids.slice(0, (ssize_t)batch_size * weights_.block_size) :
                                  Buffer_<int>{(ssize_t)batch_size * weights_.block_size, kDEVICE};
-    Buffer_<int> block_anchors = anchors;
-    if (const auto* value = env.try_("dflash_block_anchors")) {
-        block_anchors = value->buffer().view<int>();
-        TM_CHECK_EQ(block_anchors.size(), anchors.size());
-    }
     invokeBuildDFlashBlock(block_ids,
-                           block_anchors,
+                           anchors,
                            weights_.block_size,
                            weights_.mask_token_id,
                            core::Context::stream().handle());

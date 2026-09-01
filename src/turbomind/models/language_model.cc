@@ -103,7 +103,6 @@ struct LanguageModel::Impl {
     State sequence_length_;  // length of known tokens
     // immutable state
     Buffer_<int> autoreg_ids_;
-    Buffer_<int> dflash_anchor_ids_;
     // Buffer_<int> autoreg_ids_offsets_;
 
     // Symmetric buffer for holding global hidden states or logits
@@ -541,8 +540,7 @@ LanguageModel::Impl::Impl(
     finished_buf_        = {engine.max_batch_size, kCPUpinned};
     finished_     = {{engine.max_batch_size}, kBool, kDEVICE};
 
-    autoreg_ids_      = {engine.max_batch_size, kDEVICE};
-    dflash_anchor_ids_ = {engine.max_batch_size, kDEVICE};
+    autoreg_ids_ = {engine.max_batch_size, kDEVICE};
     // autoreg_ids_offsets_ = {engine.max_batch_size + 1, kCPU};
     // std::fill_n(autoreg_ids_offsets_.data(), autoreg_ids_offsets_.size(), 0);
 
@@ -1839,38 +1837,6 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         << "the drafts snapshot and the autoregres snapshot disagree";
 
     if (d.n_generating) {
-        static const bool sglang_input_anchor = [] {
-            const char* value = std::getenv("TM_DFLASH_SGLANG_INPUT_ANCHOR");
-            return value && value[0] == '1';
-        }();
-        if (dflash_predictor_ && sglang_input_anchor) {
-            Buffer_<int>    block_anchors = dflash_anchor_ids_.slice(0, d.rows.size());
-            std::vector<int> host_anchors(d.rows.size());
-            for (size_t i = 0; i < d.rows.size(); ++i) {
-                // Data::seq_lens describes the scheduled key span and may
-                // include a reserved output slot. Sequence::seq_len is the
-                // authoritative committed host frontier before sampling.
-                TM_CHECK_GT(d.rows[i]->seq_len, 0);
-                host_anchors[i] = d.rows[i]->token_ids[d.rows[i]->seq_len - 1];
-            }
-            TM_CUDA_CHECK(cudaMemcpyAsync(block_anchors.data(),
-                                          host_anchors.data(),
-                                          host_anchors.size() * sizeof(int),
-                                          cudaMemcpyHostToDevice,
-                                          core::Context::stream().handle()));
-            core::Context::stream().Sync();
-            if (std::getenv("TM_DFLASH_PARITY_DIR")) {
-                for (size_t i = 0; i < d.rows.size(); ++i) {
-                    TM_LOG_INFO("DFLASH_BLOCK_ANCHOR_SOURCE uid={} committed_len={} scheduled_len={} prompt_len={} input_len={} token={}",
-                                (long)d.uids[i],
-                                d.rows[i]->seq_len,
-                                d.seq_lens[i],
-                                d.rows[i]->prompt_len,
-                                d.input_lens[i],
-                                host_anchors[i]);
-                }
-            }
-        }
         generation_->Run(BatchOp::kForward, phase, env);
         Copy(env.at("output_ids").buffer(), autoreg_ids_);
 
@@ -1996,27 +1962,6 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
     }
 
     auto anchors = autoreg_ids_.slice(0, bsz);
-    static const bool sglang_input_anchor = [] {
-        const char* value = std::getenv("TM_DFLASH_SGLANG_INPUT_ANCHOR");
-        return value && value[0] == '1';
-    }();
-    if (sglang_input_anchor) {
-        Buffer_<int> block_anchors = dflash_anchor_ids_.slice(0, bsz);
-        if (after_rollback) {
-            core::Copy(anchors, block_anchors);
-        }
-        if (std::getenv("TM_DFLASH_PARITY_DIR") && bsz == 1) {
-            Buffer_<int> host_anchor{1, kCPU};
-            core::Copy(block_anchors, host_anchor);
-            core::Context::stream().Sync();
-            TM_LOG_INFO("DFLASH_BLOCK_ANCHOR_CONSUME uid={} after_rollback={} committed_tip={} token={}",
-                        (long)d.uids[0],
-                        (int)after_rollback,
-                        (*tips)[0],
-                        host_anchor[0]);
-        }
-        env.produce("dflash_block_anchors", std::move(block_anchors));
-    }
     if (bsz == 1 && K == 7) {
         dflash_predictor_->BeginParityBlock(anchors, d.uids[0], (*tips)[0], d.input_lens[0]);
     }
