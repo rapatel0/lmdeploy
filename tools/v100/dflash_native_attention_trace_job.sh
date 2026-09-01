@@ -106,6 +106,12 @@ python3 /job/compare_dflash_attention_layers.py \
     --lmdeploy "$RESULTS/parity/lmdeploy" \
     --sglang "$SG" \
     --output "$RESULTS/all_layer_attention.json" | tee "$RESULTS/all_layer_attention.log"
+if [ -f /job/compare_dflash_parity.py ]; then
+    python3 /job/compare_dflash_parity.py \
+        --lmdeploy "$RESULTS/parity/lmdeploy" \
+        --sglang "$SG" \
+        --output "$RESULTS/all_layer_model_parity.json" | tee "$RESULTS/all_layer_model_parity.log"
+fi
 
 touch "$RESULTS/completed"
 echo DFLASH_NATIVE_ATTENTION_TRACE_COMPLETE
