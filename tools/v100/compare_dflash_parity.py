@@ -93,6 +93,7 @@ def main() -> None:
                 # layer; TurboMind reports the same boundary as attention.norm.
                 (f"{prefix}.attention.norm_output", f"{prefix}.mlp.norm_output", "numeric"),
                 (f"{prefix}.mlp.gate_up", f"{prefix}.mlp.gate_up", "numeric"),
+                (f"{prefix}.mlp.activated", f"{prefix}.mlp.activated", "numeric"),
                 (f"{prefix}.mlp.w2_local", f"{prefix}.mlp.down_local", "numeric"),
                 (f"{prefix}.mlp.conv_delta", f"{prefix}.mlp.conv_delta", "right_half"),
                 (f"{prefix}.mlp.conv_side0", f"{prefix}.mlp.conv_side0", "numeric"),
