@@ -23,20 +23,28 @@ pip install --no-deps --force-reinstall "$WHEEL" 2>&1 | tail -1
 SG_ROOT=$(
  python3 - <<'PY'
 import array,json,pathlib
-expected=[1144]+[248070]*7
 matches=[]
 for root in pathlib.Path('/results').glob('*-sglang-dflash-parity-*/trace/sglang'):
  ds=sorted(p for p in root.glob('rank-*-pid-*') if p.is_dir())
  if len(ds)!=4:continue
  try:
-  records=[{x['name']:x for x in map(json.loads,(d/'manifest.jsonl').read_text().splitlines())} for d in ds]
-  if not all('layer0.input.hidden_pre_norm' in r for r in records):continue
+  records=[]
+  for d in ds:
+   rows=list(map(json.loads,(d/'manifest.jsonl').read_text().splitlines()))
+   names=[x['name'] for x in rows]
+   if len(names)!=len(set(names)):raise ValueError('duplicate records')
+   records.append({x['name']:x for x in rows})
+  if not all('layer0.input.hidden_pre_norm' in r and 'target.next_token_top16_ids' in r for r in records):continue
   ids=[]
   for d,r in zip(ds,records):
-   x=r['block.ids'];code='q' if x['dtype']=='i64' else 'i';v=array.array(code);v.frombytes((d/x['file']).read_bytes());ids.append(list(v))
-  if all(v==expected for v in ids):matches.append(root)
+   x=r['block.ids'];code='q' if x['dtype']=='i64' else 'i';v=array.array(code);v.frombytes((d/x['file']).read_bytes());block=list(v)
+   top=r['target.next_token_top16_ids'];t=array.array('q');t.frombytes((d/top['file']).read_bytes())
+   if block != [int(t[0])]+[248070]*7:raise ValueError((block,int(t[0])))
+   if x.get('draft_block_index')!=x.get('capture_block_index'):raise ValueError(x)
+   ids.append(block)
+  if all(v==ids[0] for v in ids):matches.append(root)
  except Exception:continue
-assert matches,'no complete SGLang detailed trace has the audited block IDs'
+assert matches,'no complete native SGLang trace has a target-correlated block'
 print(sorted(matches)[-1])
 PY
 )
