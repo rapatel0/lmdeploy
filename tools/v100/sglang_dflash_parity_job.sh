@@ -149,90 +149,9 @@ kill -KILL -- "-${server_pid}" 2>/dev/null || true
 wait "${server_pid}" 2>/dev/null || true
 server_pid=
 
-python3 - "${RESULTS}/trace/sglang" <<'PY'
-import json
-import math
-import os
-import pathlib
-import struct
-import sys
-root = pathlib.Path(sys.argv[1])
-dirs = sorted(path for path in root.glob("rank-*-pid-*") if path.is_dir())
-assert len(dirs) == 4, f"expected four TP trace directories, got {dirs}"
-required = {
-    "target.post_layer_residual", "context.fc", "context.norm",
-    "block.ids", "block.embedding", "layer0.attention.conv_side0",
-    "layer4.output.hidden", "selector.candidate_ids", "selector.unary_scores",
-    "selector.score_lattice", "selector.selected_ids",
-    "layer0.attention.tilelang.q", "layer0.attention.tilelang.k",
-    "layer0.attention.tilelang.v", "layer0.attention.tilelang.output",
-    "layer0.attention.tilelang.block_table", "layer0.attention.tilelang.seq_lens",
-    "layer0.attention.tilelang.query_start_loc", "layer0.attention.tilelang.prefix_kv_lens",
-}
-policies = []
-for directory in dirs:
-    records = [json.loads(line) for line in (directory / "manifest.jsonl").read_text().splitlines()]
-    names = {record["name"] for record in records}
-    assert required <= names, f"missing {sorted(required - names)} from {directory}"
-    by_name = {record["name"]: record for record in records}
-    block_record = by_name["block.ids"]
-    block_payload = (directory / block_record["file"]).read_bytes()
-    assert block_record["dtype"] == "i64" and len(block_payload) == 64
-    block_ids = list(struct.unpack("<8q", block_payload))
-    block_index = int(os.environ.get("SGLANG_DFLASH_PARITY_BLOCK_INDEX", "1"))
-    if block_index == 1:
-        expected_ids = [1144] + [248070] * 7
-        assert block_ids == expected_ids, f"non-audited block IDs in {directory}: {block_ids}"
-    else:
-        assert block_ids[0] != 248070 and block_ids[1:] == [248070] * 7, \
-            f"invalid proposal block IDs in {directory}: {block_ids}"
-    def int_values(name):
-        record = by_name[name]
-        payload = (directory / record["file"]).read_bytes()
-        fmt = {"i32": "i", "i64": "q"}[record["dtype"]]
-        width = struct.calcsize(fmt)
-        assert len(payload) % width == 0
-        return list(struct.unpack("<" + fmt * (len(payload) // width), payload))
-
-    assert int_values("layer0.attention.tilelang.seq_lens") == [1008]
-    assert int_values("layer0.attention.tilelang.query_start_loc") == [0, 8]
-    assert int_values("layer0.attention.tilelang.prefix_kv_lens") == [1000]
-    policy_path = directory / "tilelang_policy.json"
-    assert policy_path.is_file(), f"missing TileLang policy audit in {directory}"
-    policy = json.loads(policy_path.read_text())
-    assert policy["backend"] == "flash_attn_v100"
-    assert policy["target_verify"] is True
-    assert policy["linear_verify"] is True
-    assert policy["layer_id"] == 0
-    assert policy["attention_type"].endswith("DECODER")
-    assert policy["metadata_causal"] is False
-    assert policy["resolved_causal"] is False
-    assert policy["resolved_window_size"] == -1
-    assert policy["block_size"] == 16
-    assert math.isclose(policy["softmax_scale"], 0.08838834764831845)
-    assert policy["query_dtype"] == "torch.float16"
-    assert policy["key_cache_dtype"] == "torch.float16"
-    assert policy["value_cache_dtype"] == "torch.float16"
-    assert policy["query_shape"] == [8, 8, 128]
-    assert policy["query_stride"] == [1024, 128, 1]
-    assert policy["key_cache_shape"][1:] == [16, 2, 128]
-    assert policy["key_cache_stride"][1:] == [256, 128, 1]
-    assert policy["value_cache_shape"] == policy["key_cache_shape"]
-    assert policy["value_cache_stride"] == policy["key_cache_stride"]
-    assert policy["page_table_shape"] == [1, 1024]
-    assert policy["page_table_stride"] == [1024, 1]
-    assert policy["sequence_lengths"] == [1008]
-    assert policy["query_start_locations"] == [0, 8]
-    assert policy["prefix_kv_lengths"] == [1000]
-    policies.append(policy)
-    for record in records:
-        data = directory / record["file"]
-        assert data.stat().st_size == record["bytes"]
-canonical = {json.dumps(policy, sort_keys=True) for policy in policies}
-assert len(canonical) == 1, f"TileLang policy differs across TP ranks: {policies}"
-print(f"SGLANG_DFLASH_TILELANG_POLICY_PASS {canonical.pop()}")
-print(f"SGLANG_DFLASH_PARITY_TRACE_PASS ranks={len(dirs)}")
-PY
+python3 /job/validate_sglang_dflash_trace.py \
+    "${RESULTS}/trace/sglang" \
+    --block-index "${SGLANG_DFLASH_PARITY_BLOCK_INDEX:-1}"
 
 LM_PARITY_REF=${LM_DFLASH_PARITY_REF:-}
 if [ -z "${LM_PARITY_REF}" ]; then
