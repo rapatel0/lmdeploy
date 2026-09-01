@@ -109,6 +109,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=pathlib.Path)
     parser.add_argument("--block-index", type=int, default=1)
+    parser.add_argument("--expected-anchor", type=int)
     args = parser.parse_args()
     if args.block_index < 1:
         raise SystemExit("--block-index is 1-based")
@@ -116,7 +117,7 @@ def main() -> None:
     directories = sorted(path for path in args.root.glob("rank-*-pid-*") if path.is_dir())
     assert len(directories) == 4, f"expected four TP trace directories, got {directories}"
     policies: list[dict] = []
-    expected_ids = [1144] + [248070] * 7
+    audited_anchors: list[int] = []
 
     for directory in directories:
         records = _load_manifest(directory / "manifest.jsonl")
@@ -144,14 +145,17 @@ def main() -> None:
                 assert record["dtype"] == "f16", record
                 assert record["shape"] == shape, record
 
-        block_record = by_name["block.ids"]
-        assert block_record.get("draft_block_index") == args.block_index, block_record
-        block_ids = _integer_values(directory, block_record)
-        assert block_ids == expected_ids, f"non-audited block IDs in {directory}: {block_ids}"
-
         logits = by_name["target.next_token_logits"]
         top_ids = by_name["target.next_token_top16_ids"]
         top_values = by_name["target.next_token_top16_values"]
+        target_top_ids = _integer_values(directory, top_ids)
+        expected_anchor = args.expected_anchor if args.expected_anchor is not None else target_top_ids[0]
+        block_record = by_name["block.ids"]
+        assert block_record.get("draft_block_index") == args.block_index, block_record
+        block_ids = _integer_values(directory, block_record)
+        expected_ids = [expected_anchor] + [248070] * 7
+        assert block_ids == expected_ids, f"non-audited block IDs in {directory}: {block_ids} != {expected_ids}"
+        audited_anchors.append(expected_anchor)
         assert logits["dtype"] in {"f16", "f32"} and logits["shape"] == [1, 248320], logits
         assert top_ids["dtype"] == "i64" and top_ids["shape"] == [16], top_ids
         assert top_values["dtype"] == "f32" and top_values["shape"] == [16], top_values
@@ -172,8 +176,12 @@ def main() -> None:
 
     canonical = {json.dumps(policy, sort_keys=True) for policy in policies}
     assert len(canonical) == 1, f"TileLang policy differs across TP ranks: {policies}"
+    assert len(set(audited_anchors)) == 1, f"target anchors differ across TP ranks: {audited_anchors}"
     print(f"SGLANG_DFLASH_TILELANG_POLICY_PASS {canonical.pop()}")
-    print(f"SGLANG_DFLASH_PARITY_TRACE_PASS ranks={len(directories)} block_index={args.block_index}")
+    print(
+        f"SGLANG_DFLASH_PARITY_TRACE_PASS ranks={len(directories)} "
+        f"block_index={args.block_index} anchor={audited_anchors[0]}"
+    )
 
 
 if __name__ == "__main__":

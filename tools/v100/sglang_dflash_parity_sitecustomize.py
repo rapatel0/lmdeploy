@@ -1096,26 +1096,25 @@ if _TRACE_ROOT:
             )
             batch.spec_info = spec_info
         bonus = getattr(spec_info, "bonus_tokens", None)
+        forced_anchor = os.environ.get("SGLANG_PARITY_ANCHOR_ID", "").strip()
         if (
-            spec_info is not None
+            forced_anchor
+            and spec_info is not None
             and isinstance(bonus, torch.Tensor)
             and _request_armed()
             and not getattr(self, "_parity_anchor_forced", False)
         ):
             batch_size = len(batch.seq_lens)
-            # Force the audited LMDeploy anchor even when SGLang supplies a
-            # nonempty target bonus. The old empty-only condition retained 559
-            # and produced a trace that the strict audit rejected.
             try:
-                anchor = int(os.environ.get("SGLANG_PARITY_ANCHOR_ID", "1144"))
+                anchor = int(forced_anchor)
             except ValueError as exc:
                 raise RuntimeError("invalid SGLANG_PARITY_ANCHOR_ID") from exc
             bonus_view = spec_info.bonus_tokens.view(-1)
             if bonus_view.numel() < batch_size:
                 raise RuntimeError(f"DFLASH bonus tensor has {bonus_view.numel()} rows for batch {batch_size}")
-            # Mutate the live state tensor in place. Replacing the field leaves
-            # already-published scheduler/CUDA references pointing at the old
-            # sampled token, which produced a misleading non-1144 trace.
+            # Explicit diagnostic mode only. Production parity leaves the live
+            # SGLang target bonus untouched and correlates the block with the
+            # prompt-frontier target logits captured above.
             bonus_view[:batch_size].fill_(anchor)
             self._parity_anchor_forced = True
             print(f"SGLANG_DFLASH_PARITY_ANCHOR_FORCED token_id={anchor}", flush=True)
