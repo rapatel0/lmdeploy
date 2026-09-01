@@ -814,7 +814,7 @@ void invokeDFlashGreedySelector(Buffer_<int>&       output,
     TM_CHECK_EQ(successor_codebook.shape(1), rank);
     static const float transition_scale = [] {
         const char* value = std::getenv("TM_DFLASH_SELECTOR_TRANSITION_SCALE");
-        return value && value[0] ? std::strtof(value, nullptr) : 2.f;
+        return value && value[0] ? std::strtof(value, nullptr) : 1.f;
     }();
     TM_CHECK(std::isfinite(transition_scale));
     if (trace_scores) {
