@@ -79,15 +79,31 @@ def main() -> None:
             lm_map = {integer(token): index for index, token in enumerate(lm_ids[slot])}
             sg_map = {integer(token): index for index, token in enumerate(sg_ids[slot])}
             common = sorted(lm_map.keys() & sg_map.keys())
+            row_score_lm, row_score_sg = [], []
+            row_unary_lm, row_unary_sg = [], []
+            row_transition_lm, row_transition_sg = [], []
             for token in common:
                 li, si = lm_map[token], sg_map[token]
-                score_lm.append(lm_walked[slot, li])
-                score_sg.append(sg_walked[si])
-                unary_lm.append(lm_unary[slot, li])
-                unary_sg.append(sg_unary[slot, si])
-                transition_lm.append(lm_walked[slot, li] - lm_unary[slot, li])
-                transition_sg.append(sg_walked[si] - sg_unary[slot, si])
-            rows.append({"slot": slot, "common": len(common), "predecessor_index": predecessor_index})
+                row_score_lm.append(lm_walked[slot, li])
+                row_score_sg.append(sg_walked[si])
+                row_unary_lm.append(lm_unary[slot, li])
+                row_unary_sg.append(sg_unary[slot, si])
+                row_transition_lm.append(lm_walked[slot, li] - lm_unary[slot, li])
+                row_transition_sg.append(sg_walked[si] - sg_unary[slot, si])
+            score_lm.extend(row_score_lm)
+            score_sg.extend(row_score_sg)
+            unary_lm.extend(row_unary_lm)
+            unary_sg.extend(row_unary_sg)
+            transition_lm.extend(row_transition_lm)
+            transition_sg.extend(row_transition_sg)
+            rows.append({
+                "slot": slot,
+                "common": len(common),
+                "predecessor_index": predecessor_index,
+                "score": fit(np.asarray(row_score_lm), np.asarray(row_score_sg)),
+                "unary": fit(np.asarray(row_unary_lm), np.asarray(row_unary_sg)),
+                "transition": fit(np.asarray(row_transition_lm), np.asarray(row_transition_sg)),
+            })
             if slot < 6:
                 matches = np.flatnonzero(sg_ids[slot] == selected[slot])
                 if matches.size != 1:
