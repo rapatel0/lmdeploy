@@ -55,12 +55,17 @@ for directory in dirs:
     features = [item for item in records if item["name"] == "target.prompt_features"]
     assert len(features) == 1 and features[0]["shape"] == [5, 5120], (directory, features)
     assert (directory / features[0]["file"]).stat().st_size == 5 * 5120 * 2
+    logits = [item for item in records if item["name"] == "target.next_token_logits"]
+    assert len(logits) == 1 and logits[0]["dtype"] == "f16", (directory, logits)
+    assert logits[0]["shape"] == [1, 248320], (directory, logits)
+    assert (directory / logits[0]["file"]).stat().st_size == 248320 * 2
 print(f"DFLASH_TARGET_TRAJECTORY_TRACE_PASS ranks={len(dirs)}")
 PY
 
 SG_REF=""
 while IFS= read -r candidate; do
-    if grep -q 'target.prompt_features' "${candidate}"/rank-*/manifest.jsonl 2>/dev/null; then
+    if grep -q 'target.prompt_features' "${candidate}"/rank-*/manifest.jsonl 2>/dev/null \
+        && grep -q 'target.next_token_logits' "${candidate}"/rank-*/manifest.jsonl 2>/dev/null; then
         SG_REF="${candidate}"
         break
     fi
@@ -72,6 +77,9 @@ done < <(find /results -maxdepth 4 -type d -path '*-sglang-dflash-parity-*/trace
 python3 /job/compare_dflash_target_features.py \
     --lmdeploy "${RESULTS}/parity/target-prompt/lmdeploy" --sglang "${SG_REF}" \
     --output "${RESULTS}/target_features.json" | tee "${RESULTS}/target_features.log"
+python3 /job/compare_dflash_target_logits.py \
+    --lmdeploy "${RESULTS}/parity/target-prompt/lmdeploy" --sglang "${SG_REF}" \
+    --output "${RESULTS}/target_logits.json" | tee "${RESULTS}/target_logits.log"
 
 TM_DFLASH_TARGET_TRAJECTORY=0 \
     python3 /job/verify_dflash_audited.py \

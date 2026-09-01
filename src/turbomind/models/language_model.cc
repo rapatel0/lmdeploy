@@ -1810,6 +1810,52 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
 
     output_processor_->OutputHiddenStatesAndLogits(phase, env, 1);
 
+    // Persist the exact prompt-frontier logits before sampling. The target
+    // trajectory writer records the arithmetic input to the LM head, but the
+    // first cross-runtime token already differs. This row identifies whether
+    // that divergence starts in the LM head or in the sampled-token lifecycle.
+    static bool target_prompt_logits_written = false;
+    const char* target_logits_root = std::getenv("TM_DFLASH_TARGET_PARITY_DIR");
+    if (!target_prompt_logits_written && target_logits_root && target_logits_root[0]
+        && d.rows.size() == 1 && d.input_lens[0] == 1000 && !spec_verify
+        && !unified_decoder_->is_warm_up()) {
+        const Tensor& logits = env.at("logits");
+        TM_CHECK_EQ(logits.dtype(), kHalf);
+        TM_CHECK_EQ(logits.ndim(), 2);
+        TM_CHECK_EQ(logits.shape(0), 1);
+        Tensor host_logits{logits.layout(), logits.dtype(), kCPU};
+        Copy(logits, host_logits);
+        core::Context::stream().Sync();
+
+        const auto dir = std::filesystem::path(target_logits_root) / "target-prompt" / "lmdeploy"
+                         / ("rank-" + std::to_string(tp_rank_) + "-pid-"
+                            + std::to_string((long long)getpid()));
+        TM_CHECK(std::filesystem::is_directory(dir))
+            << "target trajectory directory is missing before logits capture: " << dir.string();
+        const std::string logits_file = "000004-target.next_token_logits.bin";
+        {
+            std::ofstream out{dir / logits_file, std::ios::binary};
+            TM_CHECK(out) << "cannot open target logits output";
+            out.write((const char*)host_logits.raw_data(), host_logits.byte_size());
+            TM_CHECK(out) << "cannot write target logits output";
+        }
+        std::ofstream manifest{dir / "manifest.jsonl", std::ios::out | std::ios::app};
+        TM_CHECK(manifest) << "cannot append target logits manifest";
+        manifest << "{\"runtime\":\"lmdeploy\",\"ordinal\":4,\"stage\":\"target\","
+                 << "\"name\":\"target.next_token_logits\",\"dtype\":\"f16\",\"shape\":[1,"
+                 << logits.shape(1) << "],\"byte_order\":\"little\",\"bytes\":"
+                 << host_logits.byte_size() << ",\"file\":\"" << logits_file
+                 << "\",\"tp_rank\":" << tp_rank_ << ",\"position\":999,\"input_length\":1000}\n";
+        manifest.flush();
+        TM_CHECK(manifest) << "cannot write target logits manifest";
+        target_prompt_logits_written = true;
+        TM_LOG_INFO("[DFlash2] target prompt logits wrote rank={} shape={}x{} to {}",
+                    tp_rank_,
+                    logits.shape(0),
+                    logits.shape(1),
+                    dir.string());
+    }
+
     // On a verification step the sampler must not run.
     //
     // Generation::Forward samples one token per row and advances seq_len by
