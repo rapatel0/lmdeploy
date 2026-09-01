@@ -104,6 +104,9 @@ def main() -> int:
             }
             required_sg = {
                 f"{prefix}.qkv_projection",
+                f"{prefix}.backend_q",
+                f"{prefix}.backend_k",
+                f"{prefix}.backend_v",
                 f"{prefix}.tilelang.q",
                 f"{prefix}.tilelang.k",
                 f"{prefix}.tilelang.v",
@@ -118,6 +121,9 @@ def main() -> int:
             lm_projection = load(lm_root, lm, f"{prefix}.qkv_projection").reshape(8, 1536)
             lm_post = load(lm_root, lm, f"{prefix}.qkv_post_process").reshape(8, 1536)
             sg_projection = load(sg_root, sg, f"{prefix}.qkv_projection").reshape(8, 1536)
+            sg_backend_q = load(sg_root, sg, f"{prefix}.backend_q").reshape(8, 1024)
+            sg_backend_k = load(sg_root, sg, f"{prefix}.backend_k").reshape(8, 2, 128)
+            sg_backend_v = load(sg_root, sg, f"{prefix}.backend_v").reshape(8, 2, 128)
             sg_q = load(sg_root, sg, f"{prefix}.tilelang.q").reshape(8, 1024)
             sg_k = load(sg_root, sg, f"{prefix}.tilelang.k").reshape(-1, 2, 128)
             sg_v = load(sg_root, sg, f"{prefix}.tilelang.v").reshape(-1, 2, 128)
@@ -134,10 +140,10 @@ def main() -> int:
                 "lm_q_post_vs_pre": (lm_post[:, :1024], lm_projection[:, :1024]),
                 "lm_k_post_vs_pre": (lm_post[:, 1024:1280], lm_projection[:, 1024:1280]),
                 "lm_v_post_vs_pre": (lm_post[:, 1280:1536], lm_projection[:, 1280:1536]),
-                "sg_proposal_v_vs_projection": (sg_projection[:, 1280:1536], sg_v[-8:].reshape(8, 256)),
-                "q_rotated": (lm_packed_q, sg_q),
-                "proposal_k": (lm_packed_k[-8:], sg_k[-8:]),
-                "proposal_v": (lm_packed_v[-8:], sg_v[-8:]),
+                "sg_backend_q_vs_tilelang_q": (sg_backend_q, sg_q),
+                "q_rotated": (lm_packed_q, sg_backend_q),
+                "proposal_k": (lm_packed_k[-8:], sg_backend_k),
+                "proposal_v": (lm_packed_v[-8:], sg_backend_v),
                 "cache_k_prefix": (lm_packed_k[:1000], sg_k[:1000]),
                 "cache_v_prefix": (lm_packed_v[:1000], sg_v[:1000]),
                 "core_output": (load(lm_root, lm, f"{prefix}.core_output"), sg_output),
