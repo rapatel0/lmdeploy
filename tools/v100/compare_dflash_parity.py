@@ -29,7 +29,13 @@ def load_rank(root: Path, prefix: str, rank: int = 0):
             record = json.loads(line)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"invalid manifest JSON at {directory}:{line_number}") from exc
-        records[record["name"]] = record
+        name = record["name"]
+        if name in records:
+            raise RuntimeError(
+                f"duplicate manifest record {name!r} at {directory}:{line_number}; "
+                "select one correlated capture group before comparison"
+            )
+        records[name] = record
     return directory, records
 
 

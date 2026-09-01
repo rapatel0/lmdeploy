@@ -13,6 +13,7 @@ from pathlib import Path
 
 _TRACE_ROOT = os.environ.get("SGLANG_DFLASH_PARITY_DIR", "")
 if _TRACE_ROOT:
+    import sglang.srt.layers.logits_processor as _logits_processor
     import sglang.srt.models.dflash as _df
     import torch
 
@@ -29,6 +30,7 @@ if _TRACE_ROOT:
     except (TypeError, ValueError):
         _capture_block_index = 1
     _draft_blocks_seen = 0
+    _active_draft_block_index = 0
     _capture_enabled = _capture_block_index == 1
     try:
         _target_position = int(os.environ.get("SGLANG_DFLASH_TARGET_POSITION", "999"))
@@ -154,6 +156,8 @@ if _TRACE_ROOT:
             "file": filename,
             "tp_rank": rank,
             "tp_size": _safe_int(os.environ.get("WORLD_SIZE"), 4),
+            "capture_block_index": _capture_block_index,
+            "draft_block_index": _active_draft_block_index,
         }
         if name in {"target.trajectory", "target.trajectory_dtypes"}:
             record.update(
@@ -376,6 +380,20 @@ if _TRACE_ROOT:
         return _orig_target_model_forward(self, *args, **kwargs)
 
     _q35.Qwen3_5ForCausalLM.forward = _traced_target_model_forward
+
+    _orig_get_logits = _logits_processor.LogitsProcessor._get_logits
+
+    def _traced_get_logits(self, hidden_states, lm_head, logits_metadata, embedding_bias=None):
+        logits = _orig_get_logits(self, hidden_states, lm_head, logits_metadata, embedding_bias)
+        if _armed() and _target_row >= 0 and _target_input_rows >= 1000:
+            _dump("target.next_token_logits", logits, last_row=True)
+            if "target.next_token_top16_ids" not in _seen:
+                values, ids = torch.topk(logits.detach().reshape(-1, logits.shape[-1])[-1].float(), k=16)
+                _dump("target.next_token_top16_ids", ids)
+                _dump("target.next_token_top16_values", values)
+        return logits
+
+    _logits_processor.LogitsProcessor._get_logits = _traced_get_logits
 
     # ModelRunner.forward is the live target entry even when TorchDynamo has
     # compiled past the Python Qwen model wrapper. Patch the external class
@@ -1019,12 +1037,13 @@ if _TRACE_ROOT:
         original_forward = self.draft_model_runner.forward
 
         def _traced_draft_forward(forward_batch, *forward_args, **forward_kwargs):
-            global _capture_enabled, _draft_blocks_seen, _graph_flushed
-            if _armed():
+            global _active_draft_block_index, _capture_enabled, _draft_blocks_seen, _graph_flushed
+            current_block = _draft_blocks_seen + 1 if _request_armed() else 0
+            selected_block = current_block == _capture_block_index
+            if selected_block:
+                _active_draft_block_index = current_block
                 # These are the live inputs staged by DFlashWorkerV2 for this
                 # exact audited replay, not CUDA-graph capture placeholders.
-                # Remove any same-name startup artifact so the manifest's last
-                # record is guaranteed to describe this request.
                 for name, value in (
                     ("block.ids", getattr(forward_batch, "input_ids", None)),
                     ("block.positions", getattr(forward_batch, "positions", None)),
@@ -1038,8 +1057,8 @@ if _TRACE_ROOT:
                 if _draft_blocks_seen >= _capture_block_index - 1:
                     _capture_enabled = True
             if (
-                _armed()
-                and _draft_blocks_seen >= _capture_block_index
+                selected_block
+                and _armed()
                 and _graph_refs
                 and not _graph_flushed
                 and bool(getattr(output, "can_run_graph", False))
@@ -1047,6 +1066,8 @@ if _TRACE_ROOT:
                 _graph_flushed = True
                 for name, tensor in _graph_refs.items():
                     _dump(name, tensor)
+            if selected_block:
+                _active_draft_block_index = 0
             return output
 
         self.draft_model_runner.forward = _traced_draft_forward

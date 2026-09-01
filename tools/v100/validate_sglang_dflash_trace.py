@@ -11,6 +11,9 @@ import struct
 
 REQUIRED = {
     "target.post_layer_residual",
+    "target.next_token_logits",
+    "target.next_token_top16_ids",
+    "target.next_token_top16_values",
     "context.fc",
     "context.norm",
     "block.ids",
@@ -121,8 +124,14 @@ def main() -> None:
         assert REQUIRED <= names, f"missing {sorted(REQUIRED - names)} from {directory}"
 
         by_name: dict[str, dict] = {}
+        duplicates: set[str] = set()
         for record in records:
-            by_name.setdefault(record["name"], record)
+            assert record.get("capture_block_index") == args.block_index, record
+            name = record["name"]
+            if name in by_name:
+                duplicates.add(name)
+            by_name[name] = record
+        assert not duplicates, f"duplicate trace records in {directory}: {sorted(duplicates)}"
         for layer in range(5):
             prefix = f"layer{layer}.attention.tilelang"
             for suffix, shape in (
@@ -135,13 +144,17 @@ def main() -> None:
                 assert record["dtype"] == "f16", record
                 assert record["shape"] == shape, record
 
-        block_records = [record for record in records if record["name"] == "block.ids"]
-        assert len(block_records) >= args.block_index
-        block_record = block_records[args.block_index - 1]
+        block_record = by_name["block.ids"]
+        assert block_record.get("draft_block_index") == args.block_index, block_record
         block_ids = _integer_values(directory, block_record)
-        assert block_ids == expected_ids, (
-            f"non-audited block IDs at index {args.block_index} in {directory}: {block_ids}"
-        )
+        assert block_ids == expected_ids, f"non-audited block IDs in {directory}: {block_ids}"
+
+        logits = by_name["target.next_token_logits"]
+        top_ids = by_name["target.next_token_top16_ids"]
+        top_values = by_name["target.next_token_top16_values"]
+        assert logits["dtype"] in {"f16", "f32"} and logits["shape"] == [1, 248320], logits
+        assert top_ids["dtype"] == "i64" and top_ids["shape"] == [16], top_ids
+        assert top_values["dtype"] == "f32" and top_values["shape"] == [16], top_values
 
         assert _integer_values(directory, by_name["layer0.attention.tilelang.seq_lens"]) == [1008]
         assert _integer_values(directory, by_name["layer0.attention.tilelang.query_start_loc"]) == [0, 8]

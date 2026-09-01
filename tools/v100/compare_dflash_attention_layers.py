@@ -32,7 +32,13 @@ def records(root: Path) -> dict[str, dict]:
             record = json.loads(line)
         except json.JSONDecodeError as error:
             raise RuntimeError(f"invalid manifest JSON at {root}:{line_number}") from error
-        result.setdefault(record["name"], record)
+        name = record["name"]
+        if name in result:
+            raise RuntimeError(
+                f"duplicate manifest record {name!r} at {root}:{line_number}; "
+                "select one correlated capture group before comparison"
+            )
+        result[name] = record
     return result
 
 
