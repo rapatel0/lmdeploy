@@ -78,6 +78,25 @@ def statistics(left: np.ndarray, right: np.ndarray) -> dict[str, float | int | b
     }
 
 
+def attention_reference(q: np.ndarray, k: np.ndarray, v: np.ndarray, causal: bool) -> np.ndarray:
+    q32 = q.reshape(8, 8, 128).astype(np.float32)
+    k32 = k.reshape(-1, 2, 128).astype(np.float32)
+    v32 = v.reshape(-1, 2, 128).astype(np.float32)
+    output = np.empty_like(q32)
+    history = k32.shape[0] - q32.shape[0]
+    for head in range(8):
+        kv_head = head // 4
+        scores = q32[:, head] @ k32[:, kv_head].T * np.float32(128.0**-0.5)
+        if causal:
+            for query in range(8):
+                scores[query, history + query + 1 :] = -np.inf
+        scores -= scores.max(axis=1, keepdims=True)
+        probability = np.exp(scores)
+        probability /= probability.sum(axis=1, keepdims=True)
+        output[:, head] = probability @ v32[:, kv_head]
+    return output
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lmdeploy", type=Path, required=True)
@@ -132,6 +151,10 @@ def main() -> int:
             lm_packed_q = load(lm_root, lm, f"{prefix}.tilelang.packed_q").reshape(8, 1024)
             lm_packed_k = load(lm_root, lm, f"{prefix}.tilelang.packed_k").reshape(key_count, 2, 128)
             lm_packed_v = load(lm_root, lm, f"{prefix}.tilelang.packed_v").reshape(key_count, 2, 128)
+            lm_core = load(lm_root, lm, f"{prefix}.core_output").reshape(8, 8, 128)
+            sg_core = sg_output.reshape(8, 8, 128)
+            noncausal_reference = attention_reference(sg_q, sg_k, sg_v, False)
+            causal_reference = attention_reference(sg_q, sg_k, sg_v, True)
 
             pairs = {
                 "q_projection": (lm_projection[:, :1024], rope_interleaved(sg_projection[:, :1024])),
@@ -146,7 +169,11 @@ def main() -> int:
                 "proposal_v": (lm_packed_v[-8:], sg_backend_v),
                 "cache_k_prefix": (lm_packed_k[:1000], sg_k[:1000]),
                 "cache_v_prefix": (lm_packed_v[:1000], sg_v[:1000]),
-                "core_output": (load(lm_root, lm, f"{prefix}.core_output"), sg_output),
+                "core_output": (lm_core, sg_core),
+                "sg_core_vs_reference_noncausal": (sg_core, noncausal_reference),
+                "sg_core_vs_reference_causal": (sg_core, causal_reference),
+                "lm_core_vs_reference_noncausal": (lm_core, noncausal_reference),
+                "lm_core_vs_reference_causal": (lm_core, causal_reference),
             }
             for boundary, (left, right) in pairs.items():
                 row = {"rank": rank, "layer": layer, "boundary": boundary, **statistics(left, right)}
