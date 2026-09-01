@@ -53,6 +53,26 @@ K_REPLAY=$RESULTS/k_normalized_tp4.bin
 FLATTENED_KV_REPLAY=$RESULTS/flattened_kv_tp4.bin
 Q_PROJECTION_REPLAY=$RESULTS/q_projection_tp4.bin
 K_PROJECTION_REPLAY=$RESULTS/k_projection_tp4.bin
+SELECTOR_INPUT_REPLAY=$RESULTS/selector_input_tp4.bin
+SELECTOR_ANCHOR_REPLAY=$RESULTS/selector_anchor_tp4.bin
+python3 - "$SG" "$SELECTOR_INPUT_REPLAY" "$SELECTOR_ANCHOR_REPLAY" <<'PY'
+import glob, json, pathlib, struct, sys
+roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
+assert len(roots) == 4, roots
+with open(sys.argv[2], 'wb') as hidden_out, open(sys.argv[3], 'wb') as anchor_out:
+    for root in roots:
+        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        hidden = records['layer4.output.hidden']
+        assert hidden['dtype'] == 'f16' and hidden['shape'] == [8, 5120], hidden
+        payload = pathlib.Path(root, hidden['file']).read_bytes()
+        assert len(payload) == 8 * 5120 * 2
+        hidden_out.write(payload)
+        block = records['block.ids']
+        code = '<q' if block['dtype'] == 'i64' else '<i'
+        anchor = struct.unpack_from(code, pathlib.Path(root, block['file']).read_bytes())[0]
+        assert anchor == 1144, (root, anchor)
+        anchor_out.write(struct.pack('<i', anchor))
+PY
 read -r LIVE_TILELANG REPLAY_CONTEXT_LEN < <(
     python3 - "$SG" <<'PY'
 import glob, json, sys
@@ -130,6 +150,8 @@ RUN_ENV=(env
     TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT"
     TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM"
     TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE="$INITIAL_NORM"
+    TM_DFLASH_SELECTOR_INPUT_REPLAY_FILE="$SELECTOR_INPUT_REPLAY"
+    TM_DFLASH_SELECTOR_ANCHOR_REPLAY_FILE="$SELECTOR_ANCHOR_REPLAY"
     TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1
     TM_DFLASH_ASSERT_DRAFT_METADATA=1
     TM_DFLASH_REDUCE_BEFORE_CONV=1
@@ -169,6 +191,8 @@ fi
 if [ "$REPLAY_ATTENTION_INPUT" = 1 ]; then
     [ "$(grep -c 'TM_DFLASH_DRAFT_ATTENTION_INPUT_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
 fi
+[ "$(grep -c 'TM_DFLASH_SELECTOR_INPUT_REPLAY_FILE' "$RESULTS/parity.log")" -eq 4 ]
+[ "$(grep -c 'replaying selector anchors from' "$RESULTS/parity.log")" -eq 4 ]
 
 python3 - "$RESULTS/parity/lmdeploy" "$SG" <<'PY'
 import glob, json, numpy as np, pathlib, sys
