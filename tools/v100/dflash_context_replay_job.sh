@@ -43,7 +43,14 @@ for root in sorted(pathlib.Path("/results").glob("*-sglang-dflash-parity-*/trace
             names.append({record["name"] for record in records})
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
         continue
-    required = {"target.post_layer_residual", "context.fc", "context.norm", "block.ids", "block.positions"}
+    required = {
+        "target.full_context",
+        "target.post_layer_residual",
+        "context.fc",
+        "context.norm",
+        "block.ids",
+        "block.positions",
+    }
     if all(required <= rank_names for rank_names in names):
         print(root)
         break
@@ -73,13 +80,20 @@ context_hashes = {"context.fc": [], "context.norm": []}
 for rank, directory in enumerate(directories):
     assert directory.name.startswith(f"rank-{rank}-"), directory
     records = {r["name"]: r for r in map(json.loads, (directory / "manifest.jsonl").read_text().splitlines())}
-    for name in ("target.post_layer_residual", "context.fc", "context.norm", "block.ids", "block.positions"):
+    for name in (
+        "target.full_context",
+        "target.post_layer_residual",
+        "context.fc",
+        "context.norm",
+        "block.ids",
+        "block.positions",
+    ):
         assert name in records, (directory, name)
-    target = records["target.post_layer_residual"]
-    assert target["dtype"] == "f16" and target["shape"] == [1, 25600], target
+    target = records["target.full_context"]
+    assert target["dtype"] == "f16" and target["shape"] == [1000, 25600], target
     target_path = directory / target["file"]
     payload = target_path.read_bytes()
-    assert len(payload) == 51200, target_path
+    assert len(payload) == 1000 * 51200, target_path
     source_paths.append(target_path)
     source_hashes.append(hashlib.sha256(payload).hexdigest())
     for name in context_hashes:
@@ -143,6 +157,8 @@ import struct
 import sys
 root = pathlib.Path(sys.argv[1])
 source = pathlib.Path(sys.argv[2]).read_bytes()
+assert len(source) == 1000 * 51200, len(source)
+source_row = source[-51200:]
 expected_ids = [1596] + [248070] * 7
 required = {
     "target.post_layer_residual", "context.fc", "context.norm", "block.ids",
@@ -162,7 +178,7 @@ for arm in ("native", "replay"):
         assert ids == expected_ids, (directory, ids)
         if arm == "replay":
             target = (directory / records["target.post_layer_residual"]["file"]).read_bytes()
-            assert target == source, directory
+            assert target == source_row, directory
         for name in context_hashes:
             payload = (directory / records[name]["file"]).read_bytes()
             context_hashes[name].append(hashlib.sha256(payload).hexdigest())
