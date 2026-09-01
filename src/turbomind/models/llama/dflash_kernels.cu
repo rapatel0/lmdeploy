@@ -80,7 +80,8 @@ __global__ void DFlashLagunaSiluHalf(__half*       output,
                                      float*        row_scales,
                                      const __half* gate_up,
                                      int           cols,
-                                     float         gate_up_scale)
+                                     float         gate_up_scale,
+                                     bool          triton_sigmoid)
 {
     const int row = blockIdx.x;
     __shared__ float maxima[256];
@@ -89,7 +90,8 @@ __global__ void DFlashLagunaSiluHalf(__half*       output,
         const int base = row * 2 * cols;
         const float gate = RoundBFloat16(__half2float(gate_up[base + col]) * gate_up_scale);
         const float up = RoundBFloat16(__half2float(gate_up[base + cols + col]) * gate_up_scale);
-        const float activated = RoundBFloat16(gate / (1.f + expf(-gate)));
+        const float exponential = triton_sigmoid ? exp2f(-gate * 1.4426950408889634f) : expf(-gate);
+        const float activated = RoundBFloat16(gate / (1.f + exponential));
         const float value = RoundBFloat16(activated * up);
         max_abs = fmaxf(max_abs, fabsf(value));
     }
@@ -110,7 +112,8 @@ __global__ void DFlashLagunaSiluHalf(__half*       output,
         const int base = row * 2 * cols;
         const float gate = RoundBFloat16(__half2float(gate_up[base + col]) * gate_up_scale);
         const float up = RoundBFloat16(__half2float(gate_up[base + cols + col]) * gate_up_scale);
-        const float activated = RoundBFloat16(gate / (1.f + expf(-gate)));
+        const float exponential = triton_sigmoid ? exp2f(-gate * 1.4426950408889634f) : expf(-gate);
+        const float activated = RoundBFloat16(gate / (1.f + exponential));
         const float value = RoundBFloat16(activated * up) / power_of_two_scale;
         output[row * cols + col] = __float2half_rn(value);
     }
@@ -608,11 +611,16 @@ void invokeDFlashLagunaSilu(Tensor&       output,
     TM_CHECK_EQ(gate_up.shape(0), output.shape(0));
     TM_CHECK_EQ(gate_up.shape(1), output.shape(1) * 2);
     TM_CHECK_EQ(row_scales.size(), output.shape(0));
+    static const bool triton_sigmoid = [] {
+        const char* value = std::getenv("TM_DFLASH_LAGUNA_TRITON_SIGMOID");
+        return value && value[0] == '1';
+    }();
     DFlashLagunaSiluHalf<<<output.shape(0), 256, 0, stream>>>((__half*)output.raw_data(),
                                                               row_scales.data<float>(),
                                                               (const __half*)gate_up.raw_data(),
                                                               output.shape(1),
-                                                              gate_up_scale);
+                                                              gate_up_scale,
+                                                              triton_sigmoid);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 

@@ -687,7 +687,7 @@ if _TRACE_ROOT:
                 lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.gate_up", out[0])
             )
             layer.mlp.down_proj.register_forward_pre_hook(
-                lambda _m, args, i=index: (_dump(f"layer{i}.mlp.activated", args[0]) and None)
+                lambda _m, args, i=index: _dump(f"layer{i}.mlp.activated", args[0]) and None
             )
             layer.mlp.down_proj.register_forward_hook(
                 lambda _m, _a, out, i=index: _dump(f"layer{i}.mlp.down_reduced", out[0])
