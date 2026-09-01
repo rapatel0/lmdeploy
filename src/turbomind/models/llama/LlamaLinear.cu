@@ -1,6 +1,8 @@
 // Copyright (c) OpenMMLab. All rights reserved.
 
 #include <cublas_v2.h>
+#include <atomic>
+#include <cstdio>
 #include <cstdlib>
 
 #include "src/turbomind/core/allocator.h"
@@ -165,6 +167,30 @@ struct LlamaLinear::Impl {
 
         auto&& [A, desc_A, U, desc_U] = GetOperandA(weight, input, input_scales, indices, offsets);
         auto&& [B, desc_B, V, desc_V] = GetOperandB(weight);
+
+        const bool use_fp16_shadow = desc_A.rows > 0 && desc_A.rows <= 8 && !indices && !offsets
+                                     && weight.fp16_shadow_weight && desc_A.type == kHalf;
+        if (use_fp16_shadow) {
+            B          = weight.fp16_shadow_weight;
+            desc_B     = weight.fp16_shadow_k_desc;
+            V          = {};
+            desc_V     = {};
+            op.quant_b = {QuantType::kNone, 0};
+
+            int device = -1;
+            TM_CUDA_CHECK(cudaGetDevice(&device));
+            TM_CHECK(device >= 0 && device < 16);
+            static std::atomic<bool> logged[16]{};
+            if (!logged[device].exchange(true, std::memory_order_relaxed)) {
+                std::fprintf(stderr,
+                             "SM70_FP8_FP16_SHADOW_ACTIVE device=%d rows=%d first_shape=%dx%d\n",
+                             device,
+                             desc_A.rows,
+                             weight.input_dim,
+                             weight.output_dim);
+                std::fflush(stderr);
+            }
+        }
 
         Tensor& D = output;
         if (!D) {
