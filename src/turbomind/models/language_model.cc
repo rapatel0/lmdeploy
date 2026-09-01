@@ -1974,12 +1974,16 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
             core::Copy(anchors, block_anchors);
         }
         else {
-            Buffer_<int> host_anchors{bsz, kCPUpinned};
+            std::vector<int> host_anchors(bsz);
             for (int i = 0; i < bsz; ++i) {
                 TM_CHECK_GE((*tips)[i], 2);
                 host_anchors[i] = d.rows[i]->token_ids[(*tips)[i] - 2];
             }
-            core::Copy(host_anchors, block_anchors);
+            TM_CUDA_CHECK(cudaMemcpyAsync(block_anchors.data(),
+                                          host_anchors.data(),
+                                          host_anchors.size() * sizeof(int),
+                                          cudaMemcpyHostToDevice,
+                                          core::Context::stream().handle()));
             core::Context::stream().Sync();
         }
         env.produce("dflash_block_anchors", std::move(block_anchors));
