@@ -66,20 +66,20 @@ with open(sys.argv[2], 'wb') as hidden_out, open(sys.argv[3], 'wb') as anchor_ou
         rows = list(map(json.loads, open(root + '/manifest.jsonl')))
         records = {}
         for row in rows:
-            records.setdefault(row['name'], row)
+            name = row['name']
+            assert name not in records, (root, 'duplicate correlated record', name)
+            records[name] = row
         hidden = records['block.final_norm']
         assert hidden['dtype'] == 'f16' and hidden['shape'] == [8, 5120], hidden
         payload = pathlib.Path(root, hidden['file']).read_bytes()
         assert len(payload) == 8 * 5120 * 2
         hidden_out.write(payload)
-        anchors = []
-        for block in (row for row in rows if row['name'] == 'block.ids'):
-            code = '<q' if block['dtype'] == 'i64' else '<i'
-            anchor = struct.unpack_from(code, pathlib.Path(root, block['file']).read_bytes())[0]
-            if anchor == 1144:
-                anchors.append(anchor)
-        assert anchors, (root, 'audited anchor 1144 not found')
-        anchor_out.write(struct.pack('<i', anchors[0]))
+        block = records['block.ids']
+        code = '<q' if block['dtype'] == 'i64' else '<i'
+        values = struct.unpack(code * 8, pathlib.Path(root, block['file']).read_bytes())
+        assert list(values[1:]) == [248070] * 7, (root, values)
+        assert block.get('draft_block_index') == block.get('capture_block_index') == 1, (root, block)
+        anchor_out.write(struct.pack('<i', values[0]))
 PY
 read -r LIVE_TILELANG REPLAY_CONTEXT_LEN < <(
     python3 - "$SG" <<'PY'
