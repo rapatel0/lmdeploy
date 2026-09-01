@@ -73,8 +73,8 @@ for lib in "${LIBS[@]}"; do
 
     has_elf=0
     has_ptx=0
-    echo "${elf}" | grep -q "sm_${SM}" && has_elf=1
-    echo "${ptx}" | grep -q "sm_${SM}" && has_ptx=1
+    [[ "${elf}" == *"sm_${SM}"* ]] && has_elf=1
+    [[ "${ptx}" == *"sm_${SM}"* ]] && has_ptx=1
 
     if [ "${has_elf}" -eq 1 ]; then
         FOUND_ELF=$((FOUND_ELF + 1))
