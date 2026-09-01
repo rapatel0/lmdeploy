@@ -2452,9 +2452,6 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     Buffer_<int> accepted{bsz, kCPU};
     Buffer_<int> bonus{bsz, kCPU};
     Buffer_<int> ambiguous{bsz, kCPU};
-    Buffer_<int> seq_lens{bsz, kCPU};
-    Buffer_<int> out_ids{bsz, kCPU};
-    Buffer_<int> tip_ids{bsz, kCPU};
     static const bool candidate_rank_trace = [] {
         const char* value = std::getenv("TM_DFLASH_TARGET_CANDIDATE_RANK");
         return value && value[0] == '1';
@@ -2474,11 +2471,6 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     Copy(env.at("num_accepted").buffer().slice(0, bsz), accepted);
     Copy(env.at("bonus_tokens").buffer().slice(0, bsz), bonus);
     Copy(env.at("bonus_ambiguous").buffer().slice(0, bsz), ambiguous);
-    // These publications are consumed by the same host verdict. Queue all five
-    // D2H reads before the one required synchronization rather than adding a
-    // second stream round-trip after acceptance is known.
-    Copy(sequence_length_.front().buffer().slice(0, bsz), seq_lens);
-    Copy(autoreg_ids_.slice(0, bsz), out_ids);
     core::Context::stream().Sync();
 
     // Do NOT write token_ids or seq_len here.
@@ -2516,11 +2508,17 @@ void LanguageModel::Impl::Rollback(int phase, TensorMap& env)
     gdn_state_slots_.assign(bsz, -1);
     no_commit_.assign(bsz, 0);
     no_bonus_.assign(bsz, 0);
+    Buffer_<int> seq_lens{bsz, kCPU};
+    Buffer_<int> out_ids{bsz, kCPU};
+    Buffer_<int> tip_ids{bsz, kCPU};
     std::vector<int> poison_begin(bsz, 0);
     std::vector<int> poison_end(bsz, 0);
     // sequence_length_.front(), not d.sequence_length. Rollback runs before
     // Unprep, and Unprep is what copies the live buffer into d.sequence_length,
     // so reading d here would give the PREVIOUS step's lengths.
+    Copy(sequence_length_.front().buffer().slice(0, bsz), seq_lens);
+    Copy(autoreg_ids_.slice(0, bsz), out_ids);
+    core::Context::stream().Sync();
     std::copy_n(out_ids.data(), bsz, tip_ids.data());
 
     for (int i = 0; i < bsz; ++i) {
