@@ -1859,6 +1859,17 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
                                           cudaMemcpyHostToDevice,
                                           core::Context::stream().handle()));
             core::Context::stream().Sync();
+            if (std::getenv("TM_DFLASH_PARITY_DIR")) {
+                for (size_t i = 0; i < d.rows.size(); ++i) {
+                    TM_LOG_INFO("DFLASH_BLOCK_ANCHOR_SOURCE uid={} committed_len={} scheduled_len={} prompt_len={} input_len={} token={}",
+                                (long)d.uids[i],
+                                d.rows[i]->seq_len,
+                                d.seq_lens[i],
+                                d.rows[i]->prompt_len,
+                                d.input_lens[i],
+                                host_anchors[i]);
+                }
+            }
         }
         generation_->Run(BatchOp::kForward, phase, env);
         Copy(env.at("output_ids").buffer(), autoreg_ids_);
@@ -1993,6 +2004,16 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
         Buffer_<int> block_anchors = dflash_anchor_ids_.slice(0, bsz);
         if (after_rollback) {
             core::Copy(anchors, block_anchors);
+        }
+        if (std::getenv("TM_DFLASH_PARITY_DIR") && bsz == 1) {
+            Buffer_<int> host_anchor{1, kCPU};
+            core::Copy(block_anchors, host_anchor);
+            core::Context::stream().Sync();
+            TM_LOG_INFO("DFLASH_BLOCK_ANCHOR_CONSUME uid={} after_rollback={} committed_tip={} token={}",
+                        (long)d.uids[0],
+                        (int)after_rollback,
+                        (*tips)[0],
+                        host_anchor[0]);
         }
         env.produce("dflash_block_anchors", std::move(block_anchors));
     }
