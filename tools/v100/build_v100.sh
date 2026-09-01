@@ -29,6 +29,8 @@
 # The script verifies the result instead of trusting it.
 set -euo pipefail
 
+cd /src
+
 ARCH_TARGET="${ARCH_TARGET:-70-real}"
 WHEEL_DIR="${WHEEL_DIR:-/wheels}"
 
