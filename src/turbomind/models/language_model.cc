@@ -1844,11 +1844,18 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
             return value && value[0] == '1';
         }();
         if (dflash_predictor_ && sglang_input_anchor) {
-            Buffer_<int> block_anchors = dflash_anchor_ids_.slice(0, d.rows.size());
-            invokeGatherDFlashInputAnchors(block_anchors,
-                                           env.at("input_ids").buffer().view<int>(),
-                                           env.at("q_offsets").buffer().view<int>(),
-                                           core::Context::stream().handle());
+            Buffer_<int>    block_anchors = dflash_anchor_ids_.slice(0, d.rows.size());
+            std::vector<int> host_anchors(d.rows.size());
+            for (size_t i = 0; i < d.rows.size(); ++i) {
+                TM_CHECK_GT(d.seq_lens[i], 0);
+                host_anchors[i] = d.rows[i]->token_ids[d.seq_lens[i] - 1];
+            }
+            TM_CUDA_CHECK(cudaMemcpyAsync(block_anchors.data(),
+                                          host_anchors.data(),
+                                          host_anchors.size() * sizeof(int),
+                                          cudaMemcpyHostToDevice,
+                                          core::Context::stream().handle()));
+            core::Context::stream().Sync();
         }
         generation_->Run(BatchOp::kForward, phase, env);
         Copy(env.at("output_ids").buffer(), autoreg_ids_);
