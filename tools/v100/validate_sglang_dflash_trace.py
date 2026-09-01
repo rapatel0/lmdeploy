@@ -122,7 +122,13 @@ def main() -> None:
     for directory in directories:
         records = _load_manifest(directory / "manifest.jsonl")
         names = {record["name"] for record in records}
-        assert REQUIRED <= names, f"missing {sorted(REQUIRED - names)} from {directory}"
+        target_logit_records = {
+            "target.next_token_logits",
+            "target.next_token_top16_ids",
+            "target.next_token_top16_values",
+        }
+        required = REQUIRED if args.block_index == 1 else REQUIRED - target_logit_records
+        assert required <= names, f"missing {sorted(required - names)} from {directory}"
 
         by_name: dict[str, dict] = {}
         duplicates: set[str] = set()
@@ -145,20 +151,24 @@ def main() -> None:
                 assert record["dtype"] == "f16", record
                 assert record["shape"] == shape, record
 
-        logits = by_name["target.next_token_logits"]
-        top_ids = by_name["target.next_token_top16_ids"]
-        top_values = by_name["target.next_token_top16_values"]
-        target_top_ids = _integer_values(directory, top_ids)
-        expected_anchor = args.expected_anchor if args.expected_anchor is not None else target_top_ids[0]
+        if args.block_index == 1:
+            logits = by_name["target.next_token_logits"]
+            top_ids = by_name["target.next_token_top16_ids"]
+            top_values = by_name["target.next_token_top16_values"]
+            target_top_ids = _integer_values(directory, top_ids)
+            expected_anchor = args.expected_anchor if args.expected_anchor is not None else target_top_ids[0]
+            assert logits["dtype"] in {"f16", "f32"} and logits["shape"] == [1, 248320], logits
+            assert top_ids["dtype"] == "i64" and top_ids["shape"] == [16], top_ids
+            assert top_values["dtype"] == "f32" and top_values["shape"] == [16], top_values
+        else:
+            assert args.expected_anchor is not None, "later block validation requires --expected-anchor"
+            expected_anchor = args.expected_anchor
         block_record = by_name["block.ids"]
         assert block_record.get("draft_block_index") == args.block_index, block_record
         block_ids = _integer_values(directory, block_record)
         expected_ids = [expected_anchor] + [248070] * 7
         assert block_ids == expected_ids, f"non-audited block IDs in {directory}: {block_ids} != {expected_ids}"
         audited_anchors.append(expected_anchor)
-        assert logits["dtype"] in {"f16", "f32"} and logits["shape"] == [1, 248320], logits
-        assert top_ids["dtype"] == "i64" and top_ids["shape"] == [16], top_ids
-        assert top_values["dtype"] == "f32" and top_values["shape"] == [16], top_values
 
         assert _integer_values(directory, by_name["layer0.attention.tilelang.seq_lens"]) == [1008]
         assert _integer_values(directory, by_name["layer0.attention.tilelang.query_start_loc"]) == [0, 8]

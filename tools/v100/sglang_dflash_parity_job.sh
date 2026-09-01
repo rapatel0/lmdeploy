@@ -149,9 +149,13 @@ kill -KILL -- "-${server_pid}" 2>/dev/null || true
 wait "${server_pid}" 2>/dev/null || true
 server_pid=
 
+validate_args=(--block-index "${SGLANG_DFLASH_PARITY_BLOCK_INDEX:-1}")
+if [ -n "${SGLANG_DFLASH_EXPECTED_ANCHOR:-}" ]; then
+    validate_args+=(--expected-anchor "${SGLANG_DFLASH_EXPECTED_ANCHOR}")
+fi
 python3 /job/validate_sglang_dflash_trace.py \
     "${RESULTS}/trace/sglang" \
-    --block-index "${SGLANG_DFLASH_PARITY_BLOCK_INDEX:-1}"
+    "${validate_args[@]}"
 
 if [ "${SGLANG_PARITY_TRACE_ONLY:-0}" != 1 ]; then
     LM_PARITY_REF=${LM_DFLASH_PARITY_REF:-}
