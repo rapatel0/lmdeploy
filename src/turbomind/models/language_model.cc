@@ -1969,7 +1969,7 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
         return value && value[0] == '1';
     }();
     if (sglang_input_anchor) {
-        auto stable_anchors = dflash_anchor_ids_.slice(0, bsz);
+        Buffer_<int> stable_anchors = dflash_anchor_ids_.slice(0, bsz);
         if (after_rollback) {
             core::Copy(anchors, stable_anchors);
         }
