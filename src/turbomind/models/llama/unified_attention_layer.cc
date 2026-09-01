@@ -539,6 +539,12 @@ UnifiedAttentionLayer::UnifiedAttentionLayer(std::vector<AttentionWeight*> weigh
     const char* tilelang_draft_attention = std::getenv("TM_DFLASH_TILELANG_DRAFT_ATTENTION");
     if (arch_ == 70 && engine_param_.speculative_algorithm == "dflash2" && tilelang_draft_attention
         && tilelang_draft_attention[0] == '1') {
+        const char* draft_graph = std::getenv("TM_DFLASH_DRAFT_GRAPH");
+        if (draft_graph && draft_graph[0] == '1') {
+            // A captured launch bypasses later host eligibility checks. Fail
+            // closed unless every replay is within the generated page bound.
+            TM_CHECK_LE(engine_param_.session_len, 16 * 1024);
+        }
         // Driver module loading is not graph-capture safe. Resolve both PTX
         // modules while constructing the layer, before any graph warm-up.
         prepareDFlashTileLangAttention();
@@ -1343,7 +1349,8 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
         }
     }
     const bool use_fixed_dflash_graph_geometry =
-        use_dflash_paged_q8 && enable_dflash_draft_graph && p.use_dflash_workspace;
+        (use_dflash_paged_q8 || use_dflash_tilelang_draft_attention) && enable_dflash_draft_graph &&
+        p.use_dflash_workspace;
     const int dflash_graph_k_bound = weights.window_size > 0 ?
                                          std::min(engine_param_.session_len, weights.window_size) :
                                          engine_param_.session_len;
@@ -1429,10 +1436,16 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
             };
         }
         else {
+            // A captured TileLang graph must keep the flattened K/V layout
+            // stable while cu_k_len advances between replays. Ordinary runs
+            // retain the compact layout used by parity traces.
+            const int flattened_capacity = use_dflash_tilelang_draft_attention && use_fixed_dflash_graph_geometry ?
+                                               static_cast<int>(d.dflash_workspace.flattened_kv.shape(2)) :
+                                               stat.k_sum;
             params.linear_iter_params = LinearIteratorParams{
-                tmp_kv.raw_data(),               // flattened KV
-                stat.k_sum * size_per_head * 2,  // stride to next head
-                stat.k_sum * size_per_head       // stride from K to V
+                tmp_kv.raw_data(),                         // flattened KV
+                flattened_capacity * size_per_head * 2,    // stride to next head
+                flattened_capacity * size_per_head         // stride from K to V
             };
         }
 
@@ -1610,7 +1623,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                                            tilelang_workspace.tilelang_metadata.data<int>());
                             if (p.trace_fn) {
                                 auto* packed_k = tilelang_workspace.tilelang_packed_kv.data<half>();
-                                auto* packed_v = packed_k + context_len * local_kv_head_num * size_per_head;
+                                auto* packed_v = packed_k + tilelang_workspace.tilelang_packed_kv.size() / 2;
                                 Tensor packed_k_view{(void*)packed_k,
                                                      Layout{{context_len, local_kv_head_num, size_per_head}},
                                                      kHalf,

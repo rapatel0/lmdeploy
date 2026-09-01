@@ -82,6 +82,15 @@ bool UseDFlashPagedQ8()
     return enabled;
 }
 
+bool UseDFlashTileLangDraftAttention()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("TM_DFLASH_TILELANG_DRAFT_ATTENTION");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
+
 bool TraceDFlashGraph()
 {
     static const bool enabled = [] {
@@ -1093,7 +1102,8 @@ Buffer_<int> DFlashPredictor::DraftCandidates(const Buffer_<int>& anchors, int p
     }
 
     const int slots = weights_.block_size - 1;
-    const bool eligible = persistent_workspace_ && UseDFlashPagedQ8() && anchors.size() == 1
+    const bool graph_safe_attention = UseDFlashPagedQ8() || UseDFlashTileLangDraftAttention();
+    const bool eligible = persistent_workspace_ && graph_safe_attention && anchors.size() == 1
                           && weights_.block_size == 8 && slots == 7 && UseLocalDFlashTopK()
                           && !TraceDFlashSelector() && !ParityActive();
     if (!eligible) {

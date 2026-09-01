@@ -62,14 +62,17 @@ DFlashTileLangDriverKernels& GetDFlashTileLangDriverKernels(bool allow_load)
 __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
                                          int64_t q_stride,
                                          const half* __restrict__ flattened_kv,
+                                         int flattened_head_stride,
+                                         int flattened_value_offset,
                                          half* __restrict__ packed_q,
                                          half* __restrict__ packed_k,
                                          half* __restrict__ packed_v,
                                          int* __restrict__ identity_pages,
-                                         int context_len)
+                                         const int* __restrict__ cu_k_len)
 {
     constexpr int kQElementsPerRow = 8 * 128;
     constexpr int kKVElementsPerToken = 2 * 128;
+    const int context_len = cu_k_len[1] - cu_k_len[0];
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < 8 * kQElementsPerRow;
          index += blockDim.x * gridDim.x) {
         const int row = index / kQElementsPerRow;
@@ -82,9 +85,9 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
         const int rem = index % kKVElementsPerToken;
         const int head = rem / 128;
         const int dim = rem % 128;
-        const int head_stride = 2 * context_len * 128;
-        packed_k[index] = flattened_kv[head * head_stride + token * 128 + dim];
-        packed_v[index] = flattened_kv[head * head_stride + context_len * 128 + token * 128 + dim];
+        packed_k[index] = flattened_kv[head * flattened_head_stride + token * 128 + dim];
+        packed_v[index] =
+            flattened_kv[head * flattened_head_stride + flattened_value_offset + token * 128 + dim];
     }
     for (int page = blockIdx.x * blockDim.x + threadIdx.x; page < (context_len + 15) / 16;
          page += blockDim.x * gridDim.x) {
@@ -122,23 +125,29 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
     TM_CHECK_LE(context_len, kMaxContext);
 
     auto* flattened_kv = reinterpret_cast<const half*>(params.linear_iter_params.kv_cache);
-    const std::size_t packed_elements = std::size_t{2} * context_len * params.num_kv_heads * 128;
+    const std::size_t elements_per_token = std::size_t{params.num_kv_heads} * 128;
     TM_CHECK(flattened_kv);
     TM_CHECK(packed_workspace);
     TM_CHECK(metadata_workspace);
-    TM_CHECK_LE(packed_elements, packed_workspace_elements);
+    TM_CHECK_EQ(packed_workspace_elements % (2 * elements_per_token), 0);
+    const std::size_t packed_capacity = packed_workspace_elements / (2 * elements_per_token);
+    TM_CHECK_LE(static_cast<std::size_t>(context_len), packed_capacity);
     auto* packed_k = packed_workspace;
-    auto* packed_v = packed_k + context_len * params.num_kv_heads * 128;
+    // Keep K and V base addresses stable across graph replays whose live
+    // context length changes. The pack kernel reads that length from cu_k_len.
+    auto* packed_v = packed_k + packed_capacity * elements_per_token;
     auto* packed_q = reinterpret_cast<half*>(params.out);
 
     PackDFlashTileLangInputs<<<32, 256, 0, params.stream>>>(reinterpret_cast<const half*>(params.q),
                                                             params.stride,
                                                             flattened_kv,
+                                                            params.linear_iter_params.stride_h,
+                                                            params.linear_iter_params.key_to_val,
                                                             packed_q,
                                                             packed_k,
                                                             packed_v,
                                                             metadata_workspace,
-                                                            context_len);
+                                                            params.cu_k_len);
     TM_CUDA_CHECK(cudaGetLastError());
 
     auto& kernels = GetDFlashTileLangDriverKernels(false);
