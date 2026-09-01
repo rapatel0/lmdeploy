@@ -32,7 +32,10 @@ if [ "${REUSE_WHEEL:-0}" != 1 ]; then
         exit 2
     fi
 else
-    [ -f /wheels/SOURCE_STAMP ] || { echo "FAIL: reused wheel has no source stamp" >&2; exit 2; }
+    [ -f /wheels/SOURCE_STAMP ] || {
+        echo "FAIL: reused wheel has no source stamp" >&2
+        exit 2
+    }
     source_commit="$(sed -n 's/^commit=\(.*\)$/\1/p' /src/SOURCE_STAMP | head -1)"
     wheel_commit="$(sed -n 's/^commit=\(.*\)$/\1/p' /wheels/SOURCE_STAMP | head -1)"
     [ -n "${source_commit}" ] && [ "${source_commit}" = "${wheel_commit}" ] || {
