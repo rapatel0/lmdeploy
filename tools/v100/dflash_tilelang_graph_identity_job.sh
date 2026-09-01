@@ -25,6 +25,7 @@ export TM_DFLASH_GRAPH_TRACE=1
 export TM_DFLASH_PERSISTENT_WORKSPACE=1
 export TM_DFLASH_LOCAL_TOPK=1
 export TM_DFLASH_PAGED_Q8=0
+export TM_MTP_FROZEN_KV=1
 
 common=(
     --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
