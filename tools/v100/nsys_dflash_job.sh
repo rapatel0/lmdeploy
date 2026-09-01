@@ -72,7 +72,9 @@ for k in ${PROFILE_K_VALUES:-0 7}; do
         --capture-range=cudaProfilerApi \
         --capture-range-end=stop \
         --output="${RESULTS}/k${k}" \
-        python3 /job/bench_decode.py "${args[@]}" || exit $?
+        python3 /job/bench_decode.py "${args[@]}" 2>&1 | tee "${RESULTS}/bench_k${k}.log"
+    profile_rc=${PIPESTATUS[0]}
+    [ "${profile_rc}" -eq 0 ] || exit "${profile_rc}"
 
     "${NSYS}" stats \
         --report nvtx_sum,cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,osrt_sum \
