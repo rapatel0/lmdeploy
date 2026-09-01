@@ -4,7 +4,8 @@ SOURCE=/results/dflash-tilelang-draft-verify
 OUT=/results/dflash-tilelang-native-cubin
 rm -rf "$OUT"
 mkdir -p "$OUT"
-INCLUDE=$(python3 - <<'PY'
+INCLUDE=$(
+    python3 - <<'PY'
 from pathlib import Path
 import tilelang
 root = Path(tilelang.__file__).resolve().parent
@@ -19,8 +20,12 @@ else:
     print(matches[0].parent)
 PY
 )
+CUTLASS_HEADER=$(find /opt /usr/local -path '*/cutlass/numeric_types.h' -print -quit 2>/dev/null)
+test -n "$CUTLASS_HEADER"
+CUTLASS_INCLUDE=$(dirname "$(dirname "$CUTLASS_HEADER")")
 echo "TileLang include: $INCLUDE"
-nvcc -std=c++17 -arch=sm_70 -cubin -I"$INCLUDE" "$SOURCE/partial.cu" -o "$OUT/partial.cubin"
-nvcc -std=c++17 -arch=sm_70 -cubin -I"$INCLUDE" "$SOURCE/combine.cu" -o "$OUT/combine.cubin"
+echo "CUTLASS include: $CUTLASS_INCLUDE"
+nvcc -std=c++17 -arch=sm_70 -cubin -I"$INCLUDE" -I"$CUTLASS_INCLUDE" "$SOURCE/partial.cu" -o "$OUT/partial.cubin"
+nvcc -std=c++17 -arch=sm_70 -cubin -I"$INCLUDE" -I"$CUTLASS_INCLUDE" "$SOURCE/combine.cu" -o "$OUT/combine.cubin"
 sha256sum "$OUT"/*.cubin
 ls -lh "$OUT"/*.cubin
