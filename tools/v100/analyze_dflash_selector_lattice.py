@@ -96,14 +96,16 @@ def main() -> None:
             unary_sg.extend(row_unary_sg)
             transition_lm.extend(row_transition_lm)
             transition_sg.extend(row_transition_sg)
-            rows.append({
-                "slot": slot,
-                "common": len(common),
-                "predecessor_index": predecessor_index,
-                "score": fit(np.asarray(row_score_lm), np.asarray(row_score_sg)),
-                "unary": fit(np.asarray(row_unary_lm), np.asarray(row_unary_sg)),
-                "transition": fit(np.asarray(row_transition_lm), np.asarray(row_transition_sg)),
-            })
+            rows.append(
+                {
+                    "slot": slot,
+                    "common": len(common),
+                    "predecessor_index": predecessor_index,
+                    "score": fit(np.asarray(row_score_lm), np.asarray(row_score_sg)),
+                    "unary": fit(np.asarray(row_unary_lm), np.asarray(row_unary_sg)),
+                    "transition": fit(np.asarray(row_transition_lm), np.asarray(row_transition_sg)),
+                }
+            )
             if slot < 6:
                 matches = np.flatnonzero(sg_ids[slot] == selected[slot])
                 if matches.size != 1:

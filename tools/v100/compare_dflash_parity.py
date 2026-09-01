@@ -84,12 +84,16 @@ def main() -> None:
         prefix = f"layer{layer}"
         ordered.extend(
             [
+                (f"{prefix}.attention.qkv_projection", f"{prefix}.attention.qkv_projection", "numeric"),
+                (f"{prefix}.attention.wo_local", f"{prefix}.attention.wo_local", "numeric"),
                 (f"{prefix}.attention.conv_delta", f"{prefix}.attention.conv_delta", "right_half"),
                 (f"{prefix}.attention.conv_side0", f"{prefix}.attention.conv_side0", "numeric"),
                 (f"{prefix}.attention.conv_side1", f"{prefix}.attention.conv_side1", "numeric"),
                 # SGLang applies the post-attention residual norm inside this
                 # layer; TurboMind reports the same boundary as attention.norm.
                 (f"{prefix}.attention.norm_output", f"{prefix}.mlp.norm_output", "numeric"),
+                (f"{prefix}.mlp.gate_up", f"{prefix}.mlp.gate_up", "numeric"),
+                (f"{prefix}.mlp.w2_local", f"{prefix}.mlp.down_local", "numeric"),
                 (f"{prefix}.mlp.conv_delta", f"{prefix}.mlp.conv_delta", "right_half"),
                 (f"{prefix}.mlp.conv_side0", f"{prefix}.mlp.conv_side0", "numeric"),
                 (f"{prefix}.mlp.conv_side1", f"{prefix}.mlp.conv_side1", "numeric"),
