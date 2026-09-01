@@ -6,7 +6,6 @@
 #include "src/turbomind/kernels/core/array_ops.h"
 #include "src/turbomind/kernels/core/common.h"
 #include "src/turbomind/kernels/core/math.h"
-#include "src/turbomind/kernels/gemm/transform.h"
 #include "src/turbomind/utils/cuda_utils.h"
 
 namespace turbomind {
@@ -232,55 +231,6 @@ void AdjustUe8m0ScaleForHalf(uint8_t* data, int n, cudaStream_t st)
     constexpr int block = 512;
     const int     grid  = cdiv(n, block);
     adjust_ue8m0_scale_for_half_kernel<<<grid, block, 0, st>>>(data, n);
-    TM_CUDA_CHECK(cudaGetLastError());
-}
-
-__global__ void dequantize_e4m3_k128_to_half_kernel(half*          dst,
-                                                     const uint8_t* src,
-                                                     const half*    scales,
-                                                     int            rows,
-                                                     int            cols,
-                                                     int            scale_stride)
-{
-    constexpr int vec = 4;
-    const int64_t group = threadIdx.x + (int64_t)blockDim.x * blockIdx.x;
-    const int64_t count = (int64_t)rows * cols;
-    if (group * vec < count) {
-        const int64_t index = group * vec;
-        const int row = index / cols;
-        const int col = index - (int64_t)row * cols;
-        Array<fp8_e4m3_t, vec> packed;
-        Ldg(packed, reinterpret_cast<const fp8_e4m3_t*>(src) + index);
-        auto values = gemm::cvt_f16x4_e4m3_raw(packed);
-        const half factor = __ushort_as_half(0x5c00);  // 256
-        PRAGMA_UNROLL
-        for (int i = 0; i < vec; ++i) {
-            const half adjusted_scale = __hmul(scales[(row / 128) * scale_stride + col + i], factor);
-            dst[index + i] = __hmul(values[i], adjusted_scale);
-        }
-    }
-}
-
-void DequantizeE4m3K128ToHalf(half*          dst,
-                              const uint8_t* src,
-                              const half*    scales,
-                              int            rows,
-                              int            cols,
-                              int            scale_stride,
-                              cudaStream_t   st)
-{
-    TM_CHECK_NOTNULL(dst);
-    TM_CHECK_NOTNULL(src);
-    TM_CHECK_NOTNULL(scales);
-    TM_CHECK_GT(rows, 0);
-    TM_CHECK_GT(cols, 0);
-    TM_CHECK_EQ(cols % 4, 0);
-    TM_CHECK_GE(scale_stride, cols);
-    constexpr int block = 256;
-    const int64_t count = (int64_t)rows * cols;
-    TM_CHECK_EQ(count % 4, 0);
-    dequantize_e4m3_k128_to_half_kernel<<<cdiv(count / 4, (int64_t)block), block, 0, st>>>(
-        dst, src, scales, rows, cols, scale_stride);
     TM_CUDA_CHECK(cudaGetLastError());
 }
 

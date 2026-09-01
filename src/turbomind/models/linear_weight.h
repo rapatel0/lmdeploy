@@ -102,11 +102,6 @@ public:
     MatrixLayout k_desc{};
     MatrixLayout q_desc{};
 
-    /// Optional exact FP16 materialization of an SM70 E4M3 matrix. This is an
-    /// experimental small-M backend: ordinary storage remains authoritative.
-    Tensor       fp16_shadow_weight;
-    MatrixLayout fp16_shadow_k_desc{};
-
 #define LINEAR_WEIGHT_CHILDREN(X)
 
 #define LINEAR_WEIGHT_PARAMS(X)                                                                                        \

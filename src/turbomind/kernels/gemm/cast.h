@@ -42,16 +42,6 @@ inline void interleave_output_dims(T* fused, const T* a, const T* b, int m, int 
 
 void AdjustUe8m0ScaleForHalf(uint8_t* data, int n, cudaStream_t st);
 
-/// Materialize the exact FP16 values consumed by the SM70 E4M3 path.
-/// `scales` is the expanded [ceil(K / 128), N] K-grouped layout.
-void DequantizeE4m3K128ToHalf(half*          dst,
-                              const uint8_t* src,
-                              const half*    scales,
-                              int            rows,
-                              int            cols,
-                              int            scale_stride,
-                              cudaStream_t   st);
-
 Tensor BlockscaleToGroupscale(const Tensor& scales, DataType data_type, int block_size);
 
 }  // namespace turbomind

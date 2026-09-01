@@ -95,10 +95,8 @@ void LinearWeight::copy_metadata_to(LinearWeight& dst) const
     dst.is_grouped_     = is_grouped_;
     dst.is_output_head_ = is_output_head_;
     dst.prepared_       = prepared_;
-    dst.k_desc                 = k_desc;
-    dst.q_desc                 = q_desc;
-    dst.fp16_shadow_weight     = fp16_shadow_weight;
-    dst.fp16_shadow_k_desc     = fp16_shadow_k_desc;
+    dst.k_desc        = k_desc;
+    dst.q_desc        = q_desc;
 }
 
 // ======================================================================
@@ -125,48 +123,6 @@ void LinearWeight::prepare()
     k_desc.ld    = output_dim;
 
     auto stream = core::Context::stream().handle();
-
-    // V100 has no native FP8 tensor cores. The production M=8 path expands
-    // each E4M3 value to FP16 and applies its K128 scale inside every GEMM.
-    // This opt-in materializes those exact FP16 operands once at load time so
-    // the small-M dispatcher can test native FP16 tensor-core kernels instead.
-    // Keep the original packed E4M3 matrix authoritative for every other M.
-    static const bool fp8_fp16_shadow = [] {
-        const char* value = std::getenv("TM_SM70_FP8_FP16_SHADOW");
-        return value && value[0] == '1';
-    }();
-    if (fp8_fp16_shadow && getSMVersion() == 70 && !is_grouped_ && data_type == kHalf
-        && input_dtype() == kHalf && weight_format.dtype == kFloat8_e4m3 && weight.dtype() == kFloat8_e4m3) {
-        TM_CHECK_EQ(weight.shape(0), input_dim);
-        TM_CHECK_EQ(weight.shape(1), output_dim);
-        TM_CHECK_EQ(scales.dtype(), kHalf);
-        TM_CHECK_EQ(scales.shape(0), (input_dim + 127) / 128);
-        TM_CHECK_GE(scales.shape(1), output_dim);
-        fp16_shadow_weight = {{input_dim, output_dim}, kHalf, kDEVICE};
-        DequantizeE4m3K128ToHalf(fp16_shadow_weight.data<half>(),
-                                 static_cast<const uint8_t*>(weight.raw_data()),
-                                 scales.data<half>(),
-                                 input_dim,
-                                 output_dim,
-                                 scales.stride(0),
-                                 stream);
-        fp16_shadow_k_desc = {
-            kHalf, gemm::kRowMajor, input_dim, output_dim, (int)fp16_shadow_weight.stride(0)};
-
-        int device = -1;
-        TM_CUDA_CHECK(cudaGetDevice(&device));
-        TM_CHECK(device >= 0 && device < 16);
-        static std::atomic<int> counts[16]{};
-        const int count = counts[device].fetch_add(1, std::memory_order_relaxed) + 1;
-        if (count == 1) {
-            std::fprintf(stderr,
-                         "SM70_FP8_FP16_SHADOW_REGISTERED device=%d first_shape=%dx%d\n",
-                         device,
-                         input_dim,
-                         output_dim);
-            std::fflush(stderr);
-        }
-    }
 
     // The vocabulary projection follows the trivial checkpoint path, but owns
     // storage separate from token embeddings. Replace only that output-owned
