@@ -130,12 +130,8 @@ def main() -> None:
         )
 
         assert _integer_values(directory, by_name["layer0.attention.tilelang.seq_lens"]) == [1008]
-        assert _integer_values(
-            directory, by_name["layer0.attention.tilelang.query_start_loc"]
-        ) == [0, 8]
-        assert _integer_values(
-            directory, by_name["layer0.attention.tilelang.prefix_kv_lens"]
-        ) == [1000]
+        assert _integer_values(directory, by_name["layer0.attention.tilelang.query_start_loc"]) == [0, 8]
+        assert _integer_values(directory, by_name["layer0.attention.tilelang.prefix_kv_lens"]) == [1000]
 
         policy_path = directory / "tilelang_policy.json"
         assert policy_path.is_file(), f"missing TileLang policy audit in {directory}"
@@ -150,10 +146,7 @@ def main() -> None:
     canonical = {json.dumps(policy, sort_keys=True) for policy in policies}
     assert len(canonical) == 1, f"TileLang policy differs across TP ranks: {policies}"
     print(f"SGLANG_DFLASH_TILELANG_POLICY_PASS {canonical.pop()}")
-    print(
-        f"SGLANG_DFLASH_PARITY_TRACE_PASS ranks={len(directories)} "
-        f"block_index={args.block_index}"
-    )
+    print(f"SGLANG_DFLASH_PARITY_TRACE_PASS ranks={len(directories)} block_index={args.block_index}")
 
 
 if __name__ == "__main__":
