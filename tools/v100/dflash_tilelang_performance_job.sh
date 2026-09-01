@@ -10,8 +10,8 @@ trap 'rc=$?; echo "$rc" >"$RESULTS/exit_code"; [ -f "$RESULTS/completed" ] || ec
 cat /src/SOURCE_STAMP
 rm -f /wheels/lmdeploy-*.whl
 bash /src/tools/v100/build_v100_fast.sh >"$RESULTS/build.log" 2>&1 || {
-    grep -aE 'error:|Error [0-9]+' "$RESULTS/build.log" | head -100
-    exit 2
+  grep -aE 'error:|Error [0-9]+' "$RESULTS/build.log" | head -100
+  exit 2
 }
 WHEEL=$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2-)
 [ -n "$WHEEL" ]
@@ -23,29 +23,29 @@ export TM_DFLASH_TILELANG_DRAFT_ATTENTION=1
 export TM_DFLASH_DRAFT_GRAPH=1
 export TM_DFLASH_GRAPH_TRACE=1
 export TM_DFLASH_PERSISTENT_WORKSPACE=1
-export TM_DFLASH_LOCAL_TOPK=1
+export TM_DFLASH_LOCAL_TOPK=0
 export TM_DFLASH_PAGED_Q8=0
 export TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1
 
 common=(
-    --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
-    --tp "${TP:-4}"
-    --speculative-algorithm dflash2
-    --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}"
-    --speculative-dflash-block-size 8
-    --speculative-draft-window 2048
-    --input-tokens 1000
-    --output-tokens 256
-    --trials 5
-    --sglang-corpus /sglang-corpus
-    --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01
-    --cache-max-entry-count 0.05
+  --model "${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
+  --tp "${TP:-4}"
+  --speculative-algorithm dflash2
+  --speculative-draft-model "${DFLASH_MODEL_DIR:-/models/Qwen3.8-27B-DFlash2}"
+  --speculative-dflash-block-size 8
+  --speculative-draft-window 2048
+  --input-tokens 1000
+  --output-tokens 256
+  --trials 5
+  --sglang-corpus /sglang-corpus
+  --expected-prompt-sha256 9ac441c0409e992b270fbe9cb47ca11bf00f66dc903dcd0fd32ad00b70007a01
+  --cache-max-entry-count 0.05
 )
 
 python3 /job/bench_decode.py "${common[@]}" --num-draft-tokens 0 --json-out "$RESULTS/k0.json" 2>&1 |
-    tee "$RESULTS/k0.log"
+  tee "$RESULTS/k0.log"
 python3 /job/bench_decode.py "${common[@]}" --num-draft-tokens 7 --json-out "$RESULTS/k7.json" 2>&1 |
-    tee "$RESULTS/k7.log"
+  tee "$RESULTS/k7.log"
 
 python3 - "$RESULTS" <<'PY'
 import json

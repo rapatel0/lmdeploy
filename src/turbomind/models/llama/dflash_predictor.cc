@@ -1104,8 +1104,7 @@ Buffer_<int> DFlashPredictor::DraftCandidates(const Buffer_<int>& anchors, int p
     const int slots = weights_.block_size - 1;
     const bool graph_safe_attention = UseDFlashPagedQ8() || UseDFlashTileLangDraftAttention();
     const bool eligible = persistent_workspace_ && graph_safe_attention && anchors.size() == 1
-                          && weights_.block_size == 8 && slots == 7 && UseLocalDFlashTopK()
-                          && !TraceDFlashSelector() && !ParityActive();
+                          && weights_.block_size == 8 && slots == 7 && !TraceDFlashSelector() && !ParityActive();
     if (!eligible) {
         return ordinary();
     }
@@ -1240,8 +1239,7 @@ Buffer_<int> DFlashPredictor::SelectCandidates(const Tensor&       block_hidden,
     TM_CHECK_NOTNULL(weights_.selector.get());
     const int slots = weights_.block_size - 1;
     const bool eligible = UseDFlashSelectorGraph() && persistent_workspace_ && anchors.size() == 1
-                          && weights_.block_size == 8 && slots == 7 && UseLocalDFlashTopK()
-                          && !TraceDFlashSelector() && !ParityActive();
+                          && weights_.block_size == 8 && slots == 7 && !TraceDFlashSelector() && !ParityActive();
     if (!eligible) {
         return SelectCandidatesImpl(block_hidden, anchors, phase);
     }
