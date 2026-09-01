@@ -227,6 +227,26 @@ def main() -> int:
                 row = {"rank": rank, "layer": layer, "boundary": boundary, **statistics(left, right)}
                 rows.append(row)
                 print("DFLASH_ATTENTION_LAYER_BOUNDARY " + json.dumps(row, sort_keys=True))
+            if layer == 0:
+                for split_id in range(8):
+                    candidates = [
+                        statistics(lm_partial_o[split_id, :8], partial_o_reference[reference_id, :8])["rms"]
+                        for reference_id in range(8)
+                    ]
+                    try:
+                        best_reference_split = int(np.argmin(candidates))
+                    except (FloatingPointError, TypeError, ValueError) as error:
+                        raise RuntimeError("failed to rank TileLang partial split references") from error
+                    split_row = {
+                        "rank": rank,
+                        "layer": layer,
+                        "boundary": "partial_o_split_assignment",
+                        "split": split_id,
+                        "best_reference_split": best_reference_split,
+                        "candidate_rms": candidates,
+                    }
+                    rows.append(split_row)
+                    print("DFLASH_ATTENTION_LAYER_BOUNDARY " + json.dumps(split_row, sort_keys=True))
 
     result = {"comparisons": rows}
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
