@@ -42,7 +42,7 @@ common=(
     --cache-max-entry-count 0.05
 )
 
-for scale in 0 0.5 1 2 4 8; do
+for scale in 0.75 1 1.1 1.2 1.3 1.5 1.75; do
     tag=${scale/./p}
     TM_DFLASH_SELECTOR_TRANSITION_SCALE="$scale" \
         python3 /job/bench_decode.py "${common[@]}" --json-out "$RESULTS/scale_${tag}.json" 2>&1 |
