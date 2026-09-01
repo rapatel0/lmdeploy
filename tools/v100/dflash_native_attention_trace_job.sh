@@ -18,19 +18,21 @@ WHEEL=$(find /wheels -maxdepth 1 -name 'lmdeploy-*.whl' -printf '%T@ %p\n' | sor
 pip install --no-deps --force-reinstall "$WHEEL" 2>&1 | tail -1
 
 SG=${SGLANG_DFLASH_TRACE_ROOT:-/results/20260901_172521-sglang-dflash-parity-897236b6f62a/trace/sglang}
+SG_CONTEXT=${SGLANG_DFLASH_CONTEXT_TRACE_ROOT:-/results/20260901_161431-sglang-dflash-parity-c5db648ecf45/trace/sglang}
 python3 /job/validate_sglang_dflash_trace.py "$SG" --block-index 2 --expected-anchor 1144
 mapfile -t REPLAY < <(
-    python3 - "$SG" <<'PY'
+    python3 - "$SG" "$SG_CONTEXT" <<'PY'
 import glob, hashlib, json, os, sys
 roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
-assert len(roots) == 4, roots
-for name, shape, size in (
-    ('target.full_context', [1000, 25600], 51200000),
-    ('context.full_norm', [1000, 5120], 10240000),
-    ('layer0.attention.norm_output', [8, 5120], 81920),
+context_roots = sorted(glob.glob(sys.argv[2] + '/rank-*-pid-*'))
+assert len(roots) == len(context_roots) == 4, (roots, context_roots)
+for name, shape, size, source_roots in (
+    ('target.full_context', [1000, 25600], 51200000, context_roots),
+    ('context.full_norm', [1000, 5120], 10240000, context_roots),
+    ('layer0.attention.norm_output', [8, 5120], 81920, roots),
 ):
     paths, hashes = [], []
-    for root in roots:
+    for root in source_roots:
         records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
         row = records[name]
         assert row['shape'] == shape and row['dtype'] == 'f16', row
