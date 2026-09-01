@@ -65,7 +65,7 @@ import sys
 root = pathlib.Path(sys.argv[1])
 directories = sorted(path for path in root.glob("rank-*-pid-*") if path.is_dir())
 assert len(directories) == 4, directories
-expected_ids = [1144] + [248070] * 7
+expected_ids = [1596] + [248070] * 7
 expected_positions = list(range(1000, 1008))
 source_paths = []
 source_hashes = []
@@ -143,7 +143,7 @@ import struct
 import sys
 root = pathlib.Path(sys.argv[1])
 source = pathlib.Path(sys.argv[2]).read_bytes()
-expected_ids = [1144] + [248070] * 7
+expected_ids = [1596] + [248070] * 7
 required = {
     "target.post_layer_residual", "context.fc", "context.norm", "block.ids",
     "block.embedding", "layer0.attention.conv_side0", "layer4.mlp.norm_output",
