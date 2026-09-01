@@ -1839,6 +1839,17 @@ void LanguageModel::Impl::Forward(int phase, TensorMap& env)
         << "the drafts snapshot and the autoregres snapshot disagree";
 
     if (d.n_generating) {
+        static const bool sglang_input_anchor = [] {
+            const char* value = std::getenv("TM_DFLASH_SGLANG_INPUT_ANCHOR");
+            return value && value[0] == '1';
+        }();
+        if (dflash_predictor_ && sglang_input_anchor) {
+            Buffer_<int> block_anchors = dflash_anchor_ids_.slice(0, d.rows.size());
+            invokeGatherDFlashInputAnchors(block_anchors,
+                                           env.at("input_ids").buffer().view<int>(),
+                                           env.at("q_offsets").buffer().view<int>(),
+                                           core::Context::stream().handle());
+        }
         generation_->Run(BatchOp::kForward, phase, env);
         Copy(env.at("output_ids").buffer(), autoreg_ids_);
 
@@ -1972,19 +1983,6 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
         Buffer_<int> block_anchors = dflash_anchor_ids_.slice(0, bsz);
         if (after_rollback) {
             core::Copy(anchors, block_anchors);
-        }
-        else {
-            std::vector<int> host_anchors(bsz);
-            for (int i = 0; i < bsz; ++i) {
-                TM_CHECK_GE((*tips)[i], 2);
-                host_anchors[i] = d.rows[i]->token_ids[(*tips)[i] - 2];
-            }
-            TM_CUDA_CHECK(cudaMemcpyAsync(block_anchors.data(),
-                                          host_anchors.data(),
-                                          host_anchors.size() * sizeof(int),
-                                          cudaMemcpyHostToDevice,
-                                          core::Context::stream().handle()));
-            core::Context::stream().Sync();
         }
         env.produce("dflash_block_anchors", std::move(block_anchors));
     }
