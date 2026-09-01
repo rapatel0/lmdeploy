@@ -26,7 +26,8 @@ for name, kernel in (("partial", partial), ("combine", combine)):
     kernel.export_sass(str(out / f"{name}.sass"))
 print(f"SGLANG_TILELANG_EXPORT splits={splits}")
 PY
-TILELANG_INCLUDE=$(python3 - <<'PY'
+TILELANG_INCLUDE=$(
+    python3 - <<'PY'
 from pathlib import Path
 import tilelang
 root = Path(tilelang.__file__).resolve().parent
