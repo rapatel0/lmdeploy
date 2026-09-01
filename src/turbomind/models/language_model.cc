@@ -1969,17 +1969,20 @@ void LanguageModel::Impl::DraftDFlashTokens(int phase, TensorMap& env)
         return value && value[0] == '1';
     }();
     if (sglang_input_anchor) {
-        Buffer_<int> stable_anchors = dflash_anchor_ids_.slice(0, bsz);
+        Buffer_<int> block_anchors = dflash_anchor_ids_.slice(0, bsz);
         if (after_rollback) {
-            core::Copy(anchors, stable_anchors);
+            core::Copy(anchors, block_anchors);
         }
         else {
-            invokeGatherDFlashInputAnchors(stable_anchors,
-                                           env.at("input_ids").buffer().view<int>(),
-                                           env.at("q_offsets").buffer().view<int>(),
-                                           core::Context::stream().handle());
+            Buffer_<int> host_anchors{bsz, kCPUpinned};
+            for (int i = 0; i < bsz; ++i) {
+                TM_CHECK_GE((*tips)[i], 2);
+                host_anchors[i] = d.rows[i]->token_ids[(*tips)[i] - 2];
+            }
+            core::Copy(host_anchors, block_anchors);
+            core::Context::stream().Sync();
         }
-        anchors = std::move(stable_anchors);
+        env.produce("dflash_block_anchors", std::move(block_anchors));
     }
     if (bsz == 1 && K == 7) {
         dflash_predictor_->BeginParityBlock(anchors, d.uids[0], (*tips)[0], d.input_lens[0]);

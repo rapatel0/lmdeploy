@@ -29,14 +29,6 @@ __global__ void BuildDFlashBlock(int* output, const int* anchors, int count, int
     }
 }
 
-__global__ void GatherDFlashInputAnchors(int* output, const int* input_ids, const int* q_offsets, int batch_size)
-{
-    const int batch = blockIdx.x * blockDim.x + threadIdx.x;
-    if (batch < batch_size) {
-        output[batch] = input_ids[q_offsets[batch + 1] - 1];
-    }
-}
-
 __global__ void GatherDFlashPredictionsHalf(__half* output, const __half* input, int count, int hidden, int block_size)
 {
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -549,19 +541,6 @@ void invokeBuildDFlashBlock(Buffer_<int>&       output,
     const int     blocks  = (output.size() + threads - 1) / threads;
     BuildDFlashBlock<<<blocks, threads, 0, stream>>>(
         output.data(), anchors.data(), output.size(), block_size, mask_token_id);
-    TM_CUDA_CHECK(cudaGetLastError());
-}
-
-void invokeGatherDFlashInputAnchors(Buffer_<int>&       output,
-                                    const Buffer_<int>& input_ids,
-                                    const Buffer_<int>& q_offsets,
-                                    cudaStream_t        stream)
-{
-    TM_CHECK_EQ(q_offsets.size(), output.size() + 1);
-    constexpr int threads = 256;
-    const int blocks = (output.size() + threads - 1) / threads;
-    GatherDFlashInputAnchors<<<blocks, threads, 0, stream>>>(
-        output.data(), input_ids.data(), q_offsets.data(), output.size());
     TM_CUDA_CHECK(cudaGetLastError());
 }
 
