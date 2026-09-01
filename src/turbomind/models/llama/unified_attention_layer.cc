@@ -724,7 +724,8 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
         TM_CHECK_EQ(d.prefill.k_max, expected_k_max);
     }
 
-    if (rebuild || assert_exact) {
+    static thread_local bool rebuild_logged = false;
+    if ((rebuild || assert_exact) && !rebuild_logged) {
         int device = -1;
         TM_CUDA_CHECK(cudaGetDevice(&device));
         TM_LOG_INFO("DFLASH_METADATA_{}_ACTIVE device={} phase={} rows={} block={} old_q_sum={} old_k_sum={} "
@@ -739,6 +740,7 @@ void UnifiedAttentionLayer::ValidateDFlashDraftMetadata(int        phase,
                     d.prefill.q_sum,
                     d.prefill.k_sum,
                     (int)assert_exact);
+        rebuild_logged = true;
     }
 }
 
