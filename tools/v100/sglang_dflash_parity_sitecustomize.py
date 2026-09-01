@@ -1079,9 +1079,7 @@ if _TRACE_ROOT:
                 raise RuntimeError("invalid SGLANG_PARITY_ANCHOR_ID") from exc
             bonus_view = spec_info.bonus_tokens.view(-1)
             if bonus_view.numel() < batch_size:
-                raise RuntimeError(
-                    f"DFLASH bonus tensor has {bonus_view.numel()} rows for batch {batch_size}"
-                )
+                raise RuntimeError(f"DFLASH bonus tensor has {bonus_view.numel()} rows for batch {batch_size}")
             # Mutate the live state tensor in place. Replacing the field leaves
             # already-published scheduler/CUDA references pointing at the old
             # sampled token, which produced a misleading non-1144 trace.
@@ -1146,7 +1144,7 @@ if _TRACE_ROOT:
                     "causal": bool(kwargs.get("causal")),
                     "linear_verify": bool(kwargs.get("linear_verify")),
                     "block_size": int(kwargs.get("block_size")),
-                    "softmax_scale": float(kwargs.get("sm_scale")),
+                    "softmax_scale": float(kwargs.get("softmax_scale")),
                     "query_shape": list(q.shape),
                     "query_stride": list(q.stride()),
                     "key_cache_shape": list(k_cache.shape),
@@ -1156,12 +1154,8 @@ if _TRACE_ROOT:
                     "page_table_shape": list(block_table.shape),
                     "page_table_stride": list(block_table.stride()),
                     "sequence_lengths": [int(value) for value in seq_lens.tolist()],
-                    "query_start_locations": [
-                        int(value) for value in query_start_loc.tolist()
-                    ],
-                    "prefix_kv_lengths": [
-                        int(value) for value in prefix_kv_lens.tolist()
-                    ],
+                    "query_start_locations": [int(value) for value in query_start_loc.tolist()],
+                    "prefix_kv_lengths": [int(value) for value in prefix_kv_lens.tolist()],
                 }
                 _write_policy(policy)
                 print(
@@ -1215,9 +1209,7 @@ if _TRACE_ROOT:
                 _dump("layer0.attention.tilelang.query_start_loc", md.query_start_loc)
                 _dump("layer0.attention.tilelang.prefix_kv_lens", md.prefix_kv_lens)
                 _dump("layer0.attention.tilelang.output", result.reshape_as(q3))
-                resolved_causal, resolved_window = _flash_v100._get_native_paged_attention_params(
-                    layer, md.causal
-                )
+                resolved_causal, resolved_window = _flash_v100._get_native_paged_attention_params(layer, md.causal)
                 policy = {
                     "backend": "flash_attn_v100",
                     "forward_mode": str(forward_batch.forward_mode),
@@ -1227,9 +1219,7 @@ if _TRACE_ROOT:
                     "metadata_causal": bool(md.causal),
                     "resolved_causal": bool(resolved_causal),
                     "resolved_window_size": int(resolved_window),
-                    "linear_verify": bool(
-                        self._uses_native_linear_verify(forward_batch.forward_mode)
-                    ),
+                    "linear_verify": bool(self._uses_native_linear_verify(forward_batch.forward_mode)),
                     "block_size": int(self.page_size),
                     "softmax_scale": float(layer.scaling),
                     "query_dtype": str(q3.dtype),
@@ -1244,12 +1234,8 @@ if _TRACE_ROOT:
                     "page_table_shape": list(md.page_table.shape),
                     "page_table_stride": list(md.page_table.stride()),
                     "sequence_lengths": [int(value) for value in md.seq_lens.tolist()],
-                    "query_start_locations": [
-                        int(value) for value in md.query_start_loc.tolist()
-                    ],
-                    "prefix_kv_lengths": [
-                        int(value) for value in md.prefix_kv_lens.tolist()
-                    ],
+                    "query_start_locations": [int(value) for value in md.query_start_loc.tolist()],
+                    "prefix_kv_lengths": [int(value) for value in md.prefix_kv_lens.tolist()],
                 }
                 _write_policy(policy)
                 self._parity_tilelang_policy_captured = True
