@@ -29,7 +29,9 @@ for name, shape, size in (
 ):
     paths, hashes = [], []
     for root in roots:
-        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        records = {}
+        for row in map(json.loads, open(root + '/manifest.jsonl')):
+            records.setdefault(row['name'], row)
         row = records[name]
         assert row['shape'] == shape and row['dtype'] == 'f16', row
         path = root + '/' + row['file']
@@ -83,7 +85,9 @@ read -r LIVE_TILELANG REPLAY_CONTEXT_LEN < <(
     python3 - "$SG" <<'PY'
 import glob, json, sys
 roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
-rows = {row['name']: row for row in map(json.loads, open(roots[0] + '/manifest.jsonl'))}
+rows = {}
+for row in map(json.loads, open(roots[0] + '/manifest.jsonl')):
+    rows.setdefault(row['name'], row)
 record = rows.get('layer0.attention.tilelang.k')
 print(1 if record else 0, record['shape'][0] if record else 1000)
 PY
@@ -104,7 +108,9 @@ for name, output, expected in (
 ):
     with open(output, 'wb') as stream:
         for root in roots:
-            records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+            records = {}
+            for row in map(json.loads, open(root + '/manifest.jsonl')):
+                records.setdefault(row['name'], row)
             row = records[name]
             payload = pathlib.Path(root, row['file']).read_bytes()
             assert len(payload) == expected, (name, root, len(payload))
@@ -117,7 +123,9 @@ roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
 assert len(roots) == 4
 with open(sys.argv[2], 'wb') as output:
     for root in roots:
-        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        records = {}
+        for row in map(json.loads, open(root + '/manifest.jsonl')):
+            records.setdefault(row['name'], row)
         if int(sys.argv[3]):
             cache_k = np.fromfile(pathlib.Path(root, records['layer0.attention.tilelang.k']['file']), dtype='<f2').reshape(-1, 2, 128)
             cache_v = np.fromfile(pathlib.Path(root, records['layer0.attention.tilelang.v']['file']), dtype='<f2').reshape(-1, 2, 128)
@@ -140,7 +148,9 @@ roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
 assert len(roots) == 4
 with open(sys.argv[2], 'wb') as q_out, open(sys.argv[3], 'wb') as k_out:
     for root in roots:
-        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        records = {}
+        for row in map(json.loads, open(root + '/manifest.jsonl')):
+            records.setdefault(row['name'], row)
         row = records['layer0.attention.qkv_projection']
         value = np.fromfile(pathlib.Path(root, row['file']), dtype='<f2').reshape(8, 1536)
         q_out.write(interleave(value[:, :1024]).tobytes())
