@@ -67,21 +67,28 @@ def _load_manifest(path: pathlib.Path) -> list[dict]:
 
 
 def _validate_policy(policy: dict) -> None:
-    assert policy["backend"] == "flash_attn_v100"
-    assert policy["target_verify"]
+    backend = policy["backend"]
+    assert backend in {"flash_attn_v100", "tilelang_fa_v100.paged_forward"}
     assert policy["linear_verify"]
-    assert policy["layer_id"] == 0
-    assert policy["attention_type"] == "AttentionType.ENCODER_ONLY"
-    # SGLang metadata starts causal, then the layer contract resolves the
-    # encoder-only DFlash verifier to full-prefix non-causal attention.
-    assert policy["metadata_causal"]
-    assert not policy["resolved_causal"]
-    assert policy["resolved_window_size"] == -1
+    if backend == "flash_attn_v100":
+        assert policy["target_verify"]
+        assert policy["layer_id"] == 0
+        assert policy["attention_type"] == "AttentionType.ENCODER_ONLY"
+        # SGLang metadata starts causal, then the layer contract resolves the
+        # encoder-only DFlash verifier to full-prefix non-causal attention.
+        assert policy["metadata_causal"]
+        assert not policy["resolved_causal"]
+        assert policy["resolved_window_size"] == -1
+        assert policy["query_dtype"] == "torch.float16"
+        assert policy["key_cache_dtype"] == "torch.float16"
+        assert policy["value_cache_dtype"] == "torch.float16"
+    else:
+        # This is the stronger capture point: values are recorded inside the
+        # actual embedded TileLang call rather than reconstructed by its
+        # FlashAttention backend caller.
+        assert not policy["causal"]
     assert policy["block_size"] == 16
     assert math.isclose(policy["softmax_scale"], 0.08838834764831845)
-    assert policy["query_dtype"] == "torch.float16"
-    assert policy["key_cache_dtype"] == "torch.float16"
-    assert policy["value_cache_dtype"] == "torch.float16"
     assert policy["query_shape"] == [8, 8, 128]
     assert policy["query_stride"] == [1024, 128, 1]
     assert policy["key_cache_shape"] == [1025, 16, 2, 128]
@@ -116,6 +123,17 @@ def main() -> None:
         by_name: dict[str, dict] = {}
         for record in records:
             by_name.setdefault(record["name"], record)
+        for layer in range(5):
+            prefix = f"layer{layer}.attention.tilelang"
+            for suffix, shape in (
+                ("q", [8, 8, 128]),
+                ("k", [1008, 2, 128]),
+                ("v", [1008, 2, 128]),
+                ("output", [8, 8, 128]),
+            ):
+                record = by_name[f"{prefix}.{suffix}"]
+                assert record["dtype"] == "f16", record
+                assert record["shape"] == shape, record
 
         block_records = [record for record in records if record["name"] == "block.ids"]
         assert len(block_records) >= args.block_index
