@@ -47,18 +47,34 @@ FULL_CONTEXT=${REPLAY[0]}
 FULL_NORM=${REPLAY[1]}
 INITIAL_NORM=${REPLAY[2]}
 mkdir -p "$RESULTS/parity"
+RUN_ENV=(env
+    TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT"
+    TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM"
+    TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE="$INITIAL_NORM"
+    TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1
+    TM_DFLASH_ASSERT_DRAFT_METADATA=1
+    TM_DFLASH_REDUCE_BEFORE_CONV=0
+    TM_DFLASH_TILELANG_DRAFT_ATTENTION=1
+    TM_DFLASH_SELECTOR_LOGIT_SCALE=1
+    TM_DFLASH_PARITY_DIR="$RESULTS/parity")
+if [ "${TM_DFLASH_NATIVE_REPLAY_FLATTENED:-0}" = 1 ]; then
+    FLATTENED_KV_REPLAY="$RESULTS/flattened_kv_tp4.bin"
+    python3 - "$SG" "$FLATTENED_KV_REPLAY" <<'PY'
+import glob, json, numpy as np, pathlib, sys
+roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
+assert len(roots) == 4, roots
+with open(sys.argv[2], 'wb') as output:
+    for root in roots:
+        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        cache_k = np.fromfile(pathlib.Path(root, records['layer0.attention.tilelang.k']['file']), dtype='<f2').reshape(-1, 2, 128)
+        cache_v = np.fromfile(pathlib.Path(root, records['layer0.attention.tilelang.v']['file']), dtype='<f2').reshape(-1, 2, 128)
+        output.write(np.stack((cache_k.transpose(1, 0, 2), cache_v.transpose(1, 0, 2)), axis=1).tobytes())
+PY
+    RUN_ENV+=(TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_FILE="$FLATTENED_KV_REPLAY"
+        TM_DFLASH_DRAFT_FLATTENED_KV_REPLAY_CONTEXT_LEN=1008)
+fi
 
-env \
-    TM_DFLASH_CONTEXT_REPLAY_FILE="$FULL_CONTEXT" \
-    TM_DFLASH_CONTEXT_NORM_REPLAY_FILE="$FULL_NORM" \
-    TM_DFLASH_BLOCK_INITIAL_NORM_REPLAY_FILE="$INITIAL_NORM" \
-    TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER=1 \
-    TM_DFLASH_ASSERT_DRAFT_METADATA=1 \
-    TM_DFLASH_REDUCE_BEFORE_CONV=0 \
-    TM_DFLASH_TILELANG_DRAFT_ATTENTION=1 \
-    TM_DFLASH_SELECTOR_LOGIT_SCALE=1 \
-    TM_DFLASH_PARITY_DIR="$RESULTS/parity" \
-    python3 /job/bench_decode.py \
+"${RUN_ENV[@]}" python3 /job/bench_decode.py \
     --model /models/Qwen3.8-27B-FP8 --tp 4 --num-draft-tokens 7 \
     --speculative-algorithm dflash2 --speculative-draft-model /models/Qwen3.8-27B-DFlash2 \
     --speculative-dflash-block-size 8 --speculative-draft-window 2048 \

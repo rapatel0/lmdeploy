@@ -76,7 +76,8 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
                                          RopeKernelParam rope_param,
                                          const float* __restrict__ rope_cache,
                                          int q_position_shift,
-                                         bool q_pre_rotated)
+                                         bool q_pre_rotated,
+                                         bool kv_prepacked)
 {
     constexpr int kQElementsPerRow = 8 * 128;
     constexpr int kQPairsPerRow = kQElementsPerRow / 2;
@@ -153,7 +154,7 @@ __global__ void PackDFlashTileLangInputs(const half* __restrict__ q,
             packed_v[index] = q[row * q_stride + kQElementsPerRow + 2 * 128 + head * 128 + dim];
         }
         else {
-            const int source_k_dim = q_pre_rotated ? dim : (dim % 64) * 2 + dim / 64;
+            const int source_k_dim = kv_prepacked ? dim : (dim % 64) * 2 + dim / 64;
             packed_k[index] = flattened_kv[head * flattened_head_stride + token * 128 + source_k_dim];
             packed_v[index] =
                 flattened_kv[head * flattened_head_stride + flattened_value_offset + token * 128 + dim];
@@ -182,6 +183,7 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                       int*                         metadata_workspace,
                                       bool                         graph_replay_safe,
                                       bool                         q_pre_rotated,
+                                      bool                         kv_prepacked,
                                       half*                        trace_packed_q)
 {
     constexpr int kMaxContext = 16 * 1024;
@@ -231,7 +233,8 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                                             params.rope_param,
                                                             params.dflash_context_rope_cache,
                                                             params.q_position_shift,
-                                                            q_pre_rotated);
+                                                            q_pre_rotated,
+                                                            kv_prepacked);
     TM_CUDA_CHECK(cudaGetLastError());
     if (trace_packed_q) {
         TM_CUDA_CHECK(cudaMemcpyAsync(trace_packed_q,

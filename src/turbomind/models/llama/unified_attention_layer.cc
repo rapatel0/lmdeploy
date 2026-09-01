@@ -1633,6 +1633,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                                            tilelang_workspace.tilelang_metadata.data<int>(),
                                                            use_fixed_dflash_graph_geometry,
                                                            bool(p.q_replay),
+                                                           bool(p.flattened_kv_replay),
                                                            packed_q_trace.data_or<half>(nullptr));
                             if (p.trace_fn) {
                                 auto* packed_k = tilelang_workspace.tilelang_packed_kv.data<half>();
