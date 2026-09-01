@@ -1623,13 +1623,17 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                             auto tilelang_params = params;
                             tilelang_params.causal = false;
                             auto& tilelang_workspace = d.dflash_workspace;
+                            Tensor packed_q_trace = p.trace_fn ?
+                                                        Tensor{{8, local_head_num, size_per_head}, kHalf, kDEVICE} :
+                                                        Tensor{};
                             dispatchDFlashTileLangAttention(tilelang_params,
                                                            context_len,
                                                            tilelang_workspace.tilelang_packed_kv.data<half>(),
                                                            tilelang_workspace.tilelang_packed_kv.size(),
                                                            tilelang_workspace.tilelang_metadata.data<int>(),
                                                            use_fixed_dflash_graph_geometry,
-                                                           bool(p.q_replay));
+                                                           bool(p.q_replay),
+                                                           packed_q_trace.data_or<half>(nullptr));
                             if (p.trace_fn) {
                                 auto* packed_k = tilelang_workspace.tilelang_packed_kv.data<half>();
                                 auto* packed_v = packed_k + tilelang_workspace.tilelang_packed_kv.size() / 2;
@@ -1656,14 +1660,21 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                                     kDEVICE};
                                 Tensor query_start_loc_view{
                                     (void*)tilelang_params.cu_q_len, Layout{{2}}, kInt32, kDEVICE};
-                                p.trace_fn(p.trace_context, "layer0.attention.tilelang.packed_k", packed_k_view);
-                                p.trace_fn(p.trace_context, "layer0.attention.tilelang.packed_v", packed_v_view);
-                                p.trace_fn(p.trace_context, "layer0.attention.tilelang.partial_o", partial_o_view);
-                                p.trace_fn(p.trace_context, "layer0.attention.tilelang.partial_lse", partial_lse_view);
-                                p.trace_fn(p.trace_context, "layer0.attention.tilelang.block_table", block_table_view);
-                                p.trace_fn(p.trace_context, "layer0.attention.tilelang.cache_seqlens", cache_seqlens_view);
+                                std::string tilelang_prefix = p.trace_qkv_projection;
+                                const auto  projection_suffix = tilelang_prefix.find(".qkv_projection");
+                                TM_CHECK_NE(projection_suffix, std::string::npos);
+                                tilelang_prefix.resize(projection_suffix);
+                                tilelang_prefix += ".tilelang";
+                                p.trace_fn(p.trace_context, (tilelang_prefix + ".packed_q").c_str(), packed_q_trace);
+                                p.trace_fn(p.trace_context, (tilelang_prefix + ".packed_k").c_str(), packed_k_view);
+                                p.trace_fn(p.trace_context, (tilelang_prefix + ".packed_v").c_str(), packed_v_view);
+                                p.trace_fn(p.trace_context, (tilelang_prefix + ".partial_o").c_str(), partial_o_view);
+                                p.trace_fn(p.trace_context, (tilelang_prefix + ".partial_lse").c_str(), partial_lse_view);
+                                p.trace_fn(p.trace_context, (tilelang_prefix + ".block_table").c_str(), block_table_view);
+                                p.trace_fn(
+                                    p.trace_context, (tilelang_prefix + ".cache_seqlens").c_str(), cache_seqlens_view);
                                 p.trace_fn(p.trace_context,
-                                           "layer0.attention.tilelang.query_start_loc",
+                                           (tilelang_prefix + ".query_start_loc").c_str(),
                                            query_start_loc_view);
                             }
                         }

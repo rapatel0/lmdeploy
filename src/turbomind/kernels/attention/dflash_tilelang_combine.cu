@@ -169,9 +169,11 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                       std::size_t                  packed_workspace_elements,
                                       int*                         metadata_workspace,
                                       bool                         graph_replay_safe,
-                                      bool                         q_pre_rotated)
+                                      bool                         q_pre_rotated,
+                                      half*                        trace_packed_q)
 {
     constexpr int kMaxContext = 16 * 1024;
+    constexpr int kQElementsPerRow = 8 * 128;
     constexpr int kPartialSmem = 59392;
     constexpr int kCombineSmem = 160;
     constexpr float kSoftmaxScale = 0.08838834764831845f;
@@ -219,6 +221,13 @@ void dispatchDFlashTileLangAttention(const AttentionParams<half>& params,
                                                             params.q_position_shift,
                                                             q_pre_rotated);
     TM_CUDA_CHECK(cudaGetLastError());
+    if (trace_packed_q) {
+        TM_CUDA_CHECK(cudaMemcpyAsync(trace_packed_q,
+                                      packed_q,
+                                      8 * kQElementsPerRow * sizeof(half),
+                                      cudaMemcpyDeviceToDevice,
+                                      params.stream));
+    }
 
     auto& kernels = GetDFlashTileLangDriverKernels(false);
     auto* partial_lse = params.partial_ML;
