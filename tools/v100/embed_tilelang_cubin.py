@@ -12,9 +12,13 @@ def emit(name: str, path: Path) -> str:
     data = path.read_bytes()
     lines = []
     for offset in range(0, len(data), 32):
-        lines.append('"' + ''.join(f"\\x{byte:02x}" for byte in data[offset : offset + 32]) + '"')
+        lines.append('"' + "".join(f"\\x{byte:02x}" for byte in data[offset : offset + 32]) + '"')
     digest = hashlib.sha256(data).hexdigest()
-    return f"// {path.name} bytes={len(data)} sha256={digest}\nalignas(8) static constexpr char {name}[] =\n" + "\n".join(lines) + ";\n"
+    return (
+        f"// {path.name} bytes={len(data)} sha256={digest}\nalignas(8) static constexpr char {name}[] =\n"
+        + "\n".join(lines)
+        + ";\n"
+    )
 
 
 def main() -> None:
