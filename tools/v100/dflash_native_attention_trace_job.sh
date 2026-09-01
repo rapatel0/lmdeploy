@@ -57,6 +57,22 @@ RUN_ENV=(env
     TM_DFLASH_TILELANG_DRAFT_ATTENTION=1
     TM_DFLASH_SELECTOR_LOGIT_SCALE=1
     TM_DFLASH_PARITY_DIR="$RESULTS/parity")
+if [ "${TM_DFLASH_NATIVE_REPLAY_GATE_UP:-0}" = 1 ]; then
+    GATE_UP_REPLAY="$RESULTS/layer0_mlp_gate_up_tp4.bin"
+    python3 - "$SG" "$GATE_UP_REPLAY" <<'PY'
+import glob, json, pathlib, sys
+roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
+assert len(roots) == 4, roots
+with open(sys.argv[2], 'wb') as output:
+    for root in roots:
+        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        row = records['layer0.mlp.gate_up']
+        path = pathlib.Path(root, row['file'])
+        assert row['shape'] == [8, 8704] and row['dtype'] == 'f16' and path.stat().st_size == 139264, row
+        output.write(path.read_bytes())
+PY
+    RUN_ENV+=(TM_DFLASH_LAYER0_MLP_GATE_UP_REPLAY_FILE="$GATE_UP_REPLAY")
+fi
 if [ "${TM_DFLASH_NATIVE_REPLAY_FLATTENED:-0}" = 1 ]; then
     FLATTENED_KV_REPLAY="$RESULTS/flattened_kv_tp4.bin"
     python3 - "$SG" "$FLATTENED_KV_REPLAY" <<'PY'

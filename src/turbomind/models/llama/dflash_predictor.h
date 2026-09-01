@@ -187,6 +187,7 @@ private:
     mutable bool                         draft_attention_output_replay_consumed_{};
     mutable bool                         layer0_mlp_input_replay_consumed_{};
     mutable bool                         layer0_mlp_conv_input_replay_consumed_{};
+    mutable bool                         layer0_mlp_gate_up_replay_consumed_{};
     mutable bool                         layer0_mlp_w2_replay_consumed_{};
     mutable bool                         layer0_residual_replay_consumed_{};
     mutable bool                         layer0_mlp_output_replay_consumed_{};

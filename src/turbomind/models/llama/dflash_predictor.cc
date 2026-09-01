@@ -1798,6 +1798,11 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
         report_layer(i, ".mlp.scaled_input", mlp_input.output);
         Tensor gate_up = layer_workspace ? layer_workspace->gate_up.slice(0, token_num) : Tensor{};
         linear_.Forward(mlp_input.output, *fused, gate_up);
+        if (i == 0) {
+            replay_parity_tensor("TM_DFLASH_LAYER0_MLP_GATE_UP_REPLAY_FILE",
+                                 gate_up,
+                                 layer0_mlp_gate_up_replay_consumed_);
+        }
         report_layer(i, ".mlp.gate_up", gate_up);
         TM_CHECK_EQ(gate_up.shape(1), 2 * mlp.inter_size);
         Tensor activated = layer_workspace ? layer_workspace->activated.slice(0, token_num) :
