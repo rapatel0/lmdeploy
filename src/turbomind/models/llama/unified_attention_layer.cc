@@ -1487,10 +1487,10 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
             return !value || value[0] != '0';
         }();
         params.rope_param = per_layer_rope ? rope_params_.at(&weights) : rope_param_;
+        params.dflash_context_rope_cache = p.fused_context_rope_cache;
         if (p.fused_context_k_norm) {
             params.dflash_context_k_norm_weight = (const T*)weights.k_norm->weight.raw_data();
             params.dflash_context_k_norm_eps     = weights.k_norm->norm_eps_;
-            params.dflash_context_rope_cache     = p.fused_context_rope_cache;
         }
         if (params.rope_param.type == RopeType::kDynamic) {
             params.rope_param.base = d.rope_base.data() + offset;
