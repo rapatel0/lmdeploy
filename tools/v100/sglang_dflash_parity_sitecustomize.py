@@ -1077,9 +1077,15 @@ if _TRACE_ROOT:
                 anchor = int(os.environ.get("SGLANG_PARITY_ANCHOR_ID", "1144"))
             except ValueError as exc:
                 raise RuntimeError("invalid SGLANG_PARITY_ANCHOR_ID") from exc
-            spec_info.bonus_tokens = torch.full(
-                (batch_size,), anchor, dtype=torch.int64, device=batch.seq_lens.device
-            )
+            bonus_view = spec_info.bonus_tokens.view(-1)
+            if bonus_view.numel() < batch_size:
+                raise RuntimeError(
+                    f"DFLASH bonus tensor has {bonus_view.numel()} rows for batch {batch_size}"
+                )
+            # Mutate the live state tensor in place. Replacing the field leaves
+            # already-published scheduler/CUDA references pointing at the old
+            # sampled token, which produced a misleading non-1144 trace.
+            bonus_view[:batch_size].fill_(anchor)
             self._parity_anchor_forced = True
             print(f"SGLANG_DFLASH_PARITY_ANCHOR_FORCED token_id={anchor}", flush=True)
         result = _orig_worker_forward_generation(self, batch, on_publish=on_publish)
@@ -1135,11 +1141,34 @@ if _TRACE_ROOT:
                 _dump("layer0.attention.tilelang.query_start_loc", query_start_loc)
                 _dump("layer0.attention.tilelang.prefix_kv_lens", prefix_kv_lens)
                 _dump("layer0.attention.tilelang.output", result)
+                policy = {
+                    "backend": "tilelang_fa_v100.paged_forward",
+                    "causal": bool(kwargs.get("causal")),
+                    "linear_verify": bool(kwargs.get("linear_verify")),
+                    "block_size": int(kwargs.get("block_size")),
+                    "softmax_scale": float(kwargs.get("sm_scale")),
+                    "query_shape": list(q.shape),
+                    "query_stride": list(q.stride()),
+                    "key_cache_shape": list(k_cache.shape),
+                    "key_cache_stride": list(k_cache.stride()),
+                    "value_cache_shape": list(v_cache.shape),
+                    "value_cache_stride": list(v_cache.stride()),
+                    "page_table_shape": list(block_table.shape),
+                    "page_table_stride": list(block_table.stride()),
+                    "sequence_lengths": [int(value) for value in seq_lens.tolist()],
+                    "query_start_locations": [
+                        int(value) for value in query_start_loc.tolist()
+                    ],
+                    "prefix_kv_lengths": [
+                        int(value) for value in prefix_kv_lens.tolist()
+                    ],
+                }
+                _write_policy(policy)
                 print(
                     f"SGLANG_DFLASH_TILELANG_ABI_CAPTURE context={context_len} "
                     f"q={tuple(q.shape)} k={tuple(logical_k.shape)} "
-                    f"causal={kwargs.get('causal')} linear_verify={kwargs.get('linear_verify')} "
-                    f"block_size={kwargs.get('block_size')}",
+                    f"causal={policy['causal']} linear_verify={policy['linear_verify']} "
+                    f"block_size={policy['block_size']}",
                     flush=True,
                 )
             except (IndexError, RuntimeError, ValueError) as exc:
@@ -1153,7 +1182,7 @@ if _TRACE_ROOT:
     # forward_extend as the authoritative fallback capture point.
     from sglang.srt.layers.attention import flash_attn_v100_backend as _flash_v100
 
-    _orig_flash_v100_forward_extend = _flash_v100.FlashAttentionV100Backend.forward_extend
+    _orig_flash_v100_forward_extend = _flash_v100.FlashAttnV100Backend.forward_extend
 
     def _traced_flash_v100_forward_extend(self, q, k, v, layer, forward_batch, *args, **kwargs):
         result = _orig_flash_v100_forward_extend(self, q, k, v, layer, forward_batch, *args, **kwargs)
@@ -1163,7 +1192,7 @@ if _TRACE_ROOT:
             and forward_batch.forward_mode.is_target_verify()
             and layer.layer_id == 0
             and tuple(q.shape[-1:]) == (1024,)
-            and "layer0.attention.tilelang.q" not in _seen
+            and not getattr(self, "_parity_tilelang_policy_captured", False)
         ):
             try:
                 md = self.forward_metadata
@@ -1201,10 +1230,19 @@ if _TRACE_ROOT:
                     "linear_verify": bool(
                         self._uses_native_linear_verify(forward_batch.forward_mode)
                     ),
+                    "block_size": int(self.page_size),
+                    "softmax_scale": float(layer.scaling),
+                    "query_dtype": str(q3.dtype),
+                    "key_cache_dtype": str(k_cache.dtype),
+                    "value_cache_dtype": str(v_cache.dtype),
                     "query_shape": list(q3.shape),
+                    "query_stride": list(q3.stride()),
                     "key_cache_shape": list(k_cache.shape),
+                    "key_cache_stride": list(k_cache.stride()),
                     "value_cache_shape": list(v_cache.shape),
+                    "value_cache_stride": list(v_cache.stride()),
                     "page_table_shape": list(md.page_table.shape),
+                    "page_table_stride": list(md.page_table.stride()),
                     "sequence_lengths": [int(value) for value in md.seq_lens.tolist()],
                     "query_start_locations": [
                         int(value) for value in md.query_start_loc.tolist()
@@ -1214,6 +1252,7 @@ if _TRACE_ROOT:
                     ],
                 }
                 _write_policy(policy)
+                self._parity_tilelang_policy_captured = True
                 print(
                     f"SGLANG_DFLASH_TILELANG_BACKEND_CAPTURE context={context_len} "
                     f"q={tuple(q3.shape)} k={tuple(logical_k.shape)} "
@@ -1225,4 +1264,4 @@ if _TRACE_ROOT:
                 print(f"SGLANG_DFLASH_TILELANG_BACKEND_CAPTURE_FAIL {type(exc).__name__}: {exc}", flush=True)
         return result
 
-    _flash_v100.FlashAttentionV100Backend.forward_extend = _traced_flash_v100_forward_extend
+    _flash_v100.FlashAttnV100Backend.forward_extend = _traced_flash_v100_forward_extend

@@ -18,6 +18,31 @@ trap finish EXIT
 cat /src/SOURCE_STAMP
 command -v sglang >/dev/null
 
+# The release image keeps the base package version while overlaying the audited
+# V100 sources. Verify the exact source hashes instead of trusting the stale
+# package version string or an artifact tag.
+test -f /job/sglang_v100_source_identity.json
+python3 - /job/sglang_v100_source_identity.json /opt/sglang <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest_path = pathlib.Path(sys.argv[1])
+source_root = pathlib.Path(sys.argv[2])
+manifest = json.loads(manifest_path.read_text())
+for relative, expected in manifest["files"].items():
+    source = source_root / relative
+    actual = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert actual == expected, f"SGLang source mismatch for {relative}: {actual} != {expected}"
+print(
+    "SGLANG_SOURCE_IDENTITY_PASS",
+    f"commit={manifest['source_commit']}",
+    f"image={manifest['image']}",
+)
+PY
+cp /job/sglang_v100_source_identity.json "${RESULTS}/sglang_v100_source_identity.json"
+
 mkdir -p /tmp/dflash-parity-site
 cp /job/sglang_dflash_parity_sitecustomize.py /tmp/dflash-parity-site/sitecustomize.py
 
@@ -126,6 +151,7 @@ server_pid=
 
 python3 - "${RESULTS}/trace/sglang" <<'PY'
 import json
+import math
 import os
 import pathlib
 import struct
@@ -178,7 +204,23 @@ for directory in dirs:
     assert policy["target_verify"] is True
     assert policy["linear_verify"] is True
     assert policy["layer_id"] == 0
+    assert policy["attention_type"].endswith("DECODER")
+    assert policy["metadata_causal"] is False
+    assert policy["resolved_causal"] is False
+    assert policy["resolved_window_size"] == -1
+    assert policy["block_size"] == 16
+    assert math.isclose(policy["softmax_scale"], 0.08838834764831845)
+    assert policy["query_dtype"] == "torch.float16"
+    assert policy["key_cache_dtype"] == "torch.float16"
+    assert policy["value_cache_dtype"] == "torch.float16"
     assert policy["query_shape"] == [8, 8, 128]
+    assert policy["query_stride"] == [1024, 128, 1]
+    assert policy["key_cache_shape"][1:] == [16, 2, 128]
+    assert policy["key_cache_stride"][1:] == [256, 128, 1]
+    assert policy["value_cache_shape"] == policy["key_cache_shape"]
+    assert policy["value_cache_stride"] == policy["key_cache_stride"]
+    assert policy["page_table_shape"] == [1, 1024]
+    assert policy["page_table_stride"] == [1024, 1]
     assert policy["sequence_lengths"] == [1008]
     assert policy["query_start_locations"] == [0, 8]
     assert policy["prefix_kv_lengths"] == [1000]

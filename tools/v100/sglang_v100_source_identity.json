@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "source_repository": "https://github.com/haohervchb/sglang-V100",
+  "source_commit": "72ef2f5f3",
+  "image": "docker.io/geesegeesegeese/sglang-v100@sha256:da2714e969a492464610a1bdf58fcbbc0d2cf587b0633117ca505d13f3e7b617",
+  "files": {
+    "python/sglang/srt/layers/attention/flash_attn_v100_backend.py": "dfcd4c4e5ad151f2b8eea8c16840d8fdacad19eaaa5288ed8acdbb13ffe64e69",
+    "python/sglang/srt/speculative/dflash_worker_v2.py": "3a3cf9a2422fd9f9718b180e0482b6d55e8bd91f99de404f06344571fd7b2165",
+    "python/sglang/srt/layers/attention/tilelang_fa_v100/_paged_adapter.py": "6047290d411c15f646ed56d4e0d69f770d2bd04d4772f4a046ce5e5aa47871df",
+    "python/sglang/srt/layers/attention/tilelang_fa_v100/_kernels_paged_verify.py": "6e1f2119fcec200ed77fd21bca5678c942397925415de7a6cd1abb44ca248762"
+  }
+}
