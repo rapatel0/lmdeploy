@@ -61,17 +61,23 @@ roots = sorted(glob.glob(sys.argv[1] + '/rank-*-pid-*'))
 assert len(roots) == 4, roots
 with open(sys.argv[2], 'wb') as hidden_out, open(sys.argv[3], 'wb') as anchor_out:
     for root in roots:
-        records = {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+        rows = list(map(json.loads, open(root + '/manifest.jsonl')))
+        records = {}
+        for row in rows:
+            records.setdefault(row['name'], row)
         hidden = records['layer4.output.hidden']
         assert hidden['dtype'] == 'f16' and hidden['shape'] == [8, 5120], hidden
         payload = pathlib.Path(root, hidden['file']).read_bytes()
         assert len(payload) == 8 * 5120 * 2
         hidden_out.write(payload)
-        block = records['block.ids']
-        code = '<q' if block['dtype'] == 'i64' else '<i'
-        anchor = struct.unpack_from(code, pathlib.Path(root, block['file']).read_bytes())[0]
-        assert anchor == 1144, (root, anchor)
-        anchor_out.write(struct.pack('<i', anchor))
+        anchors = []
+        for block in (row for row in rows if row['name'] == 'block.ids'):
+            code = '<q' if block['dtype'] == 'i64' else '<i'
+            anchor = struct.unpack_from(code, pathlib.Path(root, block['file']).read_bytes())[0]
+            if anchor == 1144:
+                anchors.append(anchor)
+        assert anchors, (root, 'audited anchor 1144 not found')
+        anchor_out.write(struct.pack('<i', anchors[0]))
 PY
 read -r LIVE_TILELANG REPLAY_CONTEXT_LEN < <(
     python3 - "$SG" <<'PY'
@@ -201,7 +207,10 @@ sg_roots = sorted(glob.glob(sys.argv[2] + '/rank-*-pid-*'))
 assert len(lm_roots) == len(sg_roots) == 4
 DT = {'f16': '<f2', 'f32': '<f4', 'i32': '<i4', 'i64': '<i8'}
 def records(root):
-    return {row['name']: row for row in map(json.loads, open(root + '/manifest.jsonl'))}
+    result = {}
+    for row in map(json.loads, open(root + '/manifest.jsonl')):
+        result.setdefault(row['name'], row)
+    return result
 def load(root, rows, name):
     row = rows[name]
     return np.fromfile(root + '/' + row['file'], dtype=DT[row['dtype']]).reshape(row['shape']).astype(np.float32)
