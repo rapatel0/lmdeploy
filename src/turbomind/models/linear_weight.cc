@@ -185,6 +185,10 @@ void LinearWeight::prepare()
         const char* value = std::getenv("TM_DFLASH_ATTENTION_QKV_TORCH_LAYOUT");
         return value && value[0] == '1';
     }();
+    static const bool dflash_w2_torch_layout = [] {
+        const char* value = std::getenv("TM_DFLASH_W2_TORCH_LAYOUT");
+        return value && value[0] == '1';
+    }();
     // Match every dense DFlash projection that SGLang evaluates through FP16
     // torch linear. Partial conversion is not a valid fidelity arm: changing
     // QKV while leaving Wo/MLP/context projection on different accumulation
@@ -196,7 +200,8 @@ void LinearWeight::prepare()
     const bool use_dflash_torch_layout = dflash_qkv_torch_layout
                                          || (dflash_gate_up_torch_layout && input_dim == 5120 && output_dim == 8704)
                                          || (dflash_attention_qkv_torch_layout && input_dim == 5120
-                                             && output_dim == 1536);
+                                             && output_dim == 1536)
+                                         || (dflash_w2_torch_layout && input_dim == 4352 && output_dim == 5120);
     if (use_dflash_torch_layout && getSMVersion() == 70 && !is_grouped_ && dflash_torch_fp16_shape
         && data_type == kHalf && input_dtype() == kHalf && weight.dtype() == kHalf) {
         // torch F.linear keeps [N,K] physical storage and asks cuBLAS for the
@@ -221,7 +226,8 @@ void LinearWeight::prepare()
         if (!logged[device].exchange(true, std::memory_order_relaxed)) {
             const char* marker = dflash_qkv_torch_layout ? "DFLASH_QKV_TORCH_LAYOUT_ACTIVE" :
                                  dflash_attention_qkv_torch_layout ? "DFLASH_ATTENTION_QKV_TORCH_LAYOUT_ACTIVE" :
-                                                                    "DFLASH_GATE_UP_TORCH_LAYOUT_ACTIVE";
+                                 dflash_w2_torch_layout ? "DFLASH_W2_TORCH_LAYOUT_ACTIVE" :
+                                                         "DFLASH_GATE_UP_TORCH_LAYOUT_ACTIVE";
             std::fprintf(stderr, "%s device=%d shape=%dx%d\n", marker, device, input_dim, output_dim);
             std::fflush(stderr);
         }
