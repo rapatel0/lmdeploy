@@ -95,15 +95,12 @@ def main() -> int:
             prefix = f"layer{layer}.attention"
             required_lm = {
                 f"{prefix}.qkv_projection",
-                f"{prefix}.qkv_pre_process",
                 f"{prefix}.qkv_post_process",
                 f"{prefix}.flattened_kv",
                 f"{prefix}.core_output",
             }
             required_sg = {
                 f"{prefix}.qkv_projection",
-                f"{prefix}.q_normalized",
-                f"{prefix}.k_normalized",
                 f"{prefix}.tilelang.q",
                 f"{prefix}.tilelang.k",
                 f"{prefix}.tilelang.v",
@@ -116,11 +113,8 @@ def main() -> int:
                 )
 
             lm_projection = load(lm_root, lm, f"{prefix}.qkv_projection").reshape(8, 1536)
-            lm_pre = load(lm_root, lm, f"{prefix}.qkv_pre_process").reshape(8, 1536)
             lm_post = load(lm_root, lm, f"{prefix}.qkv_post_process").reshape(8, 1536)
             sg_projection = load(sg_root, sg, f"{prefix}.qkv_projection").reshape(8, 1536)
-            sg_q_normalized = load(sg_root, sg, f"{prefix}.q_normalized").reshape(8, 1024)
-            sg_k_normalized = load(sg_root, sg, f"{prefix}.k_normalized").reshape(8, 256)
             sg_q = load(sg_root, sg, f"{prefix}.tilelang.q").reshape(8, 1024)
             sg_k = load(sg_root, sg, f"{prefix}.tilelang.k").reshape(-1, 2, 128)
             sg_v = load(sg_root, sg, f"{prefix}.tilelang.v").reshape(-1, 2, 128)
@@ -136,8 +130,6 @@ def main() -> int:
                 "q_projection": (lm_projection[:, :1024], rope_interleaved(sg_projection[:, :1024])),
                 "k_projection": (lm_projection[:, 1024:1280], rope_interleaved(sg_projection[:, 1024:1280])),
                 "v_projection": (lm_projection[:, 1280:1536], sg_projection[:, 1280:1536]),
-                "q_normalized": (lm_pre[:, :1024], rope_interleaved(sg_q_normalized)),
-                "k_normalized": (lm_pre[:, 1024:1280], rope_interleaved(sg_k_normalized)),
                 "q_rotated": (lm_post[:, :1024], sg_q),
                 "proposal_k": (lm_post[:, 1024:1280], sg_k[-8:].reshape(8, 256)),
                 "proposal_v": (lm_post[:, 1280:1536], sg_v[-8:].reshape(8, 256)),
