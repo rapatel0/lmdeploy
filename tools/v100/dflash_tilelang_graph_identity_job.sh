@@ -48,10 +48,22 @@ captures=$(grep -c '\[DFlash2\] draft graph captured phase=' "$RESULTS/graph.log
 replays=$(grep -c '\[DFlash2\] draft graph replay phase=' "$RESULTS/graph.log" || true)
 selected=$(grep -c 'DFLASH_TILELANG_SELECTOR selected=true' "$RESULTS/graph.log" || true)
 disabled=$(grep -c 'draft graph capture disabled' "$RESULTS/graph.log" || true)
-[ "$captures" -ge 4 ] || { echo "FAIL: draft graph captures=$captures" >&2; exit 3; }
-[ "$replays" -ge 4 ] || { echo "FAIL: draft graph replays=$replays" >&2; exit 3; }
-[ "$selected" -eq 4 ] || { echo "FAIL: TileLang selector count=$selected" >&2; exit 3; }
-[ "$disabled" -eq 0 ] || { echo "FAIL: graph capture disabled on $disabled ranks/phases" >&2; exit 3; }
+[ "$captures" -ge 4 ] || {
+    echo "FAIL: draft graph captures=$captures" >&2
+    exit 3
+}
+[ "$replays" -ge 4 ] || {
+    echo "FAIL: draft graph replays=$replays" >&2
+    exit 3
+}
+[ "$selected" -eq 4 ] || {
+    echo "FAIL: TileLang selector count=$selected" >&2
+    exit 3
+}
+[ "$disabled" -eq 0 ] || {
+    echo "FAIL: graph capture disabled on $disabled ranks/phases" >&2
+    exit 3
+}
 echo "DFLASH_TILELANG_GRAPH_CAPTURE_REPLAY_PASS captures=$captures replays=$replays ranks=4"
 
 python3 /job/verify_dflash_audited.py \
