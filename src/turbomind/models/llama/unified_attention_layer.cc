@@ -1317,7 +1317,7 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
     // audited fixed shape. The first parity arm remains opt-in.
     const bool use_dflash_tilelang_draft_attention =
         enable_dflash_tilelang_draft_attention && engine_param_.speculative_algorithm == "dflash2" && arch_ == 70 &&
-        use_dflash_workspace && p.frozen_kv && !is_mla && quant_policy_ == 0 &&
+        use_dflash_workspace && !p.frozen_kv && !is_mla && quant_policy_ == 0 &&
         d.decode.n == 0 && d.prefill.n == 1 && d.prefill.q_sum == 8 && d.prefill.k_sum <= 16 * 1024 &&
         dtype == kHalf && dflash_block == 8 && q_count == 8 && local_head_num == 8 && local_kv_head_num == 2 &&
         size_per_head == 128;
@@ -1610,9 +1610,9 @@ Tensor UnifiedAttentionLayer::core_attention(Tensor& qkv, const ForwardParam& p,
                         if constexpr (std::is_same_v<T, half>) {
                             const int context_len =
                                 p.flattened_kv_replay ? p.flattened_kv_replay.shape(2) : d.prefill.k_sum;
-                            // The DFlash verifier evaluates sibling proposals against the same frozen
-                            // prefix. Its attention is intentionally noncausal even though the model's
-                            // ordinary autoregressive attention weights are marked causal.
+                            // The DFlash verifier evaluates all sibling proposals noncausally over the
+                            // same frozen prefix plus the complete eight-row proposal K/V block, even
+                            // though the model's ordinary autoregressive attention weights are causal.
                             auto tilelang_params = params;
                             tilelang_params.causal = false;
                             auto& tilelang_workspace = d.dflash_workspace;

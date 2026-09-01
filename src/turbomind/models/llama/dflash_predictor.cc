@@ -1060,7 +1060,8 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
         const char* value = std::getenv("TM_DFLASH_ANCHOR_INCLUSIVE_FRONTIER");
         return value && value[0] == '1';
     }();
-    if (!anchor_inclusive_frontier) {
+    const bool include_proposal_kv = !anchor_inclusive_frontier || UseDFlashTileLangDraftAttention();
+    if (include_proposal_kv) {
         AdvanceCuSeqLens(k_offsets.data(), batch_size, weights_.block_size, core::Context::stream().handle());
     }
     static const bool assert_draft_metadata = [] {
@@ -1071,7 +1072,7 @@ Tensor DFlashPredictor::DraftBlock(const Buffer_<int>& anchors, int phase, Tenso
         AssertDraftAttentionKeySpans(phase, batch_size);
     }
     hidden = RunDraftLayers(std::move(hidden), phase);
-    if (!anchor_inclusive_frontier) {
+    if (include_proposal_kv) {
         AdvanceCuSeqLens(k_offsets.data(), batch_size, -weights_.block_size, core::Context::stream().handle());
     }
     return hidden;
@@ -1653,7 +1654,11 @@ Tensor DFlashPredictor::RunDraftLayers(Tensor hidden, int phase) const
                                                    1.f / kResidualScale,
                                                    false,
                                                    true};
-        params.frozen_kv = anchor_inclusive_frontier;
+        // The audited SGLang verifier has a frozen 1,000-token prefix but
+        // attends noncausally over all eight proposal K/V rows (seq_len=1008).
+        // TileLang therefore publishes the block K/V temporarily even when the
+        // host frontier itself uses the anchor-inclusive convention.
+        params.frozen_kv = anchor_inclusive_frontier && !UseDFlashTileLangDraftAttention();
         if (i == 0 && ParityActive()) {
             const int q_width = layer->attention->head_num / layer->attention->tp_size * layer->attention->head_dim;
             const int k_width =
